@@ -113,5 +113,35 @@ def init_db() -> None:
             updated_at TIMESTAMPTZ DEFAULT NOW()
         );
         """)
+        #TEST INFORMATION FOR CHATBOT SETTINGS
+        cur.execute('''
+            INSERT INTO chatbot_settings (
+                site_id,
+                chatbot_name,
+                personality,
+                tone,
+                resp_length,
+                temperature,
+                greeting,
+                fallback,
+                widget_color,
+                widget_size,
+                border_radius
+            )
+            VALUES (
+                'site_abc123xyz789',
+                'BubbleBot',
+                'Friendly, helpful, slightly witty',
+                'Casual',
+                'medium',
+                0.6,
+                'Hey! How can I help you today?',
+                'Sorry, I didn’t quite get that. Could you rephrase?',
+                '#4F46E5',
+                'medium',
+                '16px'
+            );
+            
+            ''')
 
     conn.close()
