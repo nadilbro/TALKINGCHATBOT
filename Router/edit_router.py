@@ -2,7 +2,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 import asyncio
 import time
-from Providers.APIContracts import StatusResponse, WidgetAppearance, ChatBotEdits 
+from Providers.APIContracts import StatusResponse, ChatBotEdits, SiteID
 from SQL.RAG import VectorRAGService
 from Providers.ai_provider import AIProvider
 import os
@@ -23,5 +23,9 @@ def edit_traits(req: ChatBotEdits):
 
 
 @router.put("/widget_appearance")
-def edit_widget(req: WidgetAppearance):
+def edit_widget(req: ChatBotEdits):
     return rag.edit_appearence(req)
+
+@router.get("/Get_widget_information")
+def get_widget_information(req: SiteID):
+    return rag.get_appearence(req)

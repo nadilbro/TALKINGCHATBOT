@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 import psycopg2
 from typing import Optional 
 import math
-from Providers.APIContracts import ChatMessageStructure, WidgetAppearance, ChatBotEdits
+from Providers.APIContracts import ChatMessageStructure, SiteID, ChatBotEdits
 from psycopg2.extras import RealDictCursor
 from openai import AsyncOpenAI
 import nltk
@@ -289,3 +289,48 @@ class VectorRAGService:
             ))
         self.conn.commit()
         return {"status": "ok", "message": f"Updated appearance"}
+    
+    
+
+    def get_appearence(self, req: SiteID) -> ChatBotEdits:
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    site_id,
+                    chatbot_name,
+                    personality,
+                    tone,
+                    resp_length,
+                    temperature,
+                    greeting,
+                    fallback,
+                    widget_color,
+                    widget_size,
+                    border_radius,
+                    updated_at
+                FROM chatbot_settings
+                WHERE site_id = %s
+                """,
+                (req.site_id,)
+            )
+            row = cur.fetchone()
+
+        if not row:
+            # Return empty object with site_id only
+            return ChatBotEdits(site_id=req.site_id)
+
+        return ChatBotEdits(
+            site_id=row["site_id"],
+            chabot_name=row.get("chatbot_name"),
+            personality=row.get("personality"),
+            tone=row.get("tone"),
+            resp_length=row.get("resp_length"),
+            temperature=row.get("temperature"),
+            greeting=row.get("greeting"),
+            fallback=row.get("fallback"),
+            widget_color=row.get("widget_color"),
+            widget_size=row.get("widget_size"),
+            border_radius=row.get("border_radius"),
+            updated_at=row["updated_at"].isoformat() if row.get("updated_at") else None
+        )

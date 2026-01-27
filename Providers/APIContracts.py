@@ -24,14 +24,14 @@ class ChatBotEdits(BaseModel):
     temperature: Optional[float]
     greeting: Optional[str]
     fallback: Optional[str]
-    updated_at: Optional[str] = None
-
-class WidgetAppearance(BaseModel):
-    site_id: str
     widget_color: Optional[str]
     widget_size: Optional[str]
     border_radius: Optional[int]
     updated_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+class SiteID(BaseModel):
+    site_id: str
 
 class AvatarStructure(BaseModel):
     site_id: str
