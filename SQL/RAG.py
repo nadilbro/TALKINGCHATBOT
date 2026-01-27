@@ -269,7 +269,7 @@ class VectorRAGService:
 
 
     def edit_appearence(self, appearance: ChatBotEdits):
-        sql = """INSERT INTO widget_appearance (
+        sql = """INSERT INTO chatbot_settings (
                 site_id, widget_color, widget_size, border_radius, updated_at
                 )
                 VALUES (
