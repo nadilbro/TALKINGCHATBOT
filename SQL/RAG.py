@@ -39,14 +39,14 @@ class VectorRAGService:
 
         self.client = AsyncOpenAI() #Open AI connection
 
-        #Set up connection to postgreSQL
         self.conn = psycopg2.connect(
-            host="127.0.0.1",
-            dbname = "vector_db",
-            user = "postgres",
-            password=self.sql_password,
-            port=5433
+            host=os.getenv("DB_HOST"),
+            dbname=os.getenv("DB_NAME"),
+            user=os.getenv("DB_USER"),
+            password=os.getenv("DB_PASSWORD"),
+            port=os.getenv("DB_PORT", 5432)
         )
+
         self.conn.autocommit = True  # explicit commits
         self.oai = AsyncOpenAI()            
 
