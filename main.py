@@ -9,14 +9,13 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://127.0.0.1:5500",
-        "http://localhost:5500",
-        "http://127.0.0.1:8000",
-        "http://localhost:8000",
+        "https://b5b11fb7-af8d-4fae-b773-1bf1035a8d71.lovableproject.com",
+        "https://id-preview--b5b11fb7-af8d-4fae-b773-1bf1035a8d71.lovable.app",
+        # add your published domain later too
     ],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],        # includes OPTIONS for preflight
+    allow_headers=["*"],        # MUST include Authorization + Content-Type
 )
 
 
