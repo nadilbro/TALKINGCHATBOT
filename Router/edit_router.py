@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 import asyncio
 import time
@@ -26,6 +26,8 @@ def edit_traits(req: ChatBotEdits):
 def edit_widget(req: ChatBotEdits):
     return rag.edit_appearence(req)
 
-@router.get("/Get_widget_information")
-def get_widget_information(req: SiteID):
-    return rag.get_appearence(req)
+@router.get("/widget_information")
+def get_widget_information(site_id: str = Query(...)):
+    # should return dict like:
+    # { "chatbot_name": "...", "widget_color": "...", "widget_size": "...", "border_radius": "...", "greeting": "..." }
+    return rag.get_appearence(site_id)

@@ -7,21 +7,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from SQL.db_init import init_db
 app = FastAPI()
 
+origins = [
+    "https://bubbleworks.com.au",
+    "https://www.bubbleworks.com.au",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://b5b11fb7-af8d-4fae-b773-1bf1035a8d71.lovableproject.com",
+    "https://id-preview--b5b11fb7-af8d-4fae-b773-1bf1035a8d71.lovable.app"
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://b5b11fb7-af8d-4fae-b773-1bf1035a8d71.lovableproject.com",
-        "https://id-preview--b5b11fb7-af8d-4fae-b773-1bf1035a8d71.lovable.app",
-    ],
+    allow_origins=origins
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=[
-        "Authorization",
-        "Content-Type",
-        "Accept",
-        "Origin",
-        "X-Requested-With",
-    ],
+    allow_methods=["*"],          # IMPORTANT: includes OPTIONS
+    allow_headers=["*"],          # IMPORTANT: includes Accept / Content-Type
+    expose_headers=["*"],
 )
 
 
