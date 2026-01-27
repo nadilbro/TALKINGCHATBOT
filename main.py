@@ -3,7 +3,7 @@
 from fastapi import FastAPI
 from Router.chat_router import router as chat_router
 from fastapi.middleware.cors import CORSMiddleware
-
+from SQL.db_init import init_db
 app = FastAPI()
 
 app.add_middleware(
@@ -24,3 +24,7 @@ app.include_router(chat_router)
 @app.get("/")
 def root():
     return {"status": "ok"}
+
+@app.on_event("startup")
+def on_startup():
+    init_db()
