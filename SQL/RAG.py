@@ -18,12 +18,13 @@ from dotenv import load_dotenv
 import psycopg2
 from typing import Optional 
 import math
-from Providers.APIContracts import ChatMessageStructure
+from Providers.APIContracts import ChatMessageStructure, WidgetAppearance, ChatBotEdits
 from psycopg2.extras import RealDictCursor
 from openai import AsyncOpenAI
 import nltk
 from nltk.tokenize import sent_tokenize 
 from fastapi.concurrency import run_in_threadpool
+
 
 class VectorRAGService:
 
@@ -234,3 +235,57 @@ class VectorRAGService:
     def close(self):
         self.conn.close()
 
+    """--------------------- Editing Chatbot traits and appearance (called in Router -> edit.py)-------------------------------"""
+
+    def edit_traits(self, traits: ChatBotEdits):
+        sql = """
+        INSERT INTO chatbot_settings (
+            site_id, chatbot_name, personality, tone, resp_length, temperature, updated_at
+        )
+        VALUES (
+            %s, %s, %s, %s, %s, %s, NOW()
+        )
+        ON CONFLICT (site_id) DO UPDATE SET
+            chatbot_name = COALESCE(EXCLUDED.chatbot_name, chatbot_settings.chatbot_name),
+            personality  = COALESCE(EXCLUDED.personality,  chatbot_settings.personality),
+            tone         = COALESCE(EXCLUDED.tone,         chatbot_settings.tone),
+            resp_length  = COALESCE(EXCLUDED.resp_length,  chatbot_settings.resp_length),
+            temperature  = COALESCE(EXCLUDED.temperature,  chatbot_settings.temperature),
+            updated_at   = NOW();
+        """
+
+        with self.conn.cursor() as cur:
+            cur.execute(sql, (
+                traits.site_id,
+                traits.chabot_name,   # typo in your model name, but fine if consistent
+                traits.personality,
+                traits.tone,
+                traits.resp_length,
+                traits.temperature,
+            ))
+
+        self.conn.commit()
+        return {"status": "ok", "message": "Updated traits"}
+
+
+    def edit_appearence(self, appearance: ChatBotEdits):
+        sql = """INSERT INTO widget_appearance (
+                site_id, widget_color, widget_size, border_radius, updated_at
+                )
+                VALUES (
+                %s, %s, %s, %s, NOW()
+                )
+                ON CONFLICT (site_id) DO UPDATE SET
+                widget_color  = COALESCE(EXCLUDED.widget_color,  widget_appearance.widget_color),
+                widget_size   = COALESCE(EXCLUDED.widget_size,   widget_appearance.widget_size),
+                border_radius = COALESCE(EXCLUDED.border_radius, widget_appearance.border_radius),
+                updated_at    = NOW();"""
+        with self.conn.cursor() as cur:
+            cur.execute(sql, (
+                appearance.site_id,
+                appearance.widget_color,
+                appearance.widget_size,
+                appearance.border_radius,
+            ))
+        self.conn.commit()
+        return {"status": "ok", "message": f"Updated appearance"}
