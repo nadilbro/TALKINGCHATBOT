@@ -12,11 +12,16 @@ app.add_middleware(
     allow_origins=[
         "https://b5b11fb7-af8d-4fae-b773-1bf1035a8d71.lovableproject.com",
         "https://id-preview--b5b11fb7-af8d-4fae-b773-1bf1035a8d71.lovable.app",
-        # add your published domain later too
     ],
     allow_credentials=True,
-    allow_methods=["*"],        # includes OPTIONS for preflight
-    allow_headers=["*"],        # MUST include Authorization + Content-Type
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=[
+        "Authorization",
+        "Content-Type",
+        "Accept",
+        "Origin",
+        "X-Requested-With",
+    ],
 )
 
 
