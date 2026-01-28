@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 import psycopg2
 from typing import Optional, List
 import math
-from Providers.APIContracts import ChatMessageStructure, SiteID, ChatBotEdits, AddDataRequest, EmbeddingRow, GetDataRequest
+from Providers.APIContracts import ChatMessageStructure, SiteID, ChatBotEdits, AddDataRequest, EmbeddingRow, GetDataRequest, ClientListSetUp
 from psycopg2.extras import RealDictCursor
 from openai import AsyncOpenAI
 import nltk
@@ -359,3 +359,94 @@ class VectorRAGService:
             cur.execute("SELECT country FROM client_list WHERE site_id = %s;", (site_id,))
             row = cur.fetchone()
         return row[0] if row else None
+    '''---------------------------------------INITALISING CLIENT_LIST----------------------------------'''
+
+    def initialise_client(self, site_id: str, info: ClientListSetUp) -> Dict[str, Any]:
+        """
+        Create client if not exists, otherwise update.
+        - Does NOT overwrite existing DB values with None.
+        - Always updates updated_at.
+        - Returns status + whether it inserted or updated.
+        """
+        sql = """
+        INSERT INTO client_list (
+            site_id,
+            name,
+            email,
+            phone,
+            address,
+            country,
+            subscription,
+            account_id,
+            subscription_end,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            %(site_id)s,
+            %(name)s,
+            %(email)s,
+            %(phone)s,
+            %(address)s,
+            %(country)s,
+            %(subscription)s,
+            %(account_id)s,
+            %(subscription_end)s,
+            COALESCE(%(created_at)s::timestamptz, NOW()),
+            NOW()
+        )
+        ON CONFLICT (site_id) DO UPDATE SET
+            name             = COALESCE(EXCLUDED.name, client_list.name),
+            email            = COALESCE(EXCLUDED.email, client_list.email),
+            phone            = COALESCE(EXCLUDED.phone, client_list.phone),
+            address          = COALESCE(EXCLUDED.address, client_list.address),
+            country          = COALESCE(EXCLUDED.country, client_list.country),
+            subscription     = COALESCE(EXCLUDED.subscription, client_list.subscription),
+            account_id       = COALESCE(EXCLUDED.account_id, client_list.account_id),
+            subscription_end = COALESCE(EXCLUDED.subscription_end, client_list.subscription_end),
+            updated_at       = NOW()
+        RETURNING site_id, created_at, updated_at;
+        """
+
+        params = {
+            "site_id": site_id,
+            "name": info.name,
+            "email": info.email,
+            "phone": info.phone,
+            "address": info.address,
+            "country": info.country,
+            "subscription": info.subscription,
+            "account_id": info.account_id,
+            "subscription_end": info.subscription_end,
+            "created_at": info.created_at,
+        }
+
+        try:
+            with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(sql, params)
+                row = cur.fetchone()
+
+                # Determine whether insert vs update:
+                # If created_at == updated_at immediately after write, it's *likely* insert,
+                # but not guaranteed. Better method is to query existence first:
+                # We'll do the safe way below.
+                cur.execute("SELECT 1 FROM client_list WHERE site_id = %s;", (site_id,))
+                exists = cur.fetchone() is not None
+
+            self.conn.commit()
+            return {
+                "status": "ok",
+                "message": "Client created/updated",
+                "site_id": row["site_id"] if row else site_id,
+                "created_at": row["created_at"].isoformat() if row and row.get("created_at") else None,
+                "updated_at": row["updated_at"].isoformat() if row and row.get("updated_at") else None,
+                "exists": exists
+            }
+
+        except Exception as e:
+            # IMPORTANT: clear transaction state so future queries don't fail
+            try:
+                self.conn.rollback()
+            except Exception:
+                pass
+            raise

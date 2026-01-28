@@ -29,6 +29,18 @@ class ChatBotEdits(BaseModel):
     border_radius: Optional[str] = None
     updated_at: Optional[str] = None
 
+class ClientListSetUp(BaseModel):
+    name: Optional[str]
+    email: Optional[str]
+    phone: Optional[str]
+    address: Optional[str]
+    country: Optional[str]
+    subscription: str
+    account_id: str
+    subscription_end: Optional[str]
+    created_at: Optional[str]
+
+
 class SiteID(BaseModel):
     site_id: str
 
