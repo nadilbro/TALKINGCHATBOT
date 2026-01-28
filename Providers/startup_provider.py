@@ -15,7 +15,7 @@ class StartUp:
         #Check if it already exists 
         while self.rag.check_exists("site_id", site_id, "client_list"):
             site_id = uuid.uuid4().hex #Makes sure there is no duplicate site_id
-        
+        return site_id
     def init_chatbot_settings(self, settings: ChatBotEdits):
         pass
 
