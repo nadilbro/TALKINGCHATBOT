@@ -11,6 +11,7 @@ import tempfile
 import tempfile
 from typing import Optional, List
 import traceback
+from fastapi import HTTPException
 
 router = APIRouter(prefix="/edit_traits", tags=["edit"])
 

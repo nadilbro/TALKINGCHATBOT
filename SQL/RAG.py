@@ -24,6 +24,10 @@ from openai import AsyncOpenAI
 import nltk
 from fastapi.concurrency import run_in_threadpool
 import datetime
+import re
+import re
+print("✅ RAG.py loaded: re imported OK")
+from pgvector.psycopg2 import register_vector
 
 class VectorRAGService:
 
@@ -46,7 +50,7 @@ class VectorRAGService:
             password=os.getenv("DB_PASSWORD"),
             port=os.getenv("DB_PORT", 5432)
         )
-
+        register_vector(self.conn) 
         self.conn.autocommit = True  # explicit commits
         self.oai = AsyncOpenAI()            
 
