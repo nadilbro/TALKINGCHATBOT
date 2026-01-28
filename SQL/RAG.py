@@ -24,7 +24,7 @@ from openai import AsyncOpenAI
 import nltk
 from fastapi.concurrency import run_in_threadpool
 import datetime
-import re
+from psycopg2 import sql
 import re
 print("✅ RAG.py loaded: re imported OK")
 
@@ -468,17 +468,21 @@ class VectorRAGService:
 
     #________________----SIMPLE COMMANDs------______________________________
     
-    def check_exists(self, key: str, value, table: str):
+    def check_exists(self, key: str, value, table: str) -> bool:
+        q = sql.SQL("""
+            SELECT EXISTS (
+                SELECT 1
+                FROM {table}
+                WHERE {col} = %s
+            );
+        """).format(
+            table=sql.Identifier(table),
+            col=sql.Identifier(key),
+        )
+
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute('''SELECT EXISTS (
-                    SELECT 1
-                    FROM %s
-                    WHERE %s = %s
-                );''', (table, key, value))
+            cur.execute(q, (value,))
             row = cur.fetchone()
 
-        if not row:
-            # Return empty object with site_id only
-            return False
-        else:
-            return row[0]
+        # With RealDictCursor, row is a dict like {"exists": True}
+        return bool(row["exists"]) if row else False
