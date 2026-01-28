@@ -17,10 +17,11 @@ router = APIRouter(prefix="/startup", tags=["startup"])
 
 rag = VectorRAGService()
 ai = AIProvider(rag)
+startup = StartUp()
 
 @router.put("/create_client")
 def create_client(details: ClientListSetUp):
-    site_id = StartUp.init_site_id()
+    site_id = startup.init_site_id()
     return rag.initialise_client(site_id, details)
 
 @router.put("/get_site_id")
