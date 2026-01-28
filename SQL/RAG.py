@@ -22,7 +22,6 @@ from Providers.APIContracts import ChatMessageStructure, SiteID, ChatBotEdits, A
 from psycopg2.extras import RealDictCursor
 from openai import AsyncOpenAI
 import nltk
-from nltk.tokenize import sent_tokenize 
 from fastapi.concurrency import run_in_threadpool
 import datetime
 
@@ -53,9 +52,11 @@ class VectorRAGService:
 
 
     #Processing Data
-    def split_sentences(self, text):
-        #https://stackoverflow.com/questions/4576077/how-can-i-split-a-text-into-sentences
-        return sent_tokenize(text)
+    def split_sentences(self, text: str) -> list[str]:
+        # Split on sentence-ending punctuation followed by whitespace
+        parts = re.split(r'(?<=[.!?])\s+', (text or "").strip())
+        return [p.strip() for p in parts if p and p.strip()]
+
 
     '''-------------------------EMBEDDINGS------------------------------'''
     async def get_embeddings(self, text: str): 
