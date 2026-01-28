@@ -450,3 +450,19 @@ class VectorRAGService:
             except Exception:
                 pass
             raise
+
+
+    def get_siteid_wo_client(self, id: str) -> str:
+        #Returns the site_id based on firebase 
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT site_id FROM client_list 
+                WHERE account_id = %s
+                """,
+                (id,)
+            )
+            row = cur.fetchone() 
+
+        return row[0] if row else None
+
