@@ -13,7 +13,8 @@ origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "https://b5b11fb7-af8d-4fae-b773-1bf1035a8d71.lovableproject.com",
-    "https://id-preview--b5b11fb7-af8d-4fae-b773-1bf1035a8d71.lovable.app"
+    "https://id-preview--b5b11fb7-af8d-4fae-b773-1bf1035a8d71.lovable.app",
+    "https://trait-tinker-lab.lovable.app"
 ]
 
 app.add_middleware(
