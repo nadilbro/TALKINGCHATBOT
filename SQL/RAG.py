@@ -466,3 +466,19 @@ class VectorRAGService:
 
         return row if row else None
 
+    #________________----SIMPLE COMMANDs------______________________________
+    
+    def check_exists(self, key: str, value, table: str):
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute('''SELECT EXISTS (
+                    SELECT 1
+                    FROM %s
+                    WHERE %s = %s
+                );''', (table, key, value))
+            row = cur.fetchone()
+
+        if not row:
+            # Return empty object with site_id only
+            return False
+        else:
+            return row[0]
