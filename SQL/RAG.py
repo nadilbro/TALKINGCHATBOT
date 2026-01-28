@@ -257,7 +257,7 @@ class VectorRAGService:
         with self.conn.cursor() as cur:
             cur.execute(sql, (
                 traits.site_id,
-                traits.chabot_name,   # typo in your model name, but fine if consistent
+                traits.chatbot_name,   # typo in your model name, but fine if consistent
                 traits.personality,
                 traits.tone,
                 traits.resp_length,
@@ -269,17 +269,16 @@ class VectorRAGService:
 
 
     def edit_appearence(self, appearance: ChatBotEdits):
-        sql = """INSERT INTO chatbot_settings (
-                site_id, widget_color, widget_size, border_radius, updated_at
-                )
-                VALUES (
-                %s, %s, %s, %s, NOW()
-                )
-                ON CONFLICT (site_id) DO UPDATE SET
-                widget_color  = COALESCE(EXCLUDED.widget_color,  widget_appearance.widget_color),
-                widget_size   = COALESCE(EXCLUDED.widget_size,   widget_appearance.widget_size),
-                border_radius = COALESCE(EXCLUDED.border_radius, widget_appearance.border_radius),
-                updated_at    = NOW();"""
+        sql = """
+        INSERT INTO chatbot_settings (site_id, widget_color, widget_size, border_radius, updated_at)
+        VALUES (%s, %s, %s, %s, NOW())
+        ON CONFLICT (site_id) DO UPDATE SET
+        widget_color  = COALESCE(EXCLUDED.widget_color,  chatbot_settings.widget_color),
+        widget_size   = COALESCE(EXCLUDED.widget_size,   chatbot_settings.widget_size),
+        border_radius = COALESCE(EXCLUDED.border_radius, chatbot_settings.border_radius),
+        updated_at    = NOW();
+        """
+        ...
         with self.conn.cursor() as cur:
             cur.execute(sql, (
                 appearance.site_id,
@@ -334,3 +333,4 @@ class VectorRAGService:
             border_radius=row.get("border_radius"),
             updated_at=row["updated_at"].isoformat() if row.get("updated_at") else None
         )
+    
