@@ -1,7 +1,6 @@
 from pydantic import BaseModel
 from typing import Optional 
-import datetime 
-
+from datetime import datetime
 class ChatRequest(BaseModel):
     site_id: str
     message: str
@@ -39,7 +38,7 @@ class ClientListSetUp(BaseModel):
     subscription: str
     account_id: str
     subscription_end: Optional[str]
-    created_at: Optional[datetime] = None  # Make this optional
+    created_at: datetime | None = None  # Make this optional
 
 
 class SiteID(BaseModel):
