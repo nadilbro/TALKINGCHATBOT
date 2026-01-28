@@ -10,7 +10,7 @@ from fastapi import UploadFile, File, Form
 import tempfile
 import tempfile
 from typing import Optional, List
-
+import traceback
 
 router = APIRouter(prefix="/edit_traits", tags=["edit"])
 
@@ -32,8 +32,14 @@ def get_widget_information(site_id: str = Query(...)):
 
 @router.post("/add_data")
 async def add_data(info: AddDataRequest):
-    await rag.add_data(info)
-    return {"status": "ok"}
+    print("🔥 /edit_traits/add_data HIT", info.site_id, info.source, len(info.text or ""))
+    try:
+        await rag.add_data(info)
+        return {"status": "ok"}
+    except Exception as e:
+        print("❌ add_data failed:", repr(e))
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/get_data")
 def get_data(site_id: str = Query(...)):
