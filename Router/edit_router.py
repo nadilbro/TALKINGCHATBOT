@@ -26,8 +26,6 @@ def edit_traits(req: ChatBotEdits):
 def edit_widget(req: ChatBotEdits):
     return rag.edit_appearence(req)
 
-@router.get("/widget_information")
+@router.get("/get_widget_information")
 def get_widget_information(site_id: str = Query(...)):
-    # should return dict like:
-    # { "chatbot_name": "...", "widget_color": "...", "widget_size": "...", "border_radius": "...", "greeting": "..." }
-    return rag.get_appearence(site_id)
+    return rag.get_appearence(SiteID(site_id=site_id))

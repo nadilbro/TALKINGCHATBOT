@@ -322,7 +322,7 @@ class VectorRAGService:
 
         return ChatBotEdits(
             site_id=row["site_id"],
-            chabot_name=row.get("chatbot_name"),
+            chatbot_name=row.get("chatbot_name"),
             personality=row.get("personality"),
             tone=row.get("tone"),
             resp_length=row.get("resp_length"),
