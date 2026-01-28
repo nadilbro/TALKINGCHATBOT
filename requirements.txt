@@ -15,5 +15,3 @@ nltk
 google-genai
 
 python-multipart
-
-pgvector
