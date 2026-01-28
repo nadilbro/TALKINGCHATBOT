@@ -75,6 +75,10 @@ def init_db() -> None:
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
         """)
+        cur.execute("""
+        CREATE UNIQUE INDEX IF NOT EXISTS embeddings_site_chunk_uniq
+        ON embeddings (site_id, chunk_index);
+        """)
 
         # Make chunk_index unique per site (so your MAX(chunk_index) logic is consistent)
         cur.execute("""

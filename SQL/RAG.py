@@ -18,13 +18,13 @@ from dotenv import load_dotenv
 import psycopg2
 from typing import Optional 
 import math
-from Providers.APIContracts import ChatMessageStructure, SiteID, ChatBotEdits
+from Providers.APIContracts import ChatMessageStructure, SiteID, ChatBotEdits, AddDataRequest
 from psycopg2.extras import RealDictCursor
 from openai import AsyncOpenAI
 import nltk
 from nltk.tokenize import sent_tokenize 
 from fastapi.concurrency import run_in_threadpool
-
+import datetime
 
 class VectorRAGService:
 
@@ -66,8 +66,9 @@ class VectorRAGService:
         )
         return resp.data[0].embedding
 
-    async def add_data(self, text: str, site_id: str, source: Optional[str] = None):
+    async def add_data(self, info: AddDataRequest):
         # Get the last chunk index for THIS site (or site+source)
+        
         with self.conn.cursor() as cur:
             cur.execute(
                 """
@@ -75,11 +76,11 @@ class VectorRAGService:
                 FROM embeddings
                 WHERE site_id = %s;
                 """,
-                (site_id,)
+                (info.site_id,)
             )
             chunk_index = cur.fetchone()[0]
 
-            for sentence in self.split_sentences(text):
+            for sentence in self.split_sentences(info.text):
                 chunk_index += 1
                 embedding = await self.get_embeddings(sentence)
                 cur.execute(
@@ -87,7 +88,7 @@ class VectorRAGService:
                     INSERT INTO embeddings (site_id, source, chunk_index, data, embedding)
                     VALUES (%s, %s, %s, %s, %s);
                     """,
-                    (site_id, source, chunk_index, sentence, embedding)
+                    (info.site_id, info.source, chunk_index, sentence, embedding)
                 )
             self.conn.commit()
 
