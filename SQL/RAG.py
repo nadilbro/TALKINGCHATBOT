@@ -464,5 +464,5 @@ class VectorRAGService:
             )
             row = cur.fetchone() 
 
-        return row[0] if row else None
+        return row if row else None
 
