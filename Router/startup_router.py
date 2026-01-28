@@ -19,9 +19,8 @@ rag = VectorRAGService()
 ai = AIProvider(rag)
 
 @router.put("/create_client")
-def create_client(details: ClientListSetUp):
-    site_id = StartUp.init_site_id(ClientListSetUp['account_id'])
-    return rag.initialise_client(site_id, details)
+def create_client(client: ClientListSetUp):
+    site_id = StartUp.init_site_id(client.account_id)
 
 @router.put("/get_site_id")
 def get_siteid_wo_client(firebase_id: str = Query(...)):
