@@ -2,7 +2,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 import asyncio
 import time
-from Providers.APIContracts import StatusResponse, ChatBotEdits, SiteID, AddDataRequest
+from Providers.APIContracts import StatusResponse, ChatBotEdits, SiteID, AddDataRequest, DeleteEmbeddingRequest
 from SQL.RAG import VectorRAGService
 from Providers.ai_provider import AIProvider
 import os
@@ -40,5 +40,6 @@ def get_data(site_id: str = Query(...)):
     return rag.get_embedding_data(site_id)
 
 @router.post("/delete_data")
-async def get_data(chunk_id):
-    return rag.delete_data(chunk_id)
+def delete_data(req: DeleteEmbeddingRequest):
+    return rag.delete_data(siteID=req.site_id, chunk_id=req.chunk_index)
+

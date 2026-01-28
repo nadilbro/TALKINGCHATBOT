@@ -26,7 +26,7 @@ class ChatBotEdits(BaseModel):
     fallback: Optional[str] = None
     widget_color: Optional[str] = None
     widget_size: Optional[str] = None
-    border_radius: Optional[int] = None
+    border_radius: Optional[str] = None
     updated_at: Optional[str] = None
 
 class SiteID(BaseModel):
@@ -45,10 +45,9 @@ class AddDataRequest(BaseModel):
     site_id: str
     source: str
     text: str
-class DeleteDataRequest(BaseModel):
-    site_id: Optional[str]
-    source: Optional[str]
-    
+class DeleteEmbeddingRequest(BaseModel):
+    site_id: str
+    chunk_index: int
 class EmbeddingRow(BaseModel):
     id: int
     site_id: str
