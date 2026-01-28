@@ -9,7 +9,7 @@ import os
 from fastapi import UploadFile, File, Form
 import tempfile
 import tempfile
-from typing import Optional 
+from typing import Optional, List
 
 
 router = APIRouter(prefix="/edit_traits", tags=["edit"])
@@ -34,3 +34,11 @@ def get_widget_information(site_id: str = Query(...)):
 async def add_data(info: AddDataRequest):
     await rag.add_data(info)
     return {"status": "ok"}
+
+@router.get("/get_data")
+def get_data(site_id: str = Query(...)):
+    return rag.get_embedding_data(site_id)
+
+@router.post("/delete_data")
+async def get_data(chunk_id):
+    return rag.delete_data(chunk_id)

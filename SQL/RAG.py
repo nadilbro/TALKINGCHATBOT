@@ -16,9 +16,9 @@ import os
 from pydantic import BaseModel #Used with FastAPI
 from dotenv import load_dotenv
 import psycopg2
-from typing import Optional 
+from typing import Optional, List
 import math
-from Providers.APIContracts import ChatMessageStructure, SiteID, ChatBotEdits, AddDataRequest
+from Providers.APIContracts import ChatMessageStructure, SiteID, ChatBotEdits, AddDataRequest, EmbeddingRow, GetDataRequest
 from psycopg2.extras import RealDictCursor
 from openai import AsyncOpenAI
 import nltk
@@ -57,6 +57,7 @@ class VectorRAGService:
         #https://stackoverflow.com/questions/4576077/how-can-i-split-a-text-into-sentences
         return sent_tokenize(text)
 
+    '''-------------------------EMBEDDINGS------------------------------'''
     async def get_embeddings(self, text: str): 
         #From OpenAI
 
@@ -93,28 +94,42 @@ class VectorRAGService:
             self.conn.commit()
 
 
-    def get_country(self, site_id: str) -> str:
-        with self.conn.cursor() as cur:
-            cur.execute("SELECT country FROM client_list WHERE site_id = %s;", (site_id,))
-            row = cur.fetchone()
-        return row[0] if row else None
+
 
     
-    def delete_data(self, siteID: Optional[str] = None, source: Optional[str] = None):
-        if not siteID and not source:
+    def delete_data(self, siteID: Optional[str] = None, chunk_id: Optional[str] = None):
+        if not siteID or not chunk_id:
             raise ValueError("Provide site_id or source")
         #Deletes data under either the site_id or under a specific source
         with self.conn.cursor() as cur:
-            if siteID and source:
-                cur.execute("DELETE FROM embeddings WHERE site_id = %s AND source = %s;", (siteID, source))
-            elif siteID:
-                cur.execute("DELETE FROM embeddings WHERE site_id = %s;", (siteID,))
-            else:
-                cur.execute("DELETE FROM embeddings WHERE source = %s;", (source,))
+            if siteID and chunk_id:
+                cur.execute("DELETE FROM embeddings WHERE site_id = %s AND chunk_index = %s;", (siteID, chunk_id))
             self.conn.commit()
 
 
-    #Website Manipulation
+
+
+
+    def get_embedding_data(self, site_id: str) -> List[EmbeddingRow]:
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id, site_id, source, chunk_index, data, created_at
+                FROM embeddings
+                WHERE site_id = %s
+                ORDER BY chunk_index ASC;
+                """,
+                (site_id,)
+            )
+            rows = cur.fetchall()
+
+        # Convert datetime -> isoformat for JSON
+        for r in rows:
+            if r.get("created_at"):
+                r["created_at"] = r["created_at"].isoformat()
+
+        return rows
+        #Website Manipulation
 
 
 
@@ -335,3 +350,8 @@ class VectorRAGService:
             updated_at=row["updated_at"].isoformat() if row.get("updated_at") else None
         )
     
+    def get_country(self, site_id: str) -> str:
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT country FROM client_list WHERE site_id = %s;", (site_id,))
+            row = cur.fetchone()
+        return row[0] if row else None
