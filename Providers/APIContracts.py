@@ -45,11 +45,20 @@ class AddDataRequest(BaseModel):
     site_id: str
     source: str
     text: str
-
 class DeleteDataRequest(BaseModel):
     site_id: Optional[str]
     source: Optional[str]
-
+    
+class EmbeddingRow(BaseModel):
+    id: int
+    site_id: str
+    source: Optional[str] = None
+    chunk_index: int
+    data: str
+    created_at: Optional[str] = None
+    
+class GetDataRequest(BaseModel):
+    site_id: str
 class StatusResponse(BaseModel):
     status: str
 
