@@ -17,17 +17,16 @@ class PaymentStructure(BaseModel):
 
 class ChatBotEdits(BaseModel):
     site_id: str
-    chabot_name: Optional[str]
-    personality: Optional[str]
-    tone: Optional[str]
-    resp_length: Optional[str]
-    temperature: Optional[float]
-    greeting: Optional[str]
-    fallback: Optional[str]
-    widget_color: Optional[str]
-    widget_size: Optional[str]
-    border_radius: Optional[int]
-    updated_at: Optional[str] = None
+    chatbot_name: Optional[str] = None
+    personality: Optional[str] = None
+    tone: Optional[str] = None
+    resp_length: Optional[str] = None
+    temperature: Optional[float] = None
+    greeting: Optional[str] = None
+    fallback: Optional[str] = None
+    widget_color: Optional[str] = None
+    widget_size: Optional[str] = None
+    border_radius: Optional[int] = None
     updated_at: Optional[str] = None
 
 class SiteID(BaseModel):
