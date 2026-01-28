@@ -31,7 +31,7 @@ class VectorRAGService:
     def __init__(self):
         load_dotenv() #Security
 
-        nltk.download("punkt", quiet=True)
+     #   nltk.download("punkt", quiet=True)
 
         #Getting dynamic Data
         self.model_embed = os.getenv("OPEN_AI_EMBEDDINGS_LOW")
