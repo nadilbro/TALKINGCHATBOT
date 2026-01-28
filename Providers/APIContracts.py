@@ -37,7 +37,7 @@ class ClientListSetUp(BaseModel):
     country: Optional[str]
     subscription: str
     account_id: str
-    subscription_end: Optional[str]
+    subscription_end: datetime | None = None
     created_at: datetime | None = None  # Make this optional
 
 
