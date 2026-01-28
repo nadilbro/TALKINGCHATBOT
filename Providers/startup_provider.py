@@ -3,7 +3,7 @@ from Providers.open_ai import OpenAIProvider
 from Providers.gemeni import GeminiProvider
 from SQL.RAG import VectorRAGService
 import uuid
-from APIContracts import ChatBotEdits
+from Providers.APIContracts import ChatBotEdits
 
 class StartUp:
 
