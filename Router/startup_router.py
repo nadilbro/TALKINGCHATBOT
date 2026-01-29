@@ -34,7 +34,7 @@ def get_siteid_wo_client(firebase_id: str = Query(...)):
 def get_widget_information(site_id: str, request: Request):
     domain = startup.get_request_domain(request)
     if not domain:
-        raise HTTPException(403, "Missing Origin/Referer")
+        raise HTTPException(403, "Missing Origin/Referer (browser did not send)")
 
     if not rag.domain_allowed(site_id, domain):
         raise HTTPException(403, "Domain not allowed")
