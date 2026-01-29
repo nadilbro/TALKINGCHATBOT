@@ -27,9 +27,6 @@ def edit_traits(req: ChatBotEdits):
 def edit_widget(req: ChatBotEdits):
     return rag.edit_appearence(req)
 
-@router.get("/get_widget_information")
-def get_widget_information(site_id: str = Query(...)):
-    return rag.get_appearence(SiteID(site_id=site_id))
 
 @router.post("/add_data")
 async def add_data(info: AddDataRequest):
@@ -43,6 +40,7 @@ async def add_data(info: AddDataRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/get_data")
+#This is to get the embedding data
 def get_data(site_id: str = Query(...)):
     return rag.get_embedding_data(site_id)
 
