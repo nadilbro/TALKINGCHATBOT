@@ -533,3 +533,21 @@ class VectorRAGService:
             row = cur.fetchone()
 
         return bool(row["exists"]) if row else False
+    
+    def check_exists(self, key: str, value, table: str) -> bool:
+        q = sql.SQL("""
+            SELECT EXISTS(
+                SELECT 1
+                FROM {table}
+                WHERE {col} = %s
+            ) AS exists;
+        """).format(
+            table=sql.Identifier(table),
+            col=sql.Identifier(key),
+        )
+
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(q, (value,))
+            row = cur.fetchone()
+
+        return bool(row["exists"]) if row else False
