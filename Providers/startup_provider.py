@@ -26,7 +26,7 @@ class StartUp:
     def init_subscriptions(self):
         pass
 
-
+    @staticmethod
     def get_request_domain(request: Request) -> str | None:
         origin = request.headers.get("origin")
         if origin:
