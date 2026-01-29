@@ -136,6 +136,28 @@ class VectorRAGService:
         #Website Manipulation
 
 
+#--------------------------Allowed Domains-----------------------------------
+    def add_allowed(self, site_id: str):
+        pass
+
+    def check_allowed(self, domain: str) -> bool:
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM client_embeddings
+                    WHERE domain_1 = %s
+                )
+                """,
+                (domain,)
+            )
+            row = cur.fetchone()
+
+        return bool(row["exists"])
+
+#--------------ALLOWED WEBSITES FOR AI-----------------------------#
+
 
     def get_websites(self, site_id: str) -> list[str]:
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -393,7 +415,8 @@ class VectorRAGService:
             %(account_id)s,
             %(subscription_end)s,
             COALESCE(%(created_at)s::timestamptz, NOW()),
-            NOW()
+            NOW(),
+            %(domain_1)s,
         )
         ON CONFLICT (site_id) DO UPDATE SET
             name             = COALESCE(EXCLUDED.name, client_list.name),
@@ -419,6 +442,7 @@ class VectorRAGService:
             "account_id": info.account_id,
             "subscription_end": info.subscription_end,
             "created_at": info.created_at,
+            "domain_1": info.allowed_domain
         }
 
         try:
@@ -468,21 +492,20 @@ class VectorRAGService:
 
     #________________----SIMPLE COMMANDs------______________________________
     
-    def check_exists(self, key: str, value, table: str) -> bool:
-        q = sql.SQL("""
-            SELECT EXISTS (
-                SELECT 1
-                FROM {table}
-                WHERE {col} = %s
-            );
-        """).format(
-            table=sql.Identifier(table),
-            col=sql.Identifier(key),
-        )
 
+    def domain_allowed(self, site_id: str, domain: str) -> bool:
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(q, (value,))
+            cur.execute(
+                """
+                SELECT EXISTS(
+                    SELECT 1
+                    FROM client_embeddings
+                    WHERE site_id = %s
+                    AND domain_1 = %s
+                ) AS exists;
+                """,
+                (site_id, domain)
+            )
             row = cur.fetchone()
 
-        # With RealDictCursor, row is a dict like {"exists": True}
         return bool(row["exists"]) if row else False

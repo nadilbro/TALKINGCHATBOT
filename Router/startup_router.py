@@ -11,7 +11,9 @@ from fastapi import UploadFile, File, Form
 import tempfile
 import tempfile
 from typing import Optional 
-
+import hmac, hashlib, base64
+from fastapi import Request, HTTPException
+from urllib.parse import urlparse
 
 router = APIRouter(prefix="/startup", tags=["startup"])
 
@@ -28,3 +30,13 @@ def create_client(details: ClientListSetUp):
 def get_siteid_wo_client(firebase_id: str = Query(...)):
     return rag.get_siteid_wo_client(firebase_id)
 
+@router.get("/get_widget_information")
+def get_widget_information(site_id: str, request: Request):
+    domain = startup.get_request_domain(request)
+    if not domain:
+        raise HTTPException(403, "Missing Origin/Referer")
+
+    if not rag.domain_allowed(site_id, domain):
+        raise HTTPException(403, "Domain not allowed")
+
+    return rag.get_appearence(SiteID(site_id=site_id))

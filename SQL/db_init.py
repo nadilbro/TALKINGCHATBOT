@@ -43,7 +43,8 @@ def init_db() -> None:
             description TEXT,
             country TEXT,
             created_at TIMESTAMPTZ DEFAULT NOW(),
-            updated_at TIMESTAMPTZ DEFAULT NOW()
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+            domain_1 TEXT
         );
         """)
 
