@@ -384,7 +384,7 @@ class VectorRAGService:
         if not row:
             # Return empty object with site_id only
             return ChatBotEdits(site_id=req.site_id)
-
+        print(row)
         return ChatBotEdits(
             site_id=row["site_id"],
             chatbot_name=row.get("chatbot_name"),
