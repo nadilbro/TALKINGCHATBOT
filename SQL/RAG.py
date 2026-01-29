@@ -278,36 +278,60 @@ class VectorRAGService:
         self.conn.close()
 
     """--------------------- Editing Chatbot traits and appearance (called in Router -> edit.py)-------------------------------"""
-
     def edit_traits(self, traits: ChatBotEdits):
         sql = """
         INSERT INTO chatbot_settings (
-            site_id, chatbot_name, personality, tone, resp_length, temperature, updated_at
+            site_id,
+            chatbot_name,
+            personality,
+            tone,
+            resp_length,
+            temperature,
+            greeting,
+            fallback,
+            widget_color,
+            widget_size,
+            border_radius,
+            updated_at
         )
         VALUES (
-            %s, %s, %s, %s, %s, %s, NOW()
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW()
         )
         ON CONFLICT (site_id) DO UPDATE SET
-            chatbot_name = COALESCE(EXCLUDED.chatbot_name, chatbot_settings.chatbot_name),
-            personality  = COALESCE(EXCLUDED.personality,  chatbot_settings.personality),
-            tone         = COALESCE(EXCLUDED.tone,         chatbot_settings.tone),
-            resp_length  = COALESCE(EXCLUDED.resp_length,  chatbot_settings.resp_length),
-            temperature  = COALESCE(EXCLUDED.temperature,  chatbot_settings.temperature),
-            updated_at   = NOW();
+            chatbot_name  = COALESCE(EXCLUDED.chatbot_name,  chatbot_settings.chatbot_name),
+            personality   = COALESCE(EXCLUDED.personality,   chatbot_settings.personality),
+            tone          = COALESCE(EXCLUDED.tone,          chatbot_settings.tone),
+            resp_length   = COALESCE(EXCLUDED.resp_length,   chatbot_settings.resp_length),
+            temperature   = COALESCE(EXCLUDED.temperature,   chatbot_settings.temperature),
+            greeting      = COALESCE(EXCLUDED.greeting,      chatbot_settings.greeting),
+            fallback      = COALESCE(EXCLUDED.fallback,      chatbot_settings.fallback),
+            widget_color  = COALESCE(EXCLUDED.widget_color,  chatbot_settings.widget_color),
+            widget_size   = COALESCE(EXCLUDED.widget_size,   chatbot_settings.widget_size),
+            border_radius = COALESCE(EXCLUDED.border_radius, chatbot_settings.border_radius),
+            updated_at    = NOW();
         """
 
         with self.conn.cursor() as cur:
-            cur.execute(sql, (
-                traits.site_id,
-                traits.chatbot_name,   # typo in your model name, but fine if consistent
-                traits.personality,
-                traits.tone,
-                traits.resp_length,
-                traits.temperature,
-            ))
+            cur.execute(
+                sql,
+                (
+                    traits.site_id,
+                    traits.chatbot_name,
+                    traits.personality,
+                    traits.tone,
+                    traits.resp_length,
+                    traits.temperature,
+                    traits.greeting,
+                    traits.fallback,
+                    traits.widget_color,
+                    traits.widget_size,
+                    traits.border_radius,
+                ),
+            )
 
         self.conn.commit()
         return {"status": "ok", "message": "Updated traits"}
+
 
 
     def edit_appearence(self, appearance: ChatBotEdits):
