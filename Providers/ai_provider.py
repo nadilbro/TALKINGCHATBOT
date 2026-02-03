@@ -35,3 +35,10 @@ class AIProvider:
 
         async for delta in provider.stream_chat(system=system, user=user, max_output_tokens=10000):
             yield delta
+
+    async def chat(self, site_id: str, system: str, user: str) -> str:
+        provider_name = await self._tenant_provider_name(site_id)
+        provider = self._providers[provider_name]
+        
+        return provider.response(site_id=site_id,system=system)
+        

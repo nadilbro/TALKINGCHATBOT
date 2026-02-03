@@ -551,3 +551,19 @@ class VectorRAGService:
             row = cur.fetchone()
 
         return bool(row["exists"]) if row else False
+    
+    '''__________________-VOICE CHAT COMMANDS-______________________'''
+    def get_avatar(self, site_id):
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT avatar_link, avatar_voice, welcome_message, primary_colour FROM avatar_list WHERE site_id = %s",
+                (site_id,)  # Added comma to make it a tuple
+            )
+            row = cur.fetchone()
+            
+            # Handle cases where no record is found
+            if not row:
+                return None, None
+                
+            # Use dictionary keys instead of indices with RealDictCursor
+            return row['avatar_link'], row['avatar_voice'], row['welcome_message'], row['primary_colour']

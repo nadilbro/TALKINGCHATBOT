@@ -32,6 +32,7 @@ def get_siteid_wo_client(firebase_id: str = Query(...)):
 
 @router.get("/get_widget_information")
 def get_widget_information(site_id: str, request: Request):
+    domain = domain.lower().removeprefix("www.")
     domain = startup.get_request_domain(request)
     if not domain:
         raise HTTPException(403, "Missing Origin/Referer (browser did not send)")

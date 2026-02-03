@@ -29,6 +29,15 @@ class ChatBotEdits(BaseModel):
     border_radius: Optional[str] = None
     updated_at: Optional[str] = None
 
+class VoiceChat(BaseModel):
+    text: str
+    visemes = Optional[list] #FIND OUT 
+    audio = Optional[str]
+    link = Optional[str]
+    welcomeMessage = Optional[str]
+    primaryColour = Optional[str]
+
+    
 class ClientListSetUp(BaseModel):
     name: Optional[str]
     email: Optional[str]

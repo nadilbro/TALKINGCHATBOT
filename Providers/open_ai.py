@@ -57,3 +57,4 @@ class OpenAIProvider:
         max_output_tokens: int = 120
     ) -> AsyncIterator[str]:
         return self._stream(system=system, user=user, max_output_tokens=max_output_tokens)
+    
