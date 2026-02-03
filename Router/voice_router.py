@@ -51,7 +51,7 @@ async def audio_chat_config(details: VoiceInit):
 
 
 @router.post("/audio_chat")
-async def audio_chat_config(details: VoiceChat):
+async def audio_chat_config(details: VoiceRequest):
     (prompt, _) = await rag.process_question(details.message, details.site_id, 2)
 
     description = rag.get_client("description", details.site_id)

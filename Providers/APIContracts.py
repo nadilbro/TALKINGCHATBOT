@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional 
+from typing import Optional, List, Dict
 from datetime import datetime
 class ChatRequest(BaseModel):
     site_id: str
@@ -29,13 +29,19 @@ class ChatBotEdits(BaseModel):
     border_radius: Optional[str] = None
     updated_at: Optional[str] = None
 
+
 class VoiceChat(BaseModel):
-    text: str
-    visemes = Optional[list] #FIND OUT 
-    audio = Optional[str]
-    link = Optional[str]
-    welcomeMessage = Optional[str]
-    primaryColour = Optional[str]
+    # init response fields
+    site_id: Optional[str] = None
+    rive_url: Optional[str] = None
+    voice_name: Optional[str] = None
+    primary_color: Optional[str] = None
+    welcome_message: Optional[str] = None
+
+    # chat response fields
+    text: Optional[str] = None
+    audio_bytes: Optional[str] = None   # base64 wav
+    visemes: Optional[List[Dict]] = None
 
     
 class ClientListSetUp(BaseModel):
