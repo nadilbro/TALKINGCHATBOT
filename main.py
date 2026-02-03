@@ -4,6 +4,7 @@ from fastapi import FastAPI, Request
 from Router.chat_router import router as chat_router
 from Router.edit_router import router as edit_router 
 from Router.startup_router import router as startup_router 
+from Router.voice_router import router as voice_router 
 from fastapi.middleware.cors import CORSMiddleware
 from SQL.db_init import init_db
 app = FastAPI()
@@ -31,6 +32,7 @@ app.add_middleware(
 app.include_router(chat_router)
 app.include_router(edit_router) 
 app.include_router(startup_router) 
+app.include_router(voice_router) 
 @app.get("/")
 def root():
     return {"status": "ok"}
