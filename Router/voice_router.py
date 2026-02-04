@@ -76,7 +76,7 @@ async def audio_chat_config(details: VoiceRequest):
     {prompt.context}
     """.strip()
 
-    response = await ai.chat(system)
+    response = await ai.chat(system=system, user=details.message)
     
     audio_bytes, visemes = await run_in_threadpool(tts.synthesize, response, details.voice_name)
 
