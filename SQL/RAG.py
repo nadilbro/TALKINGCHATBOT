@@ -566,4 +566,9 @@ class VectorRAGService:
                 return None, None
                 
             # Use dictionary keys instead of indices with RealDictCursor
-            return row['avatar_link'], row['avatar_voice'], row['welcome_message'], row['primary_colour']
+            return (
+            row.get("avatar_link"),
+            row.get("avatar_voice"),
+            row.get("welcome_message"),
+            row.get("primary_colour"),
+        )

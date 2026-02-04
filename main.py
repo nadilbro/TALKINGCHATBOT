@@ -9,6 +9,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from SQL.db_init import init_db
 app = FastAPI()
 
+
+
+app.include_router(chat_router)
+app.include_router(edit_router) 
+app.include_router(startup_router) 
+app.include_router(voice_router) 
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    print(f"➡️ {request.method} {request.url.path}")
+    return await call_next(request)
+
 origins = [
     "https://bubbleworks.com.au",
     "https://www.bubbleworks.com.au",
@@ -19,20 +32,16 @@ origins = [
     "https://trait-tinker-lab.lovable.app"
 ]
 
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=False,
     allow_methods=["*"],          # IMPORTANT: includes OPTIONS
     allow_headers=["*"],          # IMPORTANT: includes Accept / Content-Type
-    expose_headers=["*"],
 )
 
 
-app.include_router(chat_router)
-app.include_router(edit_router) 
-app.include_router(startup_router) 
-app.include_router(voice_router) 
 @app.get("/")
 def root():
     return {"status": "ok"}
@@ -41,8 +50,3 @@ def root():
 def on_startup():
     init_db()
 
-
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    print(f"➡️ {request.method} {request.url.path}")
-    return await call_next(request)
