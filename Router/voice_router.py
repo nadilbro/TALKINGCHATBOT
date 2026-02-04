@@ -43,7 +43,6 @@ async def audio_chat_init(details: VoiceInit):
         raise RuntimeError("AVATAR ERROR")
     
     rive_url = security.sign_avatar(worker_base, avatar_key, secret, ttl=300)
-
     return VoiceChat(
         site_id=details.site_id,
         rive_url=rive_url,
