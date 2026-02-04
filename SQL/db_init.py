@@ -58,6 +58,21 @@ def init_db() -> None:
         );
         """)
 
+        # --- Avatar / Voice settings ---
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS avatar_list (
+            site_id TEXT PRIMARY KEY REFERENCES client_list(site_id) ON DELETE CASCADE,
+            avatar_link TEXT NOT NULL,              -- R2 object key, e.g. "botTestV2.riv"
+            avatar_voice TEXT NOT NULL,             -- Azure voice name
+            welcome_message TEXT,
+            primary_colour TEXT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        """)
+
+
+
         # Embeddings table used by add_data/process_question
         # NOTE: set the vector dimension to match your embeddings model output.
         # Common dims:
@@ -137,6 +152,25 @@ def init_db() -> None:
             "Hey! How can I help you today?",
             "Sorry, I didn’t quite get that. Could you rephrase?",
             "#4F46E5", "medium", "16px"
+        ))
+
+        # TEST INFORMATION FOR AVATAR / VOICE
+        cur.execute("""
+        INSERT INTO avatar_list (
+            site_id,
+            avatar_link,
+            avatar_voice,
+            welcome_message,
+            primary_colour
+        )
+        VALUES (%s, %s, %s, %s, %s)
+        ON CONFLICT (site_id) DO NOTHING;
+        """, (
+            "site_abc123xyz789",
+            "botTestV2.riv",                     # must exist in your R2 bucket
+            "en-US-AvaMultilingualNeural",
+            "Hey! I’m BubbleBot. How can I help you today?",
+            "#4F46E5"
         ))
 
     conn.close()
