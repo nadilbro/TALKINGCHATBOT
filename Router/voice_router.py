@@ -26,7 +26,7 @@ class VoiceRequest(BaseModel):
     voice_name: str
     message: str
 @router.post("/audio_chat_init")
-async def audio_chat_config(details: VoiceInit):
+async def audio_chat_init(details: VoiceInit):
 
     #First we get chatgpt reponse.
     #then we process audio
@@ -51,7 +51,7 @@ async def audio_chat_config(details: VoiceInit):
 
 
 @router.post("/audio_chat")
-async def audio_chat_config(details: VoiceRequest):
+async def audio_chat(details: VoiceRequest):
     (prompt, _) = await rag.process_question(details.message, details.site_id, 2)
 
     description = rag.get_client("description", details.site_id)
