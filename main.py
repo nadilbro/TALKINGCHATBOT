@@ -19,7 +19,7 @@ app.include_router(voice_router)
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    print(f"➡️ {request.method} {request.url.path}")
+    print(f"➡️ {request.method} {request.url.path}", flush=True)
     return await call_next(request)
 
 origins = [
