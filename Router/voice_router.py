@@ -8,7 +8,7 @@ from Providers.APIContracts import VoiceChat
 from Providers.ai_provider import AIProvider
 from Providers.voice_chat import VoiceChatSystem
 from Security.signing import Security
-
+from fastapi import Request, HTTPException
 from SQL.RAG import VectorRAGService
 
 
@@ -25,6 +25,7 @@ class VoiceRequest(BaseModel):
     site_id: str
     voice_name: str
     message: str
+
 @router.post("/audio_chat_init")
 async def audio_chat_init(details: VoiceInit):
 
@@ -32,6 +33,8 @@ async def audio_chat_init(details: VoiceInit):
     #then we process audio
     # Unpack into two variables
     avatar_key, voice_name, welcome_message, primary_color = rag.get_avatar(details.site_id)
+    if not avatar_key:
+        raise HTTPException(status_code=404, detail="No avatar configured for this site_id")
 
 
     worker_base = os.environ["AVATAR_WORKER_BASE"]          # https://avatars.yourdomain.com
