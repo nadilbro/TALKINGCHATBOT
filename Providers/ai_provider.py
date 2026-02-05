@@ -40,5 +40,6 @@ class AIProvider:
         provider_name = await self._tenant_provider_name(site_id)
         provider = self._providers[provider_name]
         
-        return provider.response(site_id=site_id,system=system)
+        return await provider.response(site_id=site_id, system=system, user=user)
+
         
