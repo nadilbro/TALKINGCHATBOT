@@ -563,7 +563,7 @@ class VectorRAGService:
             
             # Handle cases where no record is found
             if not row:
-                return None, None
+                return (None, None, None, None)
                 
             # Use dictionary keys instead of indices with RealDictCursor
             return (

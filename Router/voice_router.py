@@ -37,10 +37,12 @@ async def audio_chat_init(details: VoiceInit):
         raise HTTPException(status_code=404, detail="No avatar configured for this site_id")
 
 
-    worker_base = os.environ["AVATAR_WORKER_BASE"]          # https://avatars.yourdomain.com
-    secret = os.environ["AVATAR_SIGNING_SECRET"]
+
+    worker_base = os.getenv("AVATAR_WORKER_BASE")
+    secret = os.getenv("AVATAR_SIGNING_SECRET")
     if not worker_base or not secret:
-        raise RuntimeError("AVATAR ERROR")
+        raise HTTPException(status_code=500, detail="Avatar signing env vars not set")
+
     
     rive_url = security.sign_avatar(worker_base, avatar_key, secret, ttl=300)
     return VoiceChat(
