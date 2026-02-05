@@ -56,35 +56,59 @@ async def audio_chat_init(details: VoiceInit):
 
 @router.post("/audio_chat")
 async def audio_chat(details: VoiceRequest):
-    (prompt, _) = await rag.process_question(details.message, details.site_id, 2)
+    try: 
+        (prompt, _) = await rag.process_question(details.message, details.site_id, 2)
 
-    description = rag.get_client("description", details.site_id)
+        description = rag.get_client("description", details.site_id)
 
-    print("Got client")
-    system = f"""
-    You are an AI assistant for the following business:
-    {description}
+        print("Got client")
+        system = f"""
+        You are an AI assistant for the following business:
+        {description}
 
-    Write responses that are meant to be spoken out loud.
-    Use natural, conversational language.
-    Keep sentences short and easy to understand when heard.
+        Write responses that are meant to be spoken out loud.
+        Use natural, conversational language.
+        Keep sentences short and easy to understand when heard.
 
-    Rules:
-    - Do not use markdown, emojis, HTML, or lists.
-    - Do not mention being an AI or reference prompts or context.
-    - Answer clearly and directly.
-    - Be concise, but include all necessary information.
-    - If something is uncertain, say so briefly and naturally.
+        Rules:
+        - Do not use markdown, emojis, HTML, or lists.
+        - Do not mention being an AI or reference prompts or context.
+        - Answer clearly and directly.
+        - Be concise, but include all necessary information.
+        - If something is uncertain, say so briefly and naturally.
 
-    Relevant context:
-    {prompt.context}
-    """.strip()
+        Relevant context:
+        {prompt.context}
+        """.strip()
 
-    response = await ai.chat(site_id=details.site_id, system=system, user=details.message)
+        # 1. AI
+        text = await ai.chat(
+            site_id=details.site_id,
+            system=system,
+            user=details.message
+        )
 
-    
-    audio_bytes, visemes = await run_in_threadpool(tts.synthesize, response, details.voice_name)
+    except Exception as e:
+        print("AI ERROR:", repr(e))
+        raise HTTPException(status_code=500, detail=f"AI error: {e}")
 
+    try:
+        # 2. TTS
+        audio_bytes, visemes = await run_in_threadpool(
+            tts.synthesize,
+            text,
+            details.voice_name
+        )
+
+    except Exception as e:
+        print("TTS ERROR:", repr(e))
+        raise HTTPException(status_code=500, detail=f"TTS error: {e}")
+
+    # 3. Encode safely
     audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
-    return VoiceChat(text = response, audio_bytes = audio_b64, visemes = visemes)
+    return {
+        "text": text,
+        "audio": audio_b64,
+        "visemes": visemes,
+    }
