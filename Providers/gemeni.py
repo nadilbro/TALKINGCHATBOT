@@ -34,6 +34,7 @@ class GeminiProvider:
             contents=user,
             config={
                 "system_instruction": system,
+                "max_output_tokens": max_output_tokens,
             },
         )
 
@@ -50,3 +51,28 @@ class GeminiProvider:
         max_output_tokens: int = 120
     ) -> AsyncIterator[str]:
         return self._stream(system=system, user=user, max_output_tokens=max_output_tokens)
+    
+    async def response(
+        self,
+        site_id: str,   # keep this so AIProvider can call providers consistently
+        system: str,
+        user: str,
+        max_output_tokens: int = 500
+    ) -> str:
+        # simplest: join the streaming chunks
+        out = []
+        async for delta in self._stream(system=system, user=user, max_output_tokens=max_output_tokens):
+            out.append(delta)
+        return "".join(out)
+
+    async def get_chat(self, system: str, user: str, max_output_tokens: int = 500) -> str:
+        # Non-streaming version
+        resp = await self.client.aio.models.generate_content(
+            model=self.chat_model,
+            contents=user,
+            config={
+                "system_instruction": system,
+                "max_output_tokens": max_output_tokens,
+            },
+        )
+        return getattr(resp, "text", None) or ""
