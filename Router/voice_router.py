@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 import base64
 import os
+from typing import Optional, List, Dict
 from fastapi.concurrency import run_in_threadpool
 
 from Providers.APIContracts import VoiceChat
@@ -25,6 +26,8 @@ class VoiceRequest(BaseModel):
     site_id: str
     voice_name: str
     message: str
+    pastMessages: List[str] 
+    pastAnswers: List[str] 
 
 @router.post("/audio_chat_init")
 async def audio_chat_init(details: VoiceInit):
@@ -79,6 +82,12 @@ async def audio_chat(details: VoiceRequest):
 
         Relevant context:
         {prompt.context}
+
+        ALSO, here are the last 3 messages and 3 answers to use for your references to answer.
+        Questions: 
+        {details.pastMessages}
+        Answers:
+        {details.pastAnswers}
         """.strip()
 
         # 1. AI
