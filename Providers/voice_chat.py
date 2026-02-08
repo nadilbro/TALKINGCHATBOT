@@ -14,16 +14,15 @@ class VoiceChatSystem:
         visemes: list[dict] = []
 
         def viseme_cb(evt: speechsdk.SpeechSynthesisVisemeEventArgs):
-            ms = int(evt.audio_offset / 10_000) # ticks (100ns) -> ms
+            ms = int(evt.audio_offset / 10_000)  # ticks (100ns) -> ms
             visemes.append({"t_ms": ms, "viseme_id": evt.viseme_id})
 
         speech_config = speechsdk.SpeechConfig(
             subscription=self.speech_key,
             region=self.speech_region
         )
-        speech_config.speech_synthesis_voice_name = audioName #"en-US-AvaMultilingualNeural"
+        speech_config.speech_synthesis_voice_name = audioName
 
-        # IMPORTANT: no AudioOutputConfig => audio stays in the result
         synthesizer = speechsdk.SpeechSynthesizer(
             speech_config=speech_config,
             audio_config=None
@@ -34,11 +33,8 @@ class VoiceChatSystem:
         result = synthesizer.speak_text_async(text).get()
 
         if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-            # Get wav bytes
-            stream = speechsdk.AudioDataStream(result)
-            audio_bytes = stream.read_data(stream.get_length())
+            audio_bytes = bytes(result.audio_data)  # ✅ no AudioDataStream needed
             return audio_bytes, visemes
 
         details = result.cancellation_details
         raise RuntimeError(f"TTS canceled: {details.reason} | {details.error_details}")
-        
