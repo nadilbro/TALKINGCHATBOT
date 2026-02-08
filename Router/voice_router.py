@@ -26,8 +26,8 @@ class VoiceRequest(BaseModel):
     site_id: str
     voice_name: str
     message: str
-    pastMessages: List[str] 
-    pastAnswers: List[str] 
+    pastMessages: List[str] = ['new message']
+    pastAnswers: List[str] = ['new message']
 
 @router.post("/audio_chat_init")
 async def audio_chat_init(details: VoiceInit):
