@@ -4,10 +4,11 @@ import azure.cognitiveservices.speech as speechsdk
 
 class VoiceChatSystem:
     def __init__(self):
-        self.speech_key = os.environ.get("SPEECH_KEY")
-        self.speech_region = os.environ.get("SPEECH_REGION")
+        self.speech_key = (os.getenv("AZURE_SPEECH_KEY") or "").strip()
+        self.speech_region = (os.getenv("AZURE_SPEECH_REGION") or "").strip()
         if not self.speech_key or not self.speech_region:
-            raise RuntimeError("Missing SPEECH_KEY or SPEECH_REGION env vars")
+            raise RuntimeError("Missing AZURE_SPEECH_KEY or AZURE_SPEECH_REGION")
+
 
     def synthesize(self, text: str, audioName: str) -> tuple[bytes, list[dict]]:
         visemes: list[dict] = []
