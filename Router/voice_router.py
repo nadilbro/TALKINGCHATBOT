@@ -83,7 +83,10 @@ async def audio_chat(details: VoiceRequest):
         Relevant context:
         {prompt.context}
 
-        ALSO, here are the last 3 messages and 3 answers to use for your references to answer.
+        ALSO, here are the last 3 messages so you can base your response of those. 
+        
+        DONT TRY TO GUESS and dont reply with the same message. Switch it up. Copy the last message if the message is repeated.
+
         Questions: 
         {details.pastMessages}
         Answers:
