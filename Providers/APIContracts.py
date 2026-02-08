@@ -4,6 +4,8 @@ from datetime import datetime
 class ChatRequest(BaseModel):
     site_id: str
     message: str
+    pastMessages: List[str] 
+    pastAnswers: List[str] 
 
 class ChatMessageStructure(BaseModel):   
     context: str

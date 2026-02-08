@@ -23,13 +23,16 @@ async def chat_stream(req: ChatRequest):
     async def event_gen():
         yield ": stream opened\n\n"
         yield "data: <p>Checking that for you…</p>\n\n"
-
+        
         msg = (req.message or "").strip()
         if not msg:
             yield "data: <p>I didn’t catch that—what can I help with?</p>\n\n"
             yield "data: [DONE]\n\n"
             return
-         
+        
+        if len(msg) > 400:
+            yield "data: <p>Sorry, your question is too long to answer</p>\n\n"
+        
         # RAG
         (prompt, best_sim) = await rag.process_question(msg, req.site_id, 2)
         print("done Rag")
@@ -52,6 +55,12 @@ async def chat_stream(req: ChatRequest):
         
         CONTEXT:
         {prompt.context}
+
+        ALSO, here are the last 3 messages and 3 answers to use for your references to answer.
+        Questions: 
+        {req.pastMessages}
+        Answers:
+        {req.pastAnswers}
         """.strip()
         print("Starting Stream")
         t = time.time()
