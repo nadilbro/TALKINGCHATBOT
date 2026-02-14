@@ -50,3 +50,6 @@ def root():
 def on_startup():
     init_db()
 
+@app.get("/healthz")
+def healthz():
+    return {"status": "healthy"}
