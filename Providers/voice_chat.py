@@ -41,9 +41,9 @@ class VoiceChatSystem:
             else:
                 last_time = 0
 
-            visemes.append({"t_ms": last_time, "viseme_id": -1})
+            visemes.append({"t_ms": last_time, "viseme_id": '-1'})
             visemes.sort(key=lambda v: v["t_ms"])
-            
+
             return audio_bytes, visemes
 
         details = result.cancellation_details
