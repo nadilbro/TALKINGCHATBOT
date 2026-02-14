@@ -15,12 +15,8 @@ class VoiceChatSystem:
 
         def viseme_cb(evt: speechsdk.SpeechSynthesisVisemeEventArgs):
             ms = int(evt.audio_offset / 10_000)  # ticks (100ns) -> ms
-            visemes.append({"t_ms": ms, "viseme_id": evt.viseme_id})
+            visemes.append({"t_ms": ms, "viseme_id": int(evt.viseme_id)})
 
-        #Adding -1 to last value of vismes to enable idle state
-        last_time = list(visemes)[-1] + 0.1
-        visemes.append({"t_ms": last_time, "viseme_id": -1})
-        
 
         speech_config = speechsdk.SpeechConfig(
             subscription=self.speech_key,
@@ -39,6 +35,15 @@ class VoiceChatSystem:
 
         if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
             audio_bytes = bytes(result.audio_data) 
+
+            if visemes:
+                last_time = visemes[-1]["t_ms"] + 100  # +100ms
+            else:
+                last_time = 0
+
+            visemes.append({"t_ms": last_time, "viseme_id": -1})
+            visemes.sort(key=lambda v: v["t_ms"])
+            
             return audio_bytes, visemes
 
         details = result.cancellation_details
