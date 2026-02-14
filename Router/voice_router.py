@@ -4,14 +4,14 @@ import base64
 import os
 from typing import Optional, List, Dict
 from fastapi.concurrency import run_in_threadpool
-
+import asyncio
 from Providers.APIContracts import VoiceChat
 from Providers.ai_provider import AIProvider
 from Providers.voice_chat import VoiceChatSystem
 from Security.signing import Security
 from fastapi import Request, HTTPException
 from SQL.RAG import VectorRAGService
-
+import traceback
 
 router = APIRouter(prefix="/voice", tags=["voice"])
 rag = VectorRAGService()
@@ -60,9 +60,10 @@ async def audio_chat_init(details: VoiceInit):
 @router.post("/audio_chat")
 async def audio_chat(details: VoiceRequest):
     try: 
-        (prompt, _) = await rag.process_question(details.message, details.site_id, 2)
-
-        description = rag.get_client("description", details.site_id)
+        (prompt, _), description = await asyncio.gather(
+            rag.process_question(details.message, details.site_id, 2),
+            run_in_threadpool(rag.get_client, "description", details.site_id),
+        )
 
         print("Got client")
         system = f"""
@@ -78,8 +79,9 @@ async def audio_chat(details: VoiceRequest):
         - Do not mention being an AI or reference prompts or context.
         - Answer clearly and directly.
         - Be concise, but include all necessary information.
+        - Be polite and do not use any innapropriate language. 
         - If something is uncertain, say so briefly and naturally.
-
+        
         Relevant context:
         {prompt.context}
 
