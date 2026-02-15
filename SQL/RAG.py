@@ -572,3 +572,26 @@ class VectorRAGService:
             row.get("welcome_message"),
             row.get("primary_colour"),
         )
+    def get_voice_init(self, site_id: str):
+        """
+        Returns: avatar_key, voice_name, welcome_message, primary_color, rive_url
+
+        Your DB currently stores:
+          avatar_link, avatar_voice, welcome_message, primary_colour
+        inside avatar_list.
+
+        We'll map:
+          avatar_key   -> avatar_link
+          voice_name   -> avatar_voice
+          rive_url     -> avatar_link (or "" if you later store a separate rive_url)
+        """
+        avatar_link, avatar_voice, welcome_message, primary_colour = self.get_avatar(site_id)
+
+        avatar_key = avatar_link  # keep naming consistent with your frontend/backends
+        voice_name = avatar_voice
+        primary_color = primary_colour
+
+        # If your "avatar_link" is actually your Rive file URL, keep it here:
+        rive_url = avatar_link or ""
+
+        return avatar_key, voice_name, welcome_message, primary_color, rive_url
