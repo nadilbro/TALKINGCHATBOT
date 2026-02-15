@@ -1,10 +1,9 @@
 import os
 import asyncio
-from typing import List
+from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from Providers.APIContracts import VoiceChat
@@ -20,8 +19,8 @@ rag = VectorRAGService()
 ai = AIProvider(rag)
 security = Security()
 
-# Lazy-init so missing env vars don't crash app import/startup
-_tts: VoiceChatSystem | None = None
+# Lazy init so missing env vars won't crash import / health checks
+_tts: Optional[VoiceChatSystem] = None
 
 
 def get_tts() -> VoiceChatSystem:
@@ -90,14 +89,15 @@ Answers: {past_a}
 """.strip()
 
 
-@router.post("/audio_chat_stream")
-async def audio_chat_stream(details: VoiceRequest):
-    """
-    Returns a live MP3 audio stream (audio/mpeg).
-    Perceived latency improves because audio starts flowing as soon as Azure produces bytes.
-    """
-    # 1) Build prompt/context + business description
+@router.websocket("/audio_chat_ws")
+async def audio_chat_ws(ws: WebSocket):
+    await ws.accept()
+
     try:
+        payload = await ws.receive_json()
+        details = VoiceRequest(**payload)
+
+        # 1) Build prompt/context + description
         (prompt, _), description = await asyncio.gather(
             rag.process_question(details.message, details.site_id, 2),
             run_in_threadpool(rag.get_client, "description", details.site_id),
@@ -110,26 +110,49 @@ async def audio_chat_stream(details: VoiceRequest):
             past_a=details.pastAnswers,
         )
 
-        # 2) AI response (still non-streaming)
+        # 2) AI response (still non-streaming; next step later is token streaming)
         text = await ai.chat(
             site_id=details.site_id,
             system=system,
-            user=details.message
+            user=details.message,
         )
+
+        # Send the text first (easy to debug / display while audio starts)
+        await ws.send_json({"type": "text", "text": text})
+
+        # 3) Stream TTS audio + visemes over the same WS
+        out_q: asyncio.Queue[dict] = asyncio.Queue()
+        loop = asyncio.get_running_loop()
+
+        # Run Azure SDK in a thread, push messages into out_q
+        tts = get_tts()
+        tts_task = asyncio.create_task(
+            run_in_threadpool(tts.synthesize_to_ws_queue, loop, out_q, text, details.voice_name)
+        )
+
+        # Forward messages to the client until done/error/disconnect
+        while True:
+            msg = await out_q.get()
+            mtype = msg.get("type")
+
+            await ws.send_json(msg)
+
+            if mtype in ("done", "error"):
+                break
+
+        # Ensure the thread task is finished
+        await tts_task
+
+    except WebSocketDisconnect:
+        # Client left; nothing else to do
+        return
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"AI error: {e}")
-
-    # 3) Stream TTS audio
-    def audio_gen():
-        # generator yields bytes
-        for chunk in get_tts().synthesize_stream_mp3(text, details.voice_name):
-            yield chunk
-
-    # You can optionally expose the text via header for debugging (keep it small)
-    headers = {"X-Response-Text": text[:400]}
-
-    return StreamingResponse(
-        audio_gen(),
-        media_type="audio/mpeg",
-        headers=headers
-    )
+        try:
+            await ws.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+    finally:
+        try:
+            await ws.close()
+        except Exception:
+            pass
