@@ -2,10 +2,8 @@
 import os
 import psycopg2
 
+
 def _get_conn():
-    """
-    Uses DATABASE_URL if present, otherwise DB_* env vars.
-    """
     db_url = os.getenv("DATABASE_URL")
     if db_url:
         return psycopg2.connect(db_url)
@@ -16,161 +14,157 @@ def _get_conn():
         user=os.getenv("DB_USER"),
         password=os.getenv("DB_PASSWORD"),
         port=int(os.getenv("DB_PORT", "5432")),
-        sslmode=os.getenv("DB_SSLMODE", "require"),  # Render often needs SSL
+        sslmode=os.getenv("DB_SSLMODE", "require"),
     )
+
 
 def init_db() -> None:
     """
     Idempotent: safe to run multiple times.
-    Creates pgvector + required tables + indexes if they don't exist.
+    Creates ONLY:
+      - accounts
+      - sessions
+      - messages
+      - usage_events
     """
     conn = _get_conn()
     conn.autocommit = True
 
     with conn.cursor() as cur:
-        # --- Extensions ---
-        cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+        # Useful for gen_random_uuid(); remove if your DB disallows extensions
+        cur.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto";')
 
-        # --- Core tables ---
-        # Your code uses: client_list(site_id, country, description, ...)
+        # -----------------------------
+        # 1) accounts  (AccountInit / ChatBotEdits)
+        # -----------------------------
         cur.execute("""
-        CREATE TABLE IF NOT EXISTS client_list (
-            site_id TEXT PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS accounts (
+            user_id TEXT PRIMARY KEY,                  -- Firebase UID or your auth id
             name TEXT,
             email TEXT,
             phone TEXT,
-            address TEXT,
-            description TEXT,
-            country TEXT,
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            updated_at TIMESTAMPTZ DEFAULT NOW(),
-            domain_1 TEXT
-        );
-        """)
 
-        # Your code uses: allowed_websites(site_id, domain) + ON CONFLICT (site_id, domain)
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS allowed_websites (
-            site_id TEXT NOT NULL REFERENCES client_list(site_id) ON DELETE CASCADE,
-            domain TEXT NOT NULL,
-            created_at TIMESTAMPTZ DEFAULT NOW(),
-            PRIMARY KEY (site_id, domain)
-        );
-        """)
+            subscription_status TEXT,                  -- e.g. active/canceled/trialing
+            stripe_customer_id TEXT,
+            stripe_subscription_id TEXT,
 
-        # --- Avatar / Voice settings ---
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS avatar_list (
-            site_id TEXT PRIMARY KEY REFERENCES client_list(site_id) ON DELETE CASCADE,
-            avatar_link TEXT NOT NULL,              -- R2 object key, e.g. "botTestV2.riv"
-            avatar_voice TEXT NOT NULL,             -- Azure voice name
-            welcome_message TEXT,
-            primary_colour TEXT,
+            monthly_token_limit INT DEFAULT 0,
+            monthly_token_used  INT DEFAULT 0,
+            billing_cycle_start TIMESTAMPTZ,           -- when token cycle resets
+
             created_at TIMESTAMPTZ DEFAULT NOW(),
             updated_at TIMESTAMPTZ DEFAULT NOW()
         );
         """)
 
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS accounts_email_idx
+        ON accounts (email);
+        """)
 
+        # -----------------------------
+        # 2) sessions  (SessionInit / SessionCreate)
+        # -----------------------------
+        # Your SessionInit has chat_id (string), SessionCreate has id (string)
+        # so we store session_id as TEXT (you generate it).
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS sessions (
+            id TEXT PRIMARY KEY,                       -- chat_id
+            user_id TEXT NOT NULL REFERENCES accounts(user_id) ON DELETE CASCADE,
 
-        # Embeddings table used by add_data/process_question
-        # NOTE: set the vector dimension to match your embeddings model output.
-        # Common dims:
-        # - 1536 (older embedding models)
-        # - 3072 (some newer)
-        embedding_dim = int(os.getenv("EMBEDDING_DIM", "1536"))
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
 
-        cur.execute(f"""
-        CREATE TABLE IF NOT EXISTS embeddings (
-            id BIGSERIAL PRIMARY KEY,
-            site_id TEXT NOT NULL REFERENCES client_list(site_id) ON DELETE CASCADE,
-            source TEXT,
-            chunk_index INT NOT NULL,
-            data TEXT NOT NULL,
-            embedding vector({embedding_dim}) NOT NULL,
+            rive_avatar TEXT,                          -- rive url or key
+            avatar_voice TEXT,                          -- name of voiceOption
+            last_message TEXT,
+            welcome_message TEXT,
+
+            status TEXT DEFAULT 'Open',                -- Open/Closed/etc
+            summary TEXT,
+            title TEXT
+        );
+        """)
+
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS sessions_user_time_idx
+        ON sessions (user_id, created_at DESC);
+        """)
+
+        # -----------------------------
+        # 3) messages  (for chat history)
+        # -----------------------------
+        # Even if you “haven’t done it”, you will need it to rebuild history properly.
+        # Store role + content.
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS messages (
+            message_id BIGSERIAL PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+
+            role TEXT NOT NULL,                        -- user/assistant/system
+            content TEXT NOT NULL,
+
             created_at TIMESTAMPTZ DEFAULT NOW()
         );
         """)
 
-        # Make chunk_index unique per site (so your MAX(chunk_index) logic is consistent)
         cur.execute("""
-        CREATE UNIQUE INDEX IF NOT EXISTS embeddings_site_chunk_uniq
-        ON embeddings (site_id, chunk_index);
+        CREATE INDEX IF NOT EXISTS messages_session_time_idx
+        ON messages (session_id, created_at ASC);
         """)
 
-        # Helpful for filtering by site
+        # -----------------------------
+        # 4) usage_events  (token usage / billing)
+        # -----------------------------
         cur.execute("""
-        CREATE INDEX IF NOT EXISTS embeddings_site_idx
-        ON embeddings (site_id);
-        """)
+        CREATE TABLE IF NOT EXISTS usage_events (
+            usage_id BIGSERIAL PRIMARY KEY,
 
-        # Vector index (pgvector). Use IVFFLAT (needs ANALYZE and enough rows), or HNSW (if supported).
-        # IVFFLAT:
-        cur.execute("""
-        CREATE INDEX IF NOT EXISTS embeddings_embedding_ivfflat
-        ON embeddings USING ivfflat (embedding vector_l2_ops)
-        WITH (lists = 100);
-        """)
+            user_id TEXT NOT NULL REFERENCES accounts(user_id) ON DELETE CASCADE,
+            session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
 
-        # Optional: chatbot_settings table for your “save traits” endpoints
-        cur.execute("""
-        CREATE TABLE IF NOT EXISTS chatbot_settings (
-            site_id TEXT PRIMARY KEY REFERENCES client_list(site_id) ON DELETE CASCADE,
-            chatbot_name TEXT,
-            personality TEXT,
-            tone TEXT,
-            resp_length TEXT,
-            temperature DOUBLE PRECISION,
-            greeting TEXT,
-            fallback TEXT,
-            widget_color TEXT,
-            widget_size TEXT,
-            border_radius TEXT,
-            updated_at TIMESTAMPTZ DEFAULT NOW()
+            provider TEXT,                             -- openai/gemini
+            model TEXT,                                -- gpt-5-nano, gemini-2.0-flash, etc
+
+            input_tokens INT DEFAULT 0,
+            output_tokens INT DEFAULT 0,
+
+            cost_cents INT DEFAULT 0,                  -- avoid floats
+
+            created_at TIMESTAMPTZ DEFAULT NOW()
         );
         """)
-        #TEST INFORMATION FOR CHATBOT SETTINGS
-        cur.execute("""
-        INSERT INTO client_list (site_id, name, country)
-        VALUES (%s, %s, %s)
-        ON CONFLICT (site_id) DO NOTHING;
-        """, ("site_abc123xyz789", "Test Client", "AU"))
 
         cur.execute("""
-        INSERT INTO chatbot_settings (
-            site_id, chatbot_name, personality, tone, resp_length, temperature,
-            greeting, fallback, widget_color, widget_size, border_radius
-        )
-        VALUES (
-            %s, %s, %s, %s, %s, %s,
-            %s, %s, %s, %s, %s
-        )
-        ON CONFLICT (site_id) DO NOTHING;
-        """, (
-            "site_abc123xyz789", "BubbleBot", "Friendly, helpful, slightly witty",
-            "Casual", "medium", 0.6,
-            "Hey! How can I help you today?",
-            "Sorry, I didn’t quite get that. Could you rephrase?",
-            "#4F46E5", "medium", "16px"
-        ))
-
-        # TEST INFORMATION FOR AVATAR / VOICE
+        CREATE INDEX IF NOT EXISTS usage_events_user_time_idx
+        ON usage_events (user_id, created_at DESC);
+        """)
         cur.execute("""
-        INSERT INTO avatar_list (
-            site_id,
-            avatar_link,
-            avatar_voice,
-            welcome_message,
-            primary_colour
-        )
-        VALUES (%s, %s, %s, %s, %s)
-        ON CONFLICT (site_id) DO NOTHING;
-        """, (
-            "site_abc123xyz789",
-            "botTestV2.riv",                     # must exist in your R2 bucket
-            "en-US-AvaMultilingualNeural",
-            "Hey! I’m BubbleBot. How can I help you today?",
-            "#4F46E5"
-        ))
+        CREATE INDEX IF NOT EXISTS usage_events_session_time_idx
+        ON usage_events (session_id, created_at DESC);
+        """)
+
+        # -----------------------------
+        # Optional seed data
+        # -----------------------------
+        seed = (os.getenv("DB_SEED_TEST_DATA", "1") or "1").strip() == "1"
+        if seed:
+            cur.execute("""
+            INSERT INTO accounts (user_id, name, email, phone, subscription_status, monthly_token_limit, monthly_token_used)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (user_id) DO NOTHING;
+            """, (
+                "user_test_001", "Test User", "test@example.com", "0400000000",
+                "active", 500000, 0
+            ))
+
+            cur.execute("""
+            INSERT INTO sessions (id, user_id, title, welcome_message, status)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (id) DO NOTHING;
+            """, (
+                "chat_test_001", "user_test_001", "Test Session",
+                "Hey! How can I help you today?", "Open"
+            ))
 
     conn.close()

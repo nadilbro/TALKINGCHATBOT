@@ -13,21 +13,9 @@ class AIProvider:
             "gemini": GeminiProvider(chat_model="gemini-2.0-flash", embed_model="gemini-2.0-pro"),
         }
 
-    # async def _tenant_provider_name(self, site_id: str) -> str:
-    #     """
-    #     Decide provider ONCE per tenant using DB field like country/region.
-    #     This avoids detecting end-user location every request.
-    #     """
-    #     country = self.rag.get_country(site_id)  # you already have this
-    #     # NOTE: your get_country returns fetchall currently — fix below.
-    #     if country in {"AU", "NZ", "SG"}:
-    #         return "gemini"
-    #     return "openai"
-        
-        # ai_provider.py
+
     async def _tenant_provider_name(self, site_id: str) -> str: #TEMPERORY
         return "gemini" 
-
 
     async def stream(self, site_id: str, system: str, user: str) -> AsyncIterator[str]:
         provider_name = await self._tenant_provider_name(site_id)

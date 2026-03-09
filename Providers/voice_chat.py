@@ -2,7 +2,6 @@ import os
 import json
 import base64
 from typing import List, Dict, Any, Tuple
-
 import azure.cognitiveservices.speech as speechsdk
 from fastapi.concurrency import run_in_threadpool
 
