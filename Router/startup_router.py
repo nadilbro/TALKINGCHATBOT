@@ -14,6 +14,7 @@ from typing import Optional
 import hmac, hashlib, base64
 from fastapi import Request, HTTPException
 from urllib.parse import urlparse
+from fastapi import Query
 
 router = APIRouter(prefix="/startup", tags=["startup"])
 
@@ -31,9 +32,9 @@ startup = StartUp()
 
 
 @router.get("/initialise_session_history")
-def initialise_session_history(user: UserID):
-    return rag.get_history(user.user_id) 
+async def initialise_session_history(user_id: str = Query(...)):
+    return rag.get_history(user_id) 
 
 @router.get("/initialise_settings")
-def initalise_settings(user: UserID):
-    return rag.initial_settings(user.user_id)
+def initalise_settings(user_id: str = Query(...)):
+    return rag.initial_settings(user_id.user_id)
