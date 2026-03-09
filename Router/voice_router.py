@@ -103,7 +103,7 @@ async def audio_chat_ws(ws: WebSocket):
             # Load recent history from DB (source of truth)
             # -------------------------
             try:
-                history = db.get_recent_messages(user_id=user_id, chat_id=chat_id, limit=20)
+                history = rag.get_recent_messages(user_id=user_id, chat_id=chat_id, limit=20)
                 # history should be: [{"role":"user","content":"..."}, {"role":"assistant","content":"..."}]
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"Failed to load history: {str(e)}"})
@@ -113,8 +113,8 @@ async def audio_chat_ws(ws: WebSocket):
             # Persist the user message
             # -------------------------
             try:
-                db.add_message(chat_id=chat_id, role="user", content=user_text)
-                db.update_last_message(chat_id=chat_id, last_message=user_text)
+                rag.add_message(chat_id=chat_id, role="user", content=user_text)
+                rag.update_last_message(chat_id=chat_id, last_message=user_text)
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"Failed to save user message: {str(e)}"})
                 continue
@@ -152,8 +152,8 @@ async def audio_chat_ws(ws: WebSocket):
 
             # Persist assistant message
             try:
-                db.add_message(chat_id=chat_id, role="assistant", content=bot_text)
-                db.update_last_message(chat_id=chat_id, last_message=bot_text)
+                rag.add_message(chat_id=chat_id, role="assistant", content=bot_text)
+                rag.update_last_message(chat_id=chat_id, last_message=bot_text)
             except Exception as e:
                 # Not fatal to the user experience, but good to surface
                 await ws.send_json({"type": "error", "message": f"Failed to save assistant message: {str(e)}"})
