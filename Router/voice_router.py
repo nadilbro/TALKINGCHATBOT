@@ -7,111 +7,209 @@ import traceback
 from Providers.ai_provider import AIProvider
 from Providers.voice_chat import VoiceChatSystem
 from SQL.RAG import VectorRAGService
+from Providers.APIContracts import SessionInit
 
-router = APIRouter(prefix="/voice", tags=["voice"])
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+import traceback
+from typing import Any, Dict, List, Tuple, Optional
+
+router = APIRouter(prefix="/system", tags=["chat"])
 
 rag = VectorRAGService()
 ai = AIProvider(rag)
-tts = VoiceChatSystem()
 
+# Lazy TTS so app doesn't crash at import/startup if env vars are missing
+tts = None
 
-class VoiceInit(BaseModel):
-    site_id: str
+def get_tts():
+    global tts
+    if tts is None:
+        tts = VoiceChatSystem()
+    return tts
 
-
-@router.post("/audio_chat_init")
-async def audio_chat_init(details: VoiceInit):
-    site_id = details.site_id
-
+#Initialise a chat session
+@router.post("/chat_init")
+async def chat_init(init_details: SessionInit):
+    userID = init_details.userID
+    chatID = init_details.chat_id
     # Uses your RAG.get_voice_init we added earlier
-    avatar_key, voice_name, welcome_message, primary_color, rive_url = rag.get_voice_init(site_id)
-
+    avatar_key, voice_name, welcome_message, rive_url = rag.get_avatar(userID, chatID)
+    chat_history = rag.get_history(userID, chatID)
     return {
         "avatar_key": avatar_key,
         "voice_name": voice_name,
         "welcome_message": welcome_message,
-        "primary_color": primary_color,
         "rive_url": rive_url,
+        "chat_history": chat_history,
     }
 
+
+def _as_str(x: Any) -> str:
+    return (str(x) if x is not None else "").strip()
+
+def _as_int(x: Any, default: int = 0) -> int:
+    try:
+        return int(x)
+    except Exception:
+        return default
 
 @router.websocket("/audio_chat_ws")
 async def audio_chat_ws(ws: WebSocket):
     await ws.accept()
 
     try:
-        raw = await ws.receive_text()
-        payload = {}
-        try:
-            import json
-            payload = json.loads(raw)
-        except Exception:
-            await ws.send_json({"type": "error", "message": "Invalid JSON payload"})
-            await ws.close()
-            return
+        while True:
+            # -------------------------
+            # Receive a message (robust)
+            # -------------------------
+            msg = await ws.receive()
 
-        site_id = str(payload.get("site_id") or "").strip()
-        user_text = str(payload.get("message") or "").strip()
-        voice_name = str(payload.get("voice_name") or "").strip()
+            if msg.get("type") == "websocket.disconnect":
+                return
 
-        past_messages = payload.get("pastMessages") or []
-        past_answers = payload.get("pastAnswers") or []
+            payload: Dict[str, Any]
+            if "json" in msg and msg["json"] is not None:
+                payload = msg["json"]
+            elif "text" in msg and msg["text"]:
+                try:
+                    import json
+                    payload = json.loads(msg["text"])
+                except Exception:
+                    await ws.send_json({"type": "error", "message": "Invalid JSON payload"})
+                    continue
+            else:
+                await ws.send_json({"type": "error", "message": "Expected JSON payload"})
+                continue
 
-        if not site_id or not user_text:
-            await ws.send_json({"type": "error", "message": "Missing site_id or message"})
-            await ws.close()
-            return
+            # Optional: allow client to close gracefully
+            if _as_str(payload.get("type")).lower() == "close":
+                await ws.send_json({"type": "done"})
+                await ws.close()
+                return
 
-        # 1) Generate bot text (your AIProvider should already do this)
-        bot_text = await ai.get_chat_response(
-            site_id=site_id,
-            message=user_text,
-            pastMessages=past_messages,
-            pastAnswers=past_answers,
-        )
+            # -------------------------
+            # Parse fields
+            # -------------------------
+            user_id = _as_str(payload.get("user_id") or payload.get("site_id"))  # TEMP: support old key
+            chat_id = _as_str(payload.get("chat_id"))
+            user_text = _as_str(payload.get("message"))
+            voice_name = _as_str(payload.get("voice_name"))
 
-        # Send text ASAP so UI updates quickly
-        await ws.send_json({"type": "text", "text": bot_text})
+            if not user_id or not chat_id or not user_text:
+                await ws.send_json({"type": "error", "message": "Missing user_id/chat_id/message"})
+                continue
 
-        # 2) TTS -> MP3 bytes + visemes
-        audio_bytes, visemes = await tts.synthesize_mp3_with_visemes(
-            text=bot_text,
-            voice_name=voice_name,
-        )
+            # -------------------------
+            # Load recent history from DB (source of truth)
+            # -------------------------
+            try:
+                history = db.get_recent_messages(user_id=user_id, chat_id=chat_id, limit=20)
+                # history should be: [{"role":"user","content":"..."}, {"role":"assistant","content":"..."}]
+            except Exception as e:
+                await ws.send_json({"type": "error", "message": f"Failed to load history: {str(e)}"})
+                continue
 
-        # 3) Send visemes (send early; your frontend buffers until audio "playing")
-        for v in visemes:
+            # -------------------------
+            # Persist the user message
+            # -------------------------
+            try:
+                db.add_message(chat_id=chat_id, role="user", content=user_text)
+                db.update_last_message(chat_id=chat_id, last_message=user_text)
+            except Exception as e:
+                await ws.send_json({"type": "error", "message": f"Failed to save user message: {str(e)}"})
+                continue
+
+            # -------------------------
+            # Build pastMessages/pastAnswers for your existing AI code
+            # -------------------------
+            past_messages: List[str] = []
+            past_answers: List[str] = []
+
+            for m in history:
+                role = (m.get("role") or "").lower()
+                content = m.get("content") or ""
+                if role == "user":
+                    past_messages.append(content)
+                elif role == "assistant":
+                    past_answers.append(content)
+
+            # -------------------------
+            # Generate bot text
+            # -------------------------
+            try:
+                bot_text = await ai.get_chat_response(
+                    site_id=user_id,               # keep arg name if your AIProvider expects it
+                    message=user_text,
+                    pastMessages=past_messages,
+                    pastAnswers=past_answers,
+                )
+            except Exception as e:
+                await ws.send_json({"type": "error", "message": f"AI failed: {str(e)}"})
+                continue
+
+            # Send text ASAP so UI updates quickly
+            await ws.send_json({"type": "text", "text": bot_text})
+
+            # Persist assistant message
+            try:
+                db.add_message(chat_id=chat_id, role="assistant", content=bot_text)
+                db.update_last_message(chat_id=chat_id, last_message=bot_text)
+            except Exception as e:
+                # Not fatal to the user experience, but good to surface
+                await ws.send_json({"type": "error", "message": f"Failed to save assistant message: {str(e)}"})
+
+            # -------------------------
+            # TTS (optional)
+            # -------------------------
+            try:
+                tts_instance = get_tts()
+            except Exception as e:
+                # Text is still delivered; just no audio
+                await ws.send_json({"type": "done"})
+                continue
+
+            try:
+                audio_bytes, visemes = await tts_instance.synthesize_mp3_with_visemes(
+                    text=bot_text,
+                    voice_name=voice_name,
+                )
+            except Exception as e:
+                await ws.send_json({"type": "error", "message": f"TTS synthesis failed: {str(e)}"})
+                await ws.send_json({"type": "done"})
+                continue
+
+            # Visemes
+            for v in (visemes or []):
+                await ws.send_json({
+                    "type": "viseme",
+                    "t_ms": _as_int(v.get("t_ms"), 0),
+                    "viseme_id": _as_int(v.get("viseme_id"), 0),
+                })
+
+            # Stream audio as binary
             await ws.send_json({
-                "type": "viseme",
-                "t_ms": int(v.get("t_ms", 0)),
-                "viseme_id": int(v.get("viseme_id", 0)),
+                "type": "audio_begin",
+                "format": "mp3",
+                "sample_rate_hz": 16000,
+                "channels": 1,
             })
 
-        # 4) Stream audio in chunks
-        CHUNK = 32_000
-        for i in range(0, len(audio_bytes), CHUNK):
-            chunk = audio_bytes[i:i+CHUNK]
-            await ws.send_json({
-                "type": "audio",
-                "data_b64": base64.b64encode(chunk).decode("utf-8")
-            })
+            CHUNK = 32_000
+            for i in range(0, len(audio_bytes), CHUNK):
+                await ws.send_bytes(audio_bytes[i:i + CHUNK])
 
-        await ws.send_json({"type": "done"})
-        await ws.close()
+            await ws.send_json({"type": "audio_end"})
+            await ws.send_json({"type": "done"})
 
     except WebSocketDisconnect:
-        # user closed tab / widget
         return
     except Exception as e:
-        # IMPORTANT: surface the error to the frontend AND to Render logs
         print("❌ WS error:", repr(e))
         traceback.print_exc()
-
         try:
             await ws.send_json({"type": "error", "message": str(e)})
         except Exception:
             pass
-
         try:
             await ws.close()
         except Exception:
