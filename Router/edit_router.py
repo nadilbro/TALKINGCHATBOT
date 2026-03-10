@@ -2,7 +2,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 import asyncio
 import time
-from Providers.APIContracts import StatusResponse, ChatBotEdits
+from Providers.APIContracts import ChatBotEdits
 from SQL.RAG import VectorRAGService
 from Providers.ai_provider import AIProvider
 import os
