@@ -63,24 +63,24 @@ class VectorRAGService:
         parts = re.split(r'(?<=[.!?])\s+', (text or "").strip())
         return [p.strip() for p in parts if p and p.strip()]
 
-    def get_avatar(self, user_id, chat_id,):
+    def get_avatar(self, user_id, chat_id): 
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                "SELECT rive_avatar, avatar_voice, FROM sessions WHERE user_id = %s AND id = %s ",
-                (user_id, chat_id,)  # Added comma to make it a tuple
-            )
+            cur.execute("""
+                SELECT rive_avatar, avatar_voice, welcome_message, rive_url
+                FROM sessions
+                WHERE user_id = %s AND id = %s
+            """, (user_id, chat_id))
             row = cur.fetchone()
-            
-            # Handle cases where no record is found
-            if not row:
-                return (None, None)
-                
-            # Use dictionary keys instead of indices with RealDictCursor
-            
-            avatar_key = row.get("rive_avatar")
-            voice_name = row.get("avatar_voice")
 
-        return avatar_key, voice_name
+            if not row:
+                return None, None, None, None
+
+            return (
+                row.get("rive_avatar"),
+                row.get("avatar_voice"),
+                row.get("welcome_message"),
+                row.get("rive_url"),
+            )
 
     def get_session_history(self, user_id):
         pass        

@@ -55,6 +55,7 @@ def _as_int(x: Any, default: int = 0) -> int:
 
 @router.websocket("/audio_chat_ws")
 async def audio_chat_ws(ws: WebSocket):
+    print("HIT audio_chat_ws")
     await ws.accept()
 
     try:
