@@ -6,8 +6,8 @@ from datetime import datetime
 class ChatRequest(BaseModel):
     site_id: str
     message: str
-    pastMessages: List[str] = None
-    pastAnswers: List[str] = None
+    pastMessages: Optional[List[str]] = None
+    pastAnswers: Optional[List[str]] = None
 
 class ChatMessageStructure(BaseModel):   
     context: str
@@ -18,21 +18,21 @@ class ChatBotEdits(BaseModel):
     name: Optional[str] = None 
     email: Optional[str] = None
     phone: Optional[str] = None
-    monthly_token_limit = Optional[str] = None
-    monthly_token_used = Optional[str] = None 
+    monthly_token_limit: Optional[str] = None
+    monthly_token_used: Optional[str] = None 
 
 class AccountInit(BaseModel):
     user_id: str
     name: Optional[str] = None
     email: Optional[str] = None
     phone: Optional[str] = None
-    created_at = Optional[str]= None
-    subscription_status = Optional[str] = None
-    stripe_customer_id = Optional[str] = None
-    stripe_subscription_id = Optional[str] = None
-    monthly_token_limit = Optional[str] = None
-    monthly_token_used = Optional[str] = None
-    billing_cycle_start = Optional[str] = None
+    created_at: Optional[str] = None
+    subscription_status: Optional[str] = None
+    stripe_customer_id: Optional[str] = None
+    stripe_subscription_id: Optional[str] = None
+    monthly_token_limit: Optional[str] = None
+    monthly_token_used: Optional[str] = None
+    billing_cycle_start: Optional[str] = None
 
 class SessionInit(BaseModel):
     userID: str
