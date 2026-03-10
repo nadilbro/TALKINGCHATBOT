@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 import psycopg2
 from typing import Optional, List, Dict, Any
 import math
-from Providers.APIContracts import ChatMessageStructure, SiteID, ChatBotEdits, AddDataRequest, EmbeddingRow, GetDataRequest, ClientListSetUp
+from Providers.APIContracts import ChatMessageStructure, ChatBotEdits, ClientListSetUp
 from psycopg2.extras import RealDictCursor
 from openai import AsyncOpenAI
 import nltk
