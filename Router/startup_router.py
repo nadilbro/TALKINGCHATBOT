@@ -37,4 +37,4 @@ async def initialise_session_history(user_id: str = Query(...)):
 
 @router.get("/initialise_settings")
 def initalise_settings(user_id: str = Query(...)):
-    return rag.initial_settings(user_id.user_id)
+    return rag.initial_settings(user_id)

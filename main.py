@@ -9,19 +9,21 @@ from SQL.db_init import init_db
 app = FastAPI()
 
 
-app.include_router(edit_router) 
-app.include_router(startup_router) 
-app.include_router(voice_router) 
 
 
-
+# CORS FIRST
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=False,
     allow_origins=["*"],
-    allow_methods=["*"],          # IMPORTANT: includes OPTIONS
-    allow_headers=["*"],          # IMPORTANT: includes Accept / Content-Type
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
+
+# THEN routers
+app.include_router(edit_router)
+app.include_router(startup_router)
+app.include_router(voice_router)
 
 
 @app.get("/")
