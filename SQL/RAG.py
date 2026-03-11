@@ -64,36 +64,72 @@ class VectorRAGService:
         return [p.strip() for p in parts if p and p.strip()]
 
     def get_avatar(self, user_id, chat_id): 
+        try:
+            with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT rive_avatar, avatar_voice, welcome_message, rive_url
+                    FROM sessions
+                    WHERE user_id = %s AND id = %s
+                """, (user_id, chat_id))
+                row = cur.fetchone()
+
+                if not row:
+                    return None, None, None, None
+
+                return (
+                    row.get("rive_avatar"),
+                    row.get("avatar_voice"),
+                    row.get("welcome_message"),
+                    row.get("rive_url"),
+                )
+        except Exception:
+            self.conn.rollback()
+            raise
+
+
+    # @router.get("/initialise_session_history")
+    # async def initialise_session_history(user_id: str = Query(...)):
+    #     return rag.get_history(user_id) 
+
+    # @router.get("/initialise_settings")
+    # def initalise_settings(user_id: str = Query(...)):
+    #     return rag.initial_settings(user_id)
+    def get_session_history(self, user_id):
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
-                SELECT rive_avatar, avatar_voice, welcome_message, rive_url
+            SELECT
+                    id,
+                    title,
+                    last_message,
+                    status,
+                    rive_avatar,
+                    avatar_voice,
+                    welcome_message,
+                    summary,
+                    created_at,
+                    updated_at
                 FROM sessions
-                WHERE user_id = %s AND id = %s
-            """, (user_id, chat_id))
-            row = cur.fetchone()
+                WHERE user_id = %s
+                ORDER BY updated_at DESC
+            """, (user_id,))
 
-            if not row:
-                return None, None, None, None
+            rows = cur.fetchall()
 
-            return (
-                row.get("rive_avatar"),
-                row.get("avatar_voice"),
-                row.get("welcome_message"),
-                row.get("rive_url"),
-            )
-
-    def get_session_history(self, user_id):
-        pass        
+            # Always return a list (empty list if no history)
+            return rows
 
     def initial_settings(self, user_id):
+        #Not in use nor called yet
         pass
 
 
     def get_history(self, user_id: str, chat_id: str):
         """
+        Description: This is for when the user clicks on a session
         Returns full message history for a session
         only if the session belongs to the given user.
         Returns: List[Dict]
+        
         """
 
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
