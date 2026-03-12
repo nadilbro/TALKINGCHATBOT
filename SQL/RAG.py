@@ -150,14 +150,25 @@ class VectorRAGService:
     #CREATING A NEW SESSION AND SAVING INFORMATION
     def create_session(self, user_id: str, title: str | None = None) -> str:
         chat_id = str(uuid.uuid4())
+
         try:
             with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Ensure the user exists in accounts first
+                cur.execute("""
+                    INSERT INTO accounts (user_id)
+                    VALUES (%s)
+                    ON CONFLICT (user_id) DO NOTHING
+                """, (user_id,))
+
+                # Now create the session
                 cur.execute("""
                     INSERT INTO sessions (id, user_id, title, status)
                     VALUES (%s, %s, %s, 'Open')
                 """, (chat_id, user_id, title))
+
             self.conn.commit()
             return chat_id
+
         except Exception:
             self.conn.rollback()
             raise
