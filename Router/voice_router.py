@@ -152,7 +152,7 @@ async def audio_chat_ws(ws: WebSocket):
                             Rules:
                             - Use ONLY CONTEXT. 
                             - HTML only (<p><br><b>).
-                            - Do not use ASTERIX (*)
+                            - Only use these symbols (?),(.),(,). Do NOT use (*),(-),(_),etc
                             - Be friendly and make sure to add subheadings and headings to your answer using HTML
                             - Also remember, tailor your answer as if you were speaking more than texting, because this will be turned into voice """
 
