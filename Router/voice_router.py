@@ -34,6 +34,10 @@ async def chat_init(init_details: SessionInit):
     chatID = init_details.chat_id
     # Uses your RAG.get_voice_init we added earlier
     avatar_key, voice_name, welcome_message, rive_url = rag.get_avatar(userID, chatID)
+
+    if avatar_key is None and voice_name is None and welcome_message is None and rive_url is None:
+        return {"error": "Session not found"}
+    
     chat_history = rag.get_history(userID, chatID)
     return {
         "avatar_key": avatar_key,

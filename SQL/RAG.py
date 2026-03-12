@@ -150,42 +150,53 @@ class VectorRAGService:
     #CREATING A NEW SESSION AND SAVING INFORMATION
     def create_session(self, user_id: str, title: str | None = None) -> str:
         chat_id = str(uuid.uuid4())
-        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""
-                INSERT INTO sessions (id, user_id, title, status)
-                VALUES (%s, %s, %s, 'Open')
-            """, (chat_id, user_id, title))
-        self.conn.commit()
-        return chat_id
+        try:
+            with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    INSERT INTO sessions (id, user_id, title, status)
+                    VALUES (%s, %s, %s, 'Open')
+                """, (chat_id, user_id, title))
+            self.conn.commit()
+            return chat_id
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def add_message(self, chat_id: str, role: str, content: str) -> None:
-        #This function is to add a message to the database
-        with self.conn.cursor() as cur:
-            cur.execute("""
-                INSERT INTO messages (session_id, role, content)
-                VALUES (%s, %s, %s)
-            """, (chat_id, role, content))
-        self.conn.commit()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO messages (session_id, role, content)
+                    VALUES (%s, %s, %s)
+                """, (chat_id, role, content))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
 
     def update_last_message(self, chat_id: str, last_message: str, title: str | None = None) -> None:
-        #Update last message for previews in the sessions database 
-        with self.conn.cursor() as cur:
-            if title is not None:
-                cur.execute("""
-                    UPDATE sessions
-                    SET last_message = %s,
-                        title = %s,
-                        updated_at = NOW()
-                    WHERE id = %s
-                """, (last_message, title, chat_id))
-            else:
-                cur.execute("""
-                    UPDATE sessions
-                    SET last_message = %s,
-                        updated_at = NOW()
-                    WHERE id = %s
-                """, (last_message, chat_id))
-        self.conn.commit()
+        try:
+            with self.conn.cursor() as cur:
+                if title is not None:
+                    cur.execute("""
+                        UPDATE sessions
+                        SET last_message = %s,
+                            title = %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                    """, (last_message, title, chat_id))
+                else:
+                    cur.execute("""
+                        UPDATE sessions
+                        SET last_message = %s,
+                            updated_at = NOW()
+                        WHERE id = %s
+                    """, (last_message, chat_id))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     def get_recent_messages(self, user_id: str, chat_id: str, limit: int = 20):
         #This function is there to get the last recent messages so they can load when the user clicks on the thing.
