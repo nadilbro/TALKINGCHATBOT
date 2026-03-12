@@ -126,29 +126,46 @@ async def audio_chat_ws(ws: WebSocket):
                 continue
 
             # -------------------------
-            # Build pastMessages/pastAnswers for your existing AI code
-            # -------------------------
-            past_messages: List[str] = []
-            past_answers: List[str] = []
-
-            for m in history:
-                role = (m.get("role") or "").lower()
-                content = m.get("content") or ""
-                if role == "user":
-                    past_messages.append(content)
-                elif role == "assistant":
-                    past_answers.append(content)
-
-            # -------------------------
             # Generate bot text
             # -------------------------
             try:
-                bot_text = await ai.get_chat_response(
-                    site_id=user_id,               # keep arg name if your AIProvider expects it
-                    message=user_text,
-                    pastMessages=past_messages,
-                    pastAnswers=past_answers,
+                history_lines = []
+                for m in history:
+                    role = (m.get("role") or "").lower()
+                    content = (m.get("content") or "").strip()
+
+                    if not content:
+                        continue
+
+                    if role == "user":
+                        history_lines.append(f"User: {content}")
+                    elif role == "assistant":
+                        history_lines.append(f"Assistant: {content}")
+                    else:
+                        history_lines.append(f"{role.title()}: {content}")
+
+                conversation_history = "\n".join(history_lines)
+
+                system_prompt = (
+                    "You are a helpful AI assistant. "
+                    "Use the previous conversation when relevant. "
+                    "Respond clearly, naturally, and helpfully."
                 )
+
+                if conversation_history:
+                    user_prompt = (
+                        f"Conversation history:\n{conversation_history}\n\n"
+                        f"Latest user message:\n{user_text}"
+                    )
+                else:
+                    user_prompt = user_text
+
+                bot_text = await ai.chat(
+                    site_id=user_id,
+                    system=system_prompt,
+                    user=user_prompt,
+                )
+
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"AI failed: {str(e)}"})
                 continue
