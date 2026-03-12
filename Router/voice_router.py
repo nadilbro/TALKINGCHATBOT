@@ -146,11 +146,15 @@ async def audio_chat_ws(ws: WebSocket):
 
                 conversation_history = "\n".join(history_lines)
 
-                system_prompt = (
-                    "You are a helpful AI assistant. "
-                    "Use the previous conversation when relevant. "
-                    "Respond clearly, naturally, and helpfully."
-                )
+                system_prompt = f"""
+                            You are a support_AI 
+
+                            Rules:
+                            - Use ONLY CONTEXT. 
+                            - HTML only (<p><br><b>).
+                            - Do not use ASTERIX (*)
+                            - Be friendly and make sure to add subheadings and headings to your answer using HTML
+                            - Also remember, tailor your answer as if you were speaking more than texting, because this will be turned into voice """
 
                 if conversation_history:
                     user_prompt = (
