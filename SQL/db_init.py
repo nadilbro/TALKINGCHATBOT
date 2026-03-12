@@ -77,6 +77,7 @@ def init_db() -> None:
             updated_at TIMESTAMPTZ DEFAULT NOW(),
 
             rive_avatar TEXT,                          -- rive url or key
+            rive_url TEXT,
             avatar_voice TEXT,                          -- name of voiceOption
             last_message TEXT,
             welcome_message TEXT,
