@@ -159,6 +159,7 @@ class VectorRAGService:
         return chat_id
 
     def add_message(self, chat_id: str, role: str, content: str) -> None:
+        #This function is to add a message to the database
         with self.conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO messages (session_id, role, content)
@@ -167,6 +168,7 @@ class VectorRAGService:
         self.conn.commit()
 
     def update_last_message(self, chat_id: str, last_message: str, title: str | None = None) -> None:
+        #Update last message for previews in the sessions database 
         with self.conn.cursor() as cur:
             if title is not None:
                 cur.execute("""
@@ -186,6 +188,7 @@ class VectorRAGService:
         self.conn.commit()
 
     def get_recent_messages(self, user_id: str, chat_id: str, limit: int = 20):
+        #This function is there to get the last recent messages so they can load when the user clicks on the thing.
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
                 SELECT m.role, m.content
@@ -199,3 +202,4 @@ class VectorRAGService:
 
         # reverse so it's chronological (oldest -> newest)
         return list(reversed(rows))
+    

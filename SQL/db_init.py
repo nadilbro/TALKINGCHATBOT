@@ -1,4 +1,5 @@
 # SQL/db_init.py
+#TEMP FILE CAUSE AFTER IT IS RELEASED IT WONT NEED TO REDO THE INITIALISATION
 import os
 import psycopg2
 
