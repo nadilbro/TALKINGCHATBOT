@@ -105,7 +105,7 @@ async def audio_chat_ws(ws: WebSocket):
                     _, voice_name, _, _ = rag.get_avatar(user_id, chat_id)
                     voice_name = _as_str(voice_name)
                 except Exception:
-                    voice_name = ""
+                    voice_name = "en-US-BrianMultilingualNeural"
 
             if not user_id or not chat_id or not user_text:
                 await ws.send_json({"type": "error", "message": "Missing user_id/chat_id/message"})
