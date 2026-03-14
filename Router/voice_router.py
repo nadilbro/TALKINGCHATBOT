@@ -51,7 +51,7 @@ async def chat_init(init_details: SessionInit):
     chat_history = rag.get_history(userID, chatID)
     return {
         "avatar_key": avatar_key,
-        "voice_name": voice_name,
+        "voice_name": 'en-US-BrianMultilingualNeural',
         "welcome_message": welcome_message,
         "rive_url": rive_url,
         "chat_history": chat_history,
