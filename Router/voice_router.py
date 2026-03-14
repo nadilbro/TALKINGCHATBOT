@@ -207,7 +207,7 @@ async def audio_chat_ws(ws: WebSocket):
 
                 audio_bytes, visemes = await tts_instance.synthesize_mp3_with_visemes(
                     text=plain_text,
-                    voice_name=voice_name,
+                    voice_name="en-US-BrianMultilingualNeural",
                 )
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"TTS synthesis failed: {str(e)}"})
