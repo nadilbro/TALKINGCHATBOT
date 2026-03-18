@@ -11,18 +11,16 @@ from Providers.phenome_provider import TextVisemeProvider
 # ARPAbet phoneme → Preston Blair viseme ID (0–8)
 # ---------------------------------------------------------------------------
 ARPABET_TO_VISEME = {
-    "AA": 3, "AE": 3, "AH": 3, "AO": 3,
-    "AW": 4, "AY": 3, "EH": 2, "ER": 2,
-    "EY": 2, "IH": 2, "IY": 2, "OW": 4,
-    "OY": 4, "UH": 4, "UW": 4,
-    "B":  1, "CH": 7, "D":  8, "DH": 6,
-    "F":  5, "G":  8, "HH": 8, "JH": 7,
-    "K":  8, "L":  8, "M":  1, "N":  8,
-    "NG": 8, "P":  1, "R":  8, "S":  8,
-    "SH": 7, "T":  8, "TH": 6, "V":  5,
-    "W":  4, "Y":  2, "Z":  8, "ZH": 7,
+    "AA": 3, "AE": 3, "AH": 3, "AO": 3, "AY": 3,
+    "AW": 4, "OW": 4, "OY": 4, "UH": 4, "UW": 4, "W": 4,
+    "EH": 2, "ER": 2, "EY": 2, "IH": 2, "IY": 2, "Y": 2,
+    "B": 1, "P": 1, "M": 1,
+    "F": 5, "V": 5,
+    "TH": 6, "DH": 6,
+    "SH": 7, "CH": 7, "JH": 7, "ZH": 7,
+    "D": 8, "G": 8, "HH": 8, "K": 8, "L": 8,
+    "N": 8, "NG": 8, "R": 8, "S": 8, "T": 8, "Z": 8,
 }
-
 
 class VoiceChatSystem:
     def __init__(self):
@@ -107,19 +105,14 @@ class VoiceChatSystem:
                 t_ms = int((word_start + i * phoneme_duration) * 1000)
                 viseme_id = ARPABET_TO_VISEME.get(phoneme, 8)
                 visemes.append({"t_ms": t_ms, "viseme_id": viseme_id})
+        deduped = []
+        for v in visemes:
+            if not deduped or v["viseme_id"] != deduped[-1]["viseme_id"]:
+                deduped.append(v)
 
-        if end_times:
-            visemes.append({"t_ms": int(end_times[-1] * 1000), "viseme_id": 0})
-        found = 0
-        missed = 0
-        for word, word_start, word_end in word_windows:
-            clean = re.sub(r"[^a-z']", "", word.lower())
-            if self._word_to_phonemes(clean, cmu):
-                found += 1
-            else:
-                missed += 1
-        print(f"==> Words found: {found}, missed: {missed}", flush=True)
-        return visemes
+        return deduped
+
+
 
     def _get_word_windows(
         self,
