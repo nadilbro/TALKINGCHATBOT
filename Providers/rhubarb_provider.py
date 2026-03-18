@@ -23,13 +23,10 @@ class RhubarbProvider:
       - transcript only          (fast/rough, good enough for casual lip sync)
     """
 
-    def __init__(self, rhubarb_bin: str = "rhubarb", timeout: int = 30):
-        """
-        Args:
-            rhubarb_bin: path to the rhubarb binary (defaults to 'rhubarb' if on PATH)
-            timeout:     max seconds to wait for rhubarb to finish
-        """
-        self.rhubarb_bin = rhubarb_bin
+    def __init__(self, timeout: int = 30):
+        # Points to the rhubarb binary in the project root
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self.rhubarb_bin = os.path.join(base_dir, "rhubarb")
         self.timeout = timeout
 
     # ------------------------------------------------------------------
