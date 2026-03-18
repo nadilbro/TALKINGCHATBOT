@@ -21,23 +21,15 @@ class VoiceChatSystem:
         text: str,
         voice_name: str,
     ) -> Tuple[bytes, List[Dict[str, Any]]]:
-        """
-        Returns:
-          - mp3_bytes
-          - visemes: [{ "t_ms": int, "viseme_id": int }]
-        """
 
-        audio_task = asyncio.create_task(
-            run_in_threadpool(self._azure_synthesize, text, voice_name)
-        )
-        viseme_task = asyncio.create_task(
-            self.rhubarb.from_text_only(text)
-        )
- 
-        # Wait for both to finish
-        audio_bytes, visemes = await asyncio.gather(audio_task, viseme_task)
- 
+        # Get audio from Azure first
+        audio_bytes = await run_in_threadpool(self._azure_synthesize, text, voice_name)
+
+        # Then run Rhubarb with the actual audio + transcript (most accurate anyway)
+        visemes = await self.rhubarb.from_audio_and_text(audio_bytes, text, audio_suffix=".wav")
+
         return audio_bytes, visemes
+
     
     def _azure_synthesize(self, text: str, voice_name: str) -> bytes:
         """Blocking Azure TTS call — runs in threadpool."""
@@ -47,7 +39,7 @@ class VoiceChatSystem:
         )
  
         speech_config.set_speech_synthesis_output_format(
-            speechsdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3
+            speechsdk.SpeechSynthesisOutputFormat.Riff16Khz16BitMonoPcm  # WAV format
         )
  
         if voice_name:
