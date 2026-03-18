@@ -2,7 +2,8 @@ import os
 from typing import List, Dict, Any, Tuple
 from elevenlabs.client import AsyncElevenLabs
 from Providers.phenome_provider import TextVisemeProvider
-
+from elevenlabs.client import ElevenLabs
+from fastapi.concurrency import run_in_threadpool
 
 class VoiceChatSystem:
     def __init__(self):
@@ -14,7 +15,7 @@ class VoiceChatSystem:
         if not self.voice_id:
             raise RuntimeError("Missing ELEVENLABS_VOICE_ID env var")
 
-        self.client = AsyncElevenLabs(api_key=self.api_key)
+        self.client = ElevenLabs(api_key=self.api_key)
         self.viseme_provider = TextVisemeProvider()
 
     async def synthesize_mp3_with_visemes(
@@ -29,22 +30,19 @@ class VoiceChatSystem:
         """
 
         # Get audio from ElevenLabs
-        audio_bytes = await self._get_elevenlabs_audio(text)
-
-        # Generate visemes instantly from text — no audio processing needed
+        audio_bytes = await run_in_threadpool(self._get_elevenlabs_audio, text)
         visemes = self.viseme_provider.get_visemes(text)
-
         return audio_bytes, visemes
 
-    async def _get_elevenlabs_audio(self, text: str) -> bytes:
-        audio_generator = await self.client.generate(
+    def _get_elevenlabs_audio(self, text: str) -> bytes:
+        response = self.client.text_to_speech.convert(
+            voice_id=self.voice_id,
             text=text,
-            voice=self.voice_id,
-            model="eleven_multilingual_v2",
+            model_id="eleven_multilingual_v2",
             output_format="mp3_44100_128",
         )
         chunks = []
-        async for chunk in audio_generator:
-            if chunk:
+        for chunk in response:
+            if isinstance(chunk, bytes):
                 chunks.append(chunk)
         return b"".join(chunks)
