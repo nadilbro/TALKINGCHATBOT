@@ -35,7 +35,7 @@ ARPABET_TO_VISEME = {
 }
 
 # Average phoneme duration in milliseconds (rough estimate for natural speech)
-PHONEME_DURATION_MS = 50
+PHONEME_DURATION_MS = 25
 
 
 class TextVisemeProvider:
