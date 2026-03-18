@@ -24,6 +24,7 @@ def init_db() -> None:
     Idempotent: safe to run multiple times.
     Creates ONLY:
       - accounts
+      - rive_avatars
       - sessions
       - messages
       - usage_events
@@ -64,21 +65,40 @@ def init_db() -> None:
         """)
 
         # -----------------------------
-        # 2) sessions  (SessionInit / SessionCreate)
+        # 2) rive_avatars  (must be created before sessions, which FK into it)
         # -----------------------------
-        # Your SessionInit has chat_id (string), SessionCreate has id (string)
-        # so we store session_id as TEXT (you generate it).
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS rive_avatars (
+            avatar_id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+
+            name TEXT NOT NULL UNIQUE,                 -- display name of the character
+            voice TEXT NOT NULL,                       -- avatar voice (choose from microsoft AZURE)
+            url TEXT NOT NULL,                         -- URL to the .riv file
+            prompt TEXT,                               -- system prompt / persona for this character
+            version TEXT NOT NULL DEFAULT '1.0',       -- asset/schema version
+
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW()
+        );
+        """)
+
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS rive_avatars_name_idx
+        ON rive_avatars (name);
+        """)
+
+        # -----------------------------
+        # 3) sessions  (SessionInit / SessionCreate)
+        # -----------------------------
         cur.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,                       -- chat_id
             user_id TEXT NOT NULL REFERENCES accounts(user_id) ON DELETE CASCADE,
+            avatar_id TEXT REFERENCES rive_avatars(avatar_id) ON DELETE SET NULL,
 
             created_at TIMESTAMPTZ DEFAULT NOW(),
             updated_at TIMESTAMPTZ DEFAULT NOW(),
 
-            rive_avatar TEXT,                          -- rive url or key
-            rive_url TEXT,
-            avatar_voice TEXT,                          -- name of voiceOption
             last_message TEXT,
             welcome_message TEXT,
 
@@ -94,10 +114,8 @@ def init_db() -> None:
         """)
 
         # -----------------------------
-        # 3) messages  (for chat history)
+        # 4) messages  (for chat history)
         # -----------------------------
-        # Even if you “haven’t done it”, you will need it to rebuild history properly.
-        # Store role + content.
         cur.execute("""
         CREATE TABLE IF NOT EXISTS messages (
             message_id BIGSERIAL PRIMARY KEY,
@@ -116,7 +134,7 @@ def init_db() -> None:
         """)
 
         # -----------------------------
-        # 4) usage_events  (token usage / billing)
+        # 5) usage_events  (token usage / billing)
         # -----------------------------
         cur.execute("""
         CREATE TABLE IF NOT EXISTS usage_events (
@@ -158,6 +176,30 @@ def init_db() -> None:
             """, (
                 "user_test_001", "Test User", "test@example.com", "0400000000",
                 "active", 500000, 0
+            ))
+
+            #Add the existing RIVE Characters.
+            cur.execute("""
+            INSERT INTO rive_avatars (name, voice, url, prompt, version)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (name) DO NOTHING;
+            """, (
+                "Kai Brooks",
+                "en-US-BrianMultilingualNeural",
+                "https://example.com/avatars/V3.riv",
+                "Your name is Kai. You're a laid-back, cheerful guy with dark hair and a warm smile that puts everyone at ease. You wear your favourite white hoodie almost every day — comfort over style, always. You're the kind of person who genuinely listens, cracks a joke at just the right moment, and never takes life too seriously. You love good food, late-night conversations, and finding the simplest solution to any problem. People come to you when they need honest advice with zero judgment. You're helpful, a little witty, and always keep it real. Always respond as Kai, stay in character, and keep replies conversational and friendly.",
+                "1.0"
+            ))
+            cur.execute("""
+            INSERT INTO rive_avatars (name, voice, url, prompt, version)
+            VALUES (%s, %s, %s, %s, %s)
+            ON CONFLICT (name) DO NOTHING;
+            """, (
+                "Mia Sterling",
+                "en-US-BrianMultilingualNeural",
+                "https://example.com/avatars/V4.riv",
+                "Your name is Mia. You're a quietly confident woman with a sleek brown bob, wispy bangs, and striking violet eyes that seem to notice everything. You have a calm, composed energy — the kind of person who doesn't say much, but when you do, everyone listens. You're thoughtful, a little mysterious, and surprisingly funny once people get past your cool exterior. You appreciate art, aesthetics, and anything done with intention. You don't sugarcoat things, but you're never unkind about it. People are drawn to your honesty and quiet warmth. Always respond as Mia, stay in character, and keep replies calm, thoughtful and a little mysterious.",
+                "1.0"
             ))
 
             cur.execute("""
