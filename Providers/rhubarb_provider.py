@@ -72,14 +72,7 @@ class RhubarbProvider:
     ) -> List[Dict[str, Any]]:
 
         tmp_files = []
-        # Debug — check available recognizers
-        print(f"==> CMD: {' '.join(cmd)}", file=sys.stderr, flush=True)
-        
-        espeak_check = subprocess.run(["espeak", "--version"], capture_output=True, text=True)
-        print(f"==> espeak version: {espeak_check.stdout} {espeak_check.stderr}", file=sys.stderr, flush=True)
 
-        espeak_ng_check = subprocess.run(["espeak-ng", "--version"], capture_output=True, text=True)
-        print(f"==> espeak-ng version: {espeak_ng_check.stdout} {espeak_ng_check.stderr}", file=sys.stderr, flush=True)
         try:
             # Write transcript to a temp file (always needed)
             text_f = tempfile.NamedTemporaryFile(
@@ -92,18 +85,22 @@ class RhubarbProvider:
             cmd = [self.rhubarb_bin, "-f", "json", "--recognizer", "phonetic"]
 
             if audio_bytes:
-                # Audio + text mode
                 audio_f = tempfile.NamedTemporaryFile(
                     suffix=audio_suffix, delete=False
                 )
                 audio_f.write(audio_bytes)
                 audio_f.close()
                 tmp_files.append(audio_f.name)
-
                 cmd += ["--dialogFile", text_f.name, audio_f.name]
             else:
-                # Text-only mode — pass the text file as the input
                 cmd.append(text_f.name)
+
+            # Debug AFTER cmd is built
+            print(f"==> CMD: {' '.join(cmd)}", file=sys.stderr, flush=True)
+            espeak_check = subprocess.run(["espeak", "--version"], capture_output=True, text=True)
+            print(f"==> espeak: {espeak_check.stdout} {espeak_check.stderr}", file=sys.stderr, flush=True)
+            espeak_ng_check = subprocess.run(["espeak-ng", "--version"], capture_output=True, text=True)
+            print(f"==> espeak-ng: {espeak_ng_check.stdout} {espeak_ng_check.stderr}", file=sys.stderr, flush=True)
 
             result = subprocess.run(
                 cmd,
