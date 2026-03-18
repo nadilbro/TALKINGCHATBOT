@@ -4,7 +4,7 @@ import tempfile
 import subprocess
 from typing import List, Dict, Any
 from fastapi.concurrency import run_in_threadpool
-
+import sys
 
 # Preston Blair viseme label → ID
 # A = silence/rest,  B = p/b/m,  C = ee/ih,  D = oh
@@ -73,8 +73,13 @@ class RhubarbProvider:
 
         tmp_files = []
         # Debug — check available recognizers
-        debug = subprocess.run([self.rhubarb_bin, "--help"], capture_output=True, text=True)
-        print("==> Rhubarb help:", debug.stdout, debug.stderr)
+        print(f"==> CMD: {' '.join(cmd)}", file=sys.stderr, flush=True)
+        
+        espeak_check = subprocess.run(["espeak", "--version"], capture_output=True, text=True)
+        print(f"==> espeak version: {espeak_check.stdout} {espeak_check.stderr}", file=sys.stderr, flush=True)
+
+        espeak_ng_check = subprocess.run(["espeak-ng", "--version"], capture_output=True, text=True)
+        print(f"==> espeak-ng version: {espeak_ng_check.stdout} {espeak_ng_check.stderr}", file=sys.stderr, flush=True)
         try:
             # Write transcript to a temp file (always needed)
             text_f = tempfile.NamedTemporaryFile(
