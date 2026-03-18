@@ -24,7 +24,8 @@ class VoiceChatSystem:
 
         # Get audio from Azure first
         audio_bytes = await run_in_threadpool(self._azure_synthesize, text, voice_name)
-
+        
+        print(f"==> Audio bytes length: {len(audio_bytes)}")
         # Then run Rhubarb with the actual audio + transcript (most accurate anyway)
         visemes = await self.rhubarb.from_audio_and_text(audio_bytes, text, audio_suffix=".wav")
 
