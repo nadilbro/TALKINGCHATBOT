@@ -1,71 +1,50 @@
 import os
-import json
-import base64
 from typing import List, Dict, Any, Tuple
-import azure.cognitiveservices.speech as speechsdk
-from fastapi.concurrency import run_in_threadpool
+from elevenlabs.client import AsyncElevenLabs
+from Providers.text_viseme_provider import TextVisemeProvider
 
 
 class VoiceChatSystem:
     def __init__(self):
-        self.speech_key = (os.getenv("AZURE_SPEECH_KEY") or "").strip()
-        self.speech_region = (os.getenv("AZURE_SPEECH_REGION") or "").strip()
+        self.api_key = (os.getenv("ELEVENLABS_API_KEY") or "").strip()
+        self.voice_id = (os.getenv("ELEVENLABS_VOICE_ID") or "").strip()
 
-        if not self.speech_key or not self.speech_region:
-            raise RuntimeError("Missing AZURE_SPEECH_KEY or AZURE_SPEECH_REGION env vars")
+        if not self.api_key:
+            raise RuntimeError("Missing ELEVENLABS_API_KEY env var")
+        if not self.voice_id:
+            raise RuntimeError("Missing ELEVENLABS_VOICE_ID env var")
+
+        self.client = AsyncElevenLabs(api_key=self.api_key)
+        self.viseme_provider = TextVisemeProvider()
 
     async def synthesize_mp3_with_visemes(
         self,
         text: str,
-        voice_name: str,
+        voice_name: str = None,  # kept for API compatibility, unused
     ) -> Tuple[bytes, List[Dict[str, Any]]]:
         """
         Returns:
-          - mp3_bytes
-          - visemes: [{ "t_ms": int, "viseme_id": int }]
+          - mp3_bytes  (from ElevenLabs)
+          - visemes:   [{ "t_ms": int, "viseme_id": int }]  (from TextVisemeProvider)
         """
 
-        def _blocking():
-            speech_config = speechsdk.SpeechConfig(
-                subscription=self.speech_key,
-                region=self.speech_region
-            )
+        # Get audio from ElevenLabs
+        audio_bytes = await self._get_elevenlabs_audio(text)
 
-            # MP3 output for browser streaming
-            speech_config.set_speech_synthesis_output_format(
-                speechsdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3
-            )
+        # Generate visemes instantly from text — no audio processing needed
+        visemes = self.viseme_provider.get_visemes(text)
 
-            if voice_name:
-                speech_config.speech_synthesis_voice_name = voice_name
+        return audio_bytes, visemes
 
-            # Collect visemes
-            visemes: List[Dict[str, Any]] = []
-
-            # IMPORTANT: no AudioConfig => SDK returns audio_data bytes in result
-            synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=None)
-
-            def on_viseme(evt: speechsdk.SpeechSynthesisVisemeEventArgs):
-                # audio_offset is in 100-nanosecond units
-                t_ms = int(evt.audio_offset / 10_000)
-                visemes.append({"t_ms": t_ms, "viseme_id": int(evt.viseme_id)})
-
-            synthesizer.viseme_received.connect(on_viseme)
-
-            # Azure returns ResultFuture — use .get(), NOT .done()
-            future = synthesizer.speak_text_async(text)
-            result = future.get()
-
-            if result.reason != speechsdk.ResultReason.SynthesizingAudioCompleted:
-                # Try pull error details
-                details = ""
-                try:
-                    details = speechsdk.SpeechSynthesisCancellationDetails.from_result(result).error_details
-                except Exception:
-                    pass
-                raise RuntimeError(f"TTS failed: {result.reason} {details}".strip())
-
-            audio_bytes = result.audio_data or b""
-            return audio_bytes, visemes
-
-        return await run_in_threadpool(_blocking)
+    async def _get_elevenlabs_audio(self, text: str) -> bytes:
+        audio_generator = await self.client.generate(
+            text=text,
+            voice=self.voice_id,
+            model="eleven_multilingual_v2",
+            output_format="mp3_44100_128",
+        )
+        chunks = []
+        async for chunk in audio_generator:
+            if chunk:
+                chunks.append(chunk)
+        return b"".join(chunks)

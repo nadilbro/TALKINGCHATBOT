@@ -89,14 +89,6 @@ class VectorRAGService:
             raise
     
 
-
-    # @router.get("/initialise_session_history")
-    # async def initialise_session_history(user_id: str = Query(...)):
-    #     return rag.get_history(user_id) 
-
-    # @router.get("/initialise_settings")
-    # def initalise_settings(user_id: str = Query(...)):
-    #     return rag.initial_settings(user_id)
     def get_session_history(self, user_id):
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
