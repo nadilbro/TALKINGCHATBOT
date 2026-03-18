@@ -107,6 +107,10 @@ class RhubarbProvider:
                 capture_output=True,
                 text=True,
                 timeout=self.timeout,
+                env={
+                    **os.environ,
+                    "ESPEAK_DATA_PATH": "/usr/lib/x86_64-linux-gnu/espeak-data",
+                }
             )
 
             if result.returncode != 0:
