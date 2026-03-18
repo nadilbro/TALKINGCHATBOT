@@ -110,7 +110,15 @@ class VoiceChatSystem:
 
         if end_times:
             visemes.append({"t_ms": int(end_times[-1] * 1000), "viseme_id": 0})
-
+        found = 0
+        missed = 0
+        for word, word_start, word_end in word_windows:
+            clean = re.sub(r"[^a-z']", "", word.lower())
+            if self._word_to_phonemes(clean, cmu):
+                found += 1
+            else:
+                missed += 1
+        print(f"==> Words found: {found}, missed: {missed}", flush=True)
         return visemes
 
     def _get_word_windows(
