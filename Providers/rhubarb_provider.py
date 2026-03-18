@@ -82,7 +82,7 @@ class RhubarbProvider:
             text_f.close()
             tmp_files.append(text_f.name)
 
-            cmd = [self.rhubarb_bin, "-f", "json", "--recognizer", "phonetic"]
+            cmd = [self.rhubarb_bin, "-f", "json", "--recognizer", "pocketSphinx"]
 
             if audio_bytes:
                 audio_f = tempfile.NamedTemporaryFile(
