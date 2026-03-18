@@ -28,6 +28,7 @@ class RhubarbProvider:
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.rhubarb_bin = os.path.join(base_dir, "rhubarb")
         self.timeout = timeout
+        self.base_dir = base_dir
 
     # ------------------------------------------------------------------
     # Public async API
@@ -99,11 +100,15 @@ class RhubarbProvider:
                 cmd.append(text_f.name)
 
             result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout,
-            )
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=self.timeout,
+                    env={
+                        **os.environ,
+                        "ESPEAK_DATA_PATH": os.path.join(base_dir, "espeak-ng-data"),
+                    }
+                )
 
             if result.returncode != 0:
                 raise RuntimeError(
