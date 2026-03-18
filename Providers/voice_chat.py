@@ -1,7 +1,7 @@
 import os
 from typing import List, Dict, Any, Tuple
 from elevenlabs.client import AsyncElevenLabs
-from Providers.text_viseme_provider import TextVisemeProvider
+from Providers.phenome_provider import TextVisemeProvider
 
 
 class VoiceChatSystem:
