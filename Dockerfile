@@ -21,4 +21,4 @@ RUN wget -q https://github.com/DanielSWolf/rhubarb-lip-sync/releases/download/v1
 
 COPY . .
 
-CMD ["gunicorn", "-k", "uvicorn.workers.UvicornWorker", "-b", "0.0.0.0:$PORT", "main:app", "--access-logfile", "-", "--error-logfile", "-"]
+CMD gunicorn -k uvicorn.workers.UvicornWorker -b 0.0.0.0:$PORT main:app --access-logfile - --error-logfile -
