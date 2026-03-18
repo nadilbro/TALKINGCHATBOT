@@ -1,6 +1,5 @@
 import os
 from typing import List, Dict, Any, Tuple
-from elevenlabs.client import AsyncElevenLabs
 from Providers.phenome_provider import TextVisemeProvider
 from elevenlabs.client import ElevenLabs
 from fastapi.concurrency import run_in_threadpool
