@@ -2,7 +2,7 @@ import os
 import asyncio
 from typing import List, Dict, Any, Tuple
 import azure.cognitiveservices.speech as speechsdk
-from Providers.rhubarb_provider import RhubarbProvider
+from rhubarb_provider import RhubarbProvider
 from fastapi.concurrency import run_in_threadpool
 
 
