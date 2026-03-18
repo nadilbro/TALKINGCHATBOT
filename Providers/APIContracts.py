@@ -4,12 +4,13 @@ from datetime import datetime
 
 
 class ChatRequest(BaseModel):
-    site_id: str
+    user_id: str
     message: str
     pastMessages: Optional[List[str]] = None
     pastAnswers: Optional[List[str]] = None
 
 class ChatMessageStructure(BaseModel):   
+    user_id: str
     context: str
     userQ: str
 
@@ -38,7 +39,9 @@ class SessionInit(BaseModel):
     userID: str
     chat_id: str
 
-class SessionCreate(BaseModel):
+
+
+class SessionBase(BaseModel):
     id: str
     user_id: str
     created_at: Optional[str] = None

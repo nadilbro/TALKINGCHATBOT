@@ -57,34 +57,37 @@ class VectorRAGService:
 
 
     #Processing Data
-
     def split_sentences(self, text: str) -> list[str]:
         # Split on sentence-ending punctuation followed by whitespace
         parts = re.split(r'(?<=[.!?])\s+', (text or "").strip())
         return [p.strip() for p in parts if p and p.strip()]
 
-    def get_avatar(self, user_id, chat_id): 
+    def get_avatar(self, user_id, chat_id):
         try:
             with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
-                    SELECT rive_avatar, avatar_voice, welcome_message, rive_url
-                    FROM sessions
-                    WHERE user_id = %s AND id = %s
+                    SELECT a.name AS rive_avatar, a.voice AS avatar_voice,
+                           s.welcome_message, a.url AS rive_url, a.prompt AS rive_prompt
+                    FROM sessions s
+                    JOIN rive_avatars a ON s.avatar_id = a.avatar_id
+                    WHERE s.user_id = %s AND s.id = %s
                 """, (user_id, chat_id))
                 row = cur.fetchone()
 
                 if not row:
-                    return None, None, None, None
+                    return None, None, None, None, None
 
                 return (
                     row.get("rive_avatar"),
                     row.get("avatar_voice"),
                     row.get("welcome_message"),
                     row.get("rive_url"),
+                    row.get("rive_prompt")
                 )
         except Exception:
             self.conn.rollback()
             raise
+    
 
 
     # @router.get("/initialise_session_history")
@@ -98,19 +101,20 @@ class VectorRAGService:
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
             SELECT
-                    id,
-                    title,
-                    last_message,
-                    status,
-                    rive_avatar,
-                    avatar_voice,
-                    welcome_message,
-                    summary,
-                    created_at,
-                    updated_at
-                FROM sessions
-                WHERE user_id = %s
-                ORDER BY updated_at DESC
+                    s.id,
+                    s.title,
+                    s.last_message,
+                    s.status,
+                    a.name AS rive_avatar,
+                    a.voice AS avatar_voice,
+                    s.welcome_message,
+                    s.summary,
+                    s.created_at,
+                    s.updated_at
+                FROM sessions s
+                LEFT JOIN rive_avatars a ON s.avatar_id = a.avatar_id
+                WHERE s.user_id = %s
+                ORDER BY s.updated_at DESC
             """, (user_id,))
 
             rows = cur.fetchall()
@@ -168,6 +172,26 @@ class VectorRAGService:
 
             self.conn.commit()
             return chat_id
+
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    #Deleting a session and their equivelant messsages
+    def delete_session(self, user_id: str, chat_id: str) -> bool:
+        try:
+            with self.conn.cursor() as cur:
+                # Verify the session belongs to this user, then delete it
+                # Messages are deleted automatically via ON DELETE CASCADE
+                cur.execute("""
+                    DELETE FROM sessions
+                    WHERE id = %s AND user_id = %s
+                """, (chat_id, user_id))
+
+                deleted = cur.rowcount  # 1 if deleted, 0 if not found / wrong user
+
+            self.conn.commit()
+            return deleted == 1
 
         except Exception:
             self.conn.rollback()

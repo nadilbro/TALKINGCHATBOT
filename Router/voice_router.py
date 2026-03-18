@@ -1,21 +1,16 @@
 import re
 from html import unescape
-
+import base64
+import traceback
+from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
-from typing import List, Dict, Any
-import base64
-import traceback
 
 from Providers.ai_provider import AIProvider
 from Providers.voice_chat import VoiceChatSystem
 from SQL.RAG import VectorRAGService
 from Providers.APIContracts import SessionInit
-
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-import traceback
-from typing import Any, Dict, List, Tuple, Optional
 
 router = APIRouter(prefix="/system", tags=["chat"])
 
@@ -43,9 +38,9 @@ async def chat_init(init_details: SessionInit):
     userID = init_details.userID
     chatID = init_details.chat_id
 
-    avatar_key, voice_name, welcome_message, rive_url = rag.get_avatar(userID, chatID)
+    avatar_key, voice_name, welcome_message, rive_url, rive_prompt = rag.get_avatar(userID, chatID)
 
-    if avatar_key is None and voice_name is None and welcome_message is None and rive_url is None:
+    if avatar_key is None and voice_name is None and welcome_message is None and rive_url is None and rive_prompt is None:
         return {"error": "Session not found"}
     
     raw_history = rag.get_history(userID, chatID)
@@ -60,7 +55,7 @@ async def chat_init(init_details: SessionInit):
 
     return {
         "avatar_key": avatar_key,
-        "voice_name": 'en-US-BrianMultilingualNeural',
+        "voice_name": voice_name,
         "welcome_message": welcome_message,
         "rive_url": rive_url,
         "chat_history": chat_history,
@@ -83,6 +78,7 @@ async def audio_chat_ws(ws: WebSocket):
 
     try:
         while True:
+
             # -------------------------
             # Receive a message (robust)
             # -------------------------
@@ -110,7 +106,7 @@ async def audio_chat_ws(ws: WebSocket):
 
             if not voice_name:
                 try:
-                    _, voice_name, _, _ = rag.get_avatar(user_id, chat_id)
+                    _, voice_name, _, _, _ = rag.get_avatar(user_id, chat_id)
                     voice_name = _as_str(voice_name)
                 except Exception:
                     voice_name = "en-US-BrianMultilingualNeural"
@@ -215,7 +211,7 @@ async def audio_chat_ws(ws: WebSocket):
 
                 audio_bytes, visemes = await tts_instance.synthesize_mp3_with_visemes(
                     text=plain_text,
-                    voice_name="en-US-BrianMultilingualNeural",
+                    voice_name=voice_name,
                 )
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"TTS synthesis failed: {str(e)}"})
