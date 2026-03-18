@@ -72,7 +72,9 @@ class RhubarbProvider:
     ) -> List[Dict[str, Any]]:
 
         tmp_files = []
-
+        # Debug — check available recognizers
+        debug = subprocess.run([self.rhubarb_bin, "--help"], capture_output=True, text=True)
+        print("==> Rhubarb help:", debug.stdout, debug.stderr)
         try:
             # Write transcript to a temp file (always needed)
             text_f = tempfile.NamedTemporaryFile(
