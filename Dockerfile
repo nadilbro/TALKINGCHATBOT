@@ -13,11 +13,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-RUN wget -q https://github.com/DanielSWolf/rhubarb-lip-sync/releases/download/v1.13.0/rhubarb-lip-sync-1.13.0-linux.zip && \
-    unzip -q rhubarb-lip-sync-1.13.0-linux.zip && \
-    cp Rhubarb-Lip-Sync-1.13.0-Linux/rhubarb /usr/local/bin/rhubarb && \
+RUN wget -q https://github.com/DanielSWolf/rhubarb-lip-sync/releases/download/v1.12.0/rhubarb-lip-sync-1.12.0-linux.zip && \
+    unzip -q rhubarb-lip-sync-1.12.0-linux.zip && \
+    cp Rhubarb-Lip-Sync-1.12.0-Linux/rhubarb /usr/local/bin/rhubarb && \
     chmod +x /usr/local/bin/rhubarb && \
-    rm -rf rhubarb-lip-sync-1.13.0-linux.zip Rhubarb-Lip-Sync-1.13.0-Linux
+    rm -rf rhubarb-lip-sync-1.12.0-linux.zip Rhubarb-Lip-Sync-1.12.0-Linux
 
 COPY . .
 
