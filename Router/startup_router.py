@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query
 
-from Providers.APIContracts import SessionBase
+from Providers.APIContracts import SessionBase, SessionCreate, SessionDelete
 from SQL.RAG import VectorRAGService
 from Providers.ai_provider import AIProvider
 from Providers.startup_provider import StartUp
@@ -18,12 +18,15 @@ async def initialise_sessions(user_id: str = Query(...)):
     return rag.get_session_history(user_id)
 
 @router.post("/create_session")
-#This is used to create a new session to be registered into the database
-async def create_session_route(data: SessionBase):
-    chat_id = rag.create_session(user_id=data.user_id, title=data.title)
+async def create_session_route(data: SessionCreate):
+    chat_id = rag.create_session(
+        user_id=data.user_id,
+        title=data.title,
+        avatar_name=data.avatar_name
+    )
     return {"chat_id": chat_id}
 
 @router.post("/delete_session")
-async def delete_session_route(data: SessionBase):
+async def delete_session_route(data: SessionDelete):
     success = rag.delete_session(user_id=data.user_id, chat_id=data.id)
     return {"success": success}
