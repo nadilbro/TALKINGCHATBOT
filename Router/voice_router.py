@@ -38,13 +38,18 @@ async def chat_init(init_details: SessionInit):
     userID = init_details.userID
     chatID = init_details.chat_id
 
+    print(f"DEBUG: userID={userID}, chatID={chatID}")
+
     result = rag.get_avatar(userID, chatID)
+    print(f"DEBUG: get_avatar result={result}")
 
     if result is None:
         return {"error": "Session not found"}
+
     avatar_key, voice_name, welcome_message, rive_url, rive_prompt = result
-    
+
     raw_history = rag.get_history(userID, chatID)
+    print(f"DEBUG: raw_history={raw_history}")
 
     chat_history = []
     for m in raw_history:
@@ -53,6 +58,8 @@ async def chat_init(init_details: SessionInit):
         if not content:
             continue
         chat_history.append({"role": role, "content": content})
+
+    print(f"DEBUG: chat_history={chat_history}")
 
     return {
         "avatar_key": avatar_key,
