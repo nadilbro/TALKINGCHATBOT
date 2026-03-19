@@ -10,7 +10,7 @@ class AIProvider:
         # cache provider instances (don’t recreate clients per request)
         self._providers = {
             "openai": OpenAIProvider(chat_model="gpt-5-nano", embed_model="text-embedding-3-small"),
-            "gemini": GeminiProvider(chat_model="gemini-2.0-flash-lite", embed_model="gemini-2.0-pro"),
+            "gemini": GeminiProvider(chat_model="gemini-2.0-flash", embed_model="gemini-2.0-pro"),
         }
 
 
