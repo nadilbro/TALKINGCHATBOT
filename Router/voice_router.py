@@ -41,7 +41,7 @@ async def chat_init(init_details: SessionInit):
     print(chatID)
     # Transcript is primary: always load it
     raw_history = rag.get_history(userID, chatID)
-    print("DEBUG: " + raw_history)
+    print("DEBUG: " + {raw_history})
     # Safe defaults when avatar metadata is missing
 
     result = rag.get_avatar(userID, chatID)
@@ -61,7 +61,7 @@ async def chat_init(init_details: SessionInit):
             chat_history.append({"role": role, "content": content})
 
     print(chat_history)
-    
+
     return {
         "avatar_key": avatar_key,
         "voice_name": voice_name,
