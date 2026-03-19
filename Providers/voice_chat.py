@@ -8,19 +8,23 @@ from Providers.phenome_provider import TextVisemeProvider
 
 
 # ---------------------------------------------------------------------------
-# ARPAbet phoneme → Preston Blair viseme ID (0–8)
+# ARPAbet phoneme → Azure-style viseme ID (0–21)
 # ---------------------------------------------------------------------------
 ARPABET_TO_VISEME = {
-    "AA": 3, "AE": 3, "AH": 3, "AO": 3, "AY": 3,
-    "AW": 4, "OW": 4, "OY": 4, "UH": 4, "UW": 4, "W": 4,
-    "EH": 2, "ER": 2, "EY": 2, "IH": 2, "IY": 2, "Y": 2,
-    "B": 1, "P": 1, "M": 1,
-    "F": 5, "V": 5,
-    "TH": 6, "DH": 6,
-    "SH": 7, "CH": 7, "JH": 7, "ZH": 7,
-    "D": 8, "G": 8, "HH": 8, "K": 8, "L": 8,
-    "N": 8, "NG": 8, "R": 8, "S": 8, "T": 8, "Z": 8,
+    # Vowels
+    "AA": 2,  "AE": 1,  "AH": 1,  "AO": 3,
+    "AW": 9,  "AY": 11, "EH": 4,  "ER": 5,
+    "EY": 11, "IH": 6,  "IY": 6,  "OW": 8,
+    "OY": 10, "UH": 4,  "UW": 7,
+    # Consonants
+    "B":  21, "CH": 16, "D":  19, "DH": 17,
+    "F":  18, "G":  20, "HH": 12, "JH": 16,
+    "K":  20, "L":  14, "M":  21, "N":  19,
+    "NG": 20, "P":  21, "R":  13, "S":  15,
+    "SH": 16, "T":  19, "TH": 17, "V":  18,
+    "W":  7,  "Y":  6,  "Z":  15, "ZH": 16,
 }
+
 
 class VoiceChatSystem:
     def __init__(self):
@@ -32,7 +36,6 @@ class VoiceChatSystem:
         if not self.voice_id:
             raise RuntimeError("Missing ELEVENLABS_VOICE_ID env var")
 
-        # Fallback viseme provider in case timestamp API fails
         self.viseme_provider = TextVisemeProvider()
 
     async def synthesize_mp3_with_visemes(
@@ -61,10 +64,8 @@ class VoiceChatSystem:
 
         data = response.json()
 
-        # Decode audio
         audio_bytes = base64.b64decode(data["audio_base64"])
 
-        # Extract alignment
         alignment = data.get("alignment", {})
         characters = alignment.get("characters", [])
         start_times = alignment.get("character_start_times_seconds", [])
@@ -103,16 +104,19 @@ class VoiceChatSystem:
 
             for i, phoneme in enumerate(phonemes):
                 t_ms = int((word_start + i * phoneme_duration) * 1000)
-                viseme_id = ARPABET_TO_VISEME.get(phoneme, 8)
+                viseme_id = ARPABET_TO_VISEME.get(phoneme, 19)
                 visemes.append({"t_ms": t_ms, "viseme_id": viseme_id})
+
+        if end_times:
+            visemes.append({"t_ms": int(end_times[-1] * 1000), "viseme_id": 0})
+
+        # Remove consecutive duplicates
         deduped = []
         for v in visemes:
             if not deduped or v["viseme_id"] != deduped[-1]["viseme_id"]:
                 deduped.append(v)
 
         return deduped
-
-
 
     def _get_word_windows(
         self,
