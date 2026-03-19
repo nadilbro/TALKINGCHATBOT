@@ -75,7 +75,7 @@ class VectorRAGService:
                 row = cur.fetchone()
 
                 if not row:
-                    return None, None, None, None, None
+                    return None
 
                 return (
                     row.get("rive_avatar"),
@@ -146,23 +146,31 @@ class VectorRAGService:
             return rows
         
     #CREATING A NEW SESSION AND SAVING INFORMATION
-    def create_session(self, user_id: str, title: str | None = None) -> str:
+    def create_session(self, user_id: str, title: str | None = None, avatar_name: str | None = None) -> str:
         chat_id = str(uuid.uuid4())
 
         try:
+            #First we check if the account exists. 
             with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
-                # Ensure the user exists in accounts first
                 cur.execute("""
                     INSERT INTO accounts (user_id)
                     VALUES (%s)
                     ON CONFLICT (user_id) DO NOTHING
                 """, (user_id,))
 
-                # Now create the session
+                avatar_id = None
+                if avatar_name:
+                    cur.execute("""
+                        SELECT avatar_id, voice, url, prompt FROM rive_avatars WHERE name = %s
+                    """, (avatar_name,))
+                    row = cur.fetchone()
+                    if row:
+                        avatar_id = row["avatar_id"]
+
                 cur.execute("""
-                    INSERT INTO sessions (id, user_id, title, status)
-                    VALUES (%s, %s, %s, 'Open')
-                """, (chat_id, user_id, title))
+                    INSERT INTO sessions (id, user_id, title, avatar_id, status)
+                    VALUES (%s, %s, %s, %s, 'Open')
+                """, (chat_id, user_id, title, avatar_id))
 
             self.conn.commit()
             return chat_id
@@ -170,7 +178,6 @@ class VectorRAGService:
         except Exception:
             self.conn.rollback()
             raise
-
     #Deleting a session and their equivelant messsages
     def delete_session(self, user_id: str, chat_id: str) -> bool:
         try:
