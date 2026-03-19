@@ -52,42 +52,40 @@ class TextVisemeProvider:
         self._cmu = cmudict.dict()
 
     def get_visemes(self, text: str) -> List[Dict[str, Any]]:
+        """
+        Convert text to a list of timed viseme events.
+
+        Args:
+            text: The transcript string (e.g. Gemini's response)
+
+        Returns:
+            List of { "t_ms": int, "viseme_id": int }
+        """
         words = self._tokenize(text)
         visemes = []
         t_ms = 0
 
         for word in words:
             phonemes = self._word_to_phonemes(word)
+
             if not phonemes:
+                # Unknown word — add a short pause and move on
                 t_ms += PHONEME_DURATION_MS * 2
                 continue
+
             for phoneme in phonemes:
-                viseme_id = ARPABET_TO_VISEME.get(phoneme, 19)
+                viseme_id = ARPABET_TO_VISEME.get(phoneme, 8)
                 visemes.append({"t_ms": t_ms, "viseme_id": viseme_id})
                 t_ms += PHONEME_DURATION_MS
+
+            # Short pause between words
             t_ms += PHONEME_DURATION_MS
 
+        # Always end on silence
         visemes.append({"t_ms": t_ms, "viseme_id": 0})
 
-        # Scale to estimated audio duration based on word count
-        # ElevenLabs flash speaks at roughly 150 words per minute
-        word_count = len(words)
-        estimated_duration_ms = (word_count / 150) * 60 * 1000
-        
-        if t_ms > 0 and estimated_duration_ms > 0:
-            scale = estimated_duration_ms / t_ms
-            visemes = [
-                {"t_ms": int(v["t_ms"] * scale), "viseme_id": v["viseme_id"]}
-                for v in visemes
-            ]
+        return visemes
 
-        # Remove consecutive duplicates
-        deduped = []
-        for v in visemes:
-            if not deduped or v["viseme_id"] != deduped[-1]["viseme_id"]:
-                deduped.append(v)
-
-        return deduped
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
