@@ -169,14 +169,6 @@ def init_db() -> None:
         # -----------------------------
         seed = (os.getenv("DB_SEED_TEST_DATA", "1") or "1").strip() == "1"
         if seed:
-            cur.execute("""
-            INSERT INTO accounts (user_id, name, email, phone, subscription_status, monthly_token_limit, monthly_token_used)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (user_id) DO NOTHING;
-            """, (
-                "user_test_001", "Test User", "test@example.com", "0400000000",
-                "active", 500000, 0
-            ))
 
             #Add the existing RIVE Characters.
             cur.execute("""
@@ -202,13 +194,5 @@ def init_db() -> None:
                 "1.0"
             ))
 
-            cur.execute("""
-            INSERT INTO sessions (id, user_id, title, welcome_message, status)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (id) DO NOTHING;
-            """, (
-                "chat_test_001", "user_test_001", "Test Session",
-                "Hey! How can I help you today?", "Open"
-            ))
 
     conn.close()
