@@ -11,12 +11,10 @@ from Providers.phenome_provider import TextVisemeProvider
 # ARPAbet phoneme → Azure-style viseme ID (0–21)
 # ---------------------------------------------------------------------------
 ARPABET_TO_VISEME = {
-    # Vowels
     "AA": 2,  "AE": 1,  "AH": 1,  "AO": 3,
     "AW": 9,  "AY": 11, "EH": 4,  "ER": 5,
     "EY": 11, "IH": 6,  "IY": 6,  "OW": 8,
     "OY": 10, "UH": 4,  "UW": 7,
-    # Consonants
     "B":  21, "CH": 16, "D":  19, "DH": 17,
     "F":  18, "G":  20, "HH": 12, "JH": 16,
     "K":  20, "L":  14, "M":  21, "N":  19,
@@ -29,20 +27,24 @@ ARPABET_TO_VISEME = {
 class VoiceChatSystem:
     def __init__(self):
         self.api_key = (os.getenv("ELEVENLABS_API_KEY") or "").strip()
-
         if not self.api_key:
             raise RuntimeError("Missing ELEVENLABS_API_KEY env var")
-
         self.viseme_provider = TextVisemeProvider()
 
-    async def synthesize_mp3_with_visemes(
+    async def synthesize_sentence(
         self,
         text: str,
-        voice_id: str = None,
-    ) -> Tuple[bytes, List[Dict[str, Any]]]:
+        voice_id: str,
+    ) -> Tuple[bytes, List[Dict[str, Any]], float]:
+        """
+        Process a single sentence through ElevenLabs.
+        Returns (audio_bytes, visemes, duration_seconds)
+        """
         return await run_in_threadpool(self._synthesize_blocking, text, voice_id)
 
-    def _synthesize_blocking(self, text: str, voice_id: str) -> Tuple[bytes, List[Dict[str, Any]]]:
+    def _synthesize_blocking(
+        self, text: str, voice_id: str
+    ) -> Tuple[bytes, List[Dict[str, Any]], float]:
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/with-timestamps"
 
         headers = {
@@ -60,7 +62,6 @@ class VoiceChatSystem:
         response.raise_for_status()
 
         data = response.json()
-
         audio_bytes = base64.b64decode(data["audio_base64"])
 
         alignment = data.get("alignment", {})
@@ -70,7 +71,10 @@ class VoiceChatSystem:
 
         visemes = self._build_visemes(characters, start_times, end_times)
 
-        return audio_bytes, visemes
+        # Duration of this sentence's audio
+        duration = end_times[-1] if end_times else 0.0
+
+        return audio_bytes, visemes, duration
 
     def _build_visemes(
         self,
