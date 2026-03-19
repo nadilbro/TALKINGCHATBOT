@@ -69,7 +69,7 @@ class VectorRAGService:
                     SELECT a.name AS rive_avatar, a.voice AS avatar_voice,
                            s.welcome_message, a.url AS rive_url, a.prompt AS rive_prompt
                     FROM sessions s
-                    JOIN rive_avatars a ON s.avatar_id = a.avatar_id
+                    LEFT JOIN rive_avatars a ON s.avatar_id = a.avatar_id
                     WHERE s.user_id = %s AND s.id = %s
                 """, (user_id, chat_id))
                 row = cur.fetchone()
@@ -90,6 +90,8 @@ class VectorRAGService:
     
 
     def get_session_history(self, user_id):
+        #this gets the history of all the sessions 
+        #NOT THE INDUVIDUAL
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
             SELECT
