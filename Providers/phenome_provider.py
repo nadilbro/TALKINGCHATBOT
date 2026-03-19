@@ -21,17 +21,17 @@ nltk.download("cmudict", quiet=True)
 # ---------------------------------------------------------------------------
 ARPABET_TO_VISEME = {
     # Vowels
-    "AA": 3, "AE": 3, "AH": 3, "AO": 3,
-    "AW": 4, "AY": 3, "EH": 2, "ER": 2,
-    "EY": 2, "IH": 2, "IY": 2, "OW": 4,
-    "OY": 4, "UH": 4, "UW": 4,
+    "AA": 2,  "AE": 1,  "AH": 1,  "AO": 3,
+    "AW": 9,  "AY": 11, "EH": 4,  "ER": 5,
+    "EY": 11, "IH": 6,  "IY": 6,  "OW": 8,
+    "OY": 10, "UH": 4,  "UW": 7,
     # Consonants
-    "B":  1, "CH": 7, "D":  8, "DH": 6,
-    "F":  5, "G":  8, "HH": 8, "JH": 7,
-    "K":  8, "L":  8, "M":  1, "N":  8,
-    "NG": 8, "P":  1, "R":  8, "S":  8,
-    "SH": 7, "T":  8, "TH": 6, "V":  5,
-    "W":  4, "Y":  2, "Z":  8, "ZH": 7,
+    "B":  21, "CH": 16, "D":  19, "DH": 17,
+    "F":  18, "G":  20, "HH": 12, "JH": 16,
+    "K":  20, "L":  14, "M":  21, "N":  19,
+    "NG": 20, "P":  21, "R":  13, "S":  15,
+    "SH": 16, "T":  19, "TH": 17, "V":  18,
+    "W":  7,  "Y":  6,  "Z":  15, "ZH": 16,
 }
 
 # Average phoneme duration in milliseconds (rough estimate for natural speech)
