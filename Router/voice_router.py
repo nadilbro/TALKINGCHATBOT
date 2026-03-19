@@ -45,13 +45,13 @@ async def chat_init(init_details: SessionInit):
     # Safe defaults when avatar metadata is missing
 
     result = rag.get_avatar(userID, chatID)
-    
     if result:
-        a_key, v_name, w_msg, r_url, _ = result
+        a_key, v_name, w_msg, r_url, r_prompt = result
         avatar_key = a_key
         voice_name = v_name or voice_name
         welcome_message = w_msg or ""
         rive_url = r_url
+        prompt = r_prompt
 
     chat_history = []
     for m in raw_history:
@@ -60,6 +60,8 @@ async def chat_init(init_details: SessionInit):
         if content:
             chat_history.append({"role": role, "content": content})
 
+    print(chat_history)
+    
     return {
         "avatar_key": avatar_key,
         "voice_name": voice_name,

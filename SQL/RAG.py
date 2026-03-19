@@ -76,7 +76,11 @@ class VectorRAGService:
 
                 if not row:
                     return None
-
+                print(row.get("rive_avatar"),
+                    row.get("avatar_voice"),
+                    row.get("welcome_message"),
+                    row.get("rive_url"),
+                    row.get("rive_prompt"))
                 return (
                     row.get("rive_avatar"),
                     row.get("avatar_voice"),
