@@ -29,24 +29,21 @@ ARPABET_TO_VISEME = {
 class VoiceChatSystem:
     def __init__(self):
         self.api_key = (os.getenv("ELEVENLABS_API_KEY") or "").strip()
-        self.voice_id = (os.getenv("ELEVENLABS_VOICE_ID") or "").strip()
 
         if not self.api_key:
             raise RuntimeError("Missing ELEVENLABS_API_KEY env var")
-        if not self.voice_id:
-            raise RuntimeError("Missing ELEVENLABS_VOICE_ID env var")
 
         self.viseme_provider = TextVisemeProvider()
 
     async def synthesize_mp3_with_visemes(
         self,
         text: str,
-        voice_name: str = None,
+        voice_id: str = None,
     ) -> Tuple[bytes, List[Dict[str, Any]]]:
-        return await run_in_threadpool(self._synthesize_blocking, text)
+        return await run_in_threadpool(self._synthesize_blocking, text, voice_id)
 
-    def _synthesize_blocking(self, text: str) -> Tuple[bytes, List[Dict[str, Any]]]:
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{self.voice_id}/with-timestamps"
+    def _synthesize_blocking(self, text: str, voice_id: str) -> Tuple[bytes, List[Dict[str, Any]]]:
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/with-timestamps"
 
         headers = {
             "xi-api-key": self.api_key,

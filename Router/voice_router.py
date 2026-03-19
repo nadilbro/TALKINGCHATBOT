@@ -48,7 +48,7 @@ async def chat_init(init_details: SessionInit):
     if result:
         a_key, v_name, w_msg, r_url, r_prompt = result
         avatar_key = a_key
-        voice_name = v_name or voice_name
+        voice_name = v_name or ""
         welcome_message = w_msg or ""
         rive_url = r_url
         prompt = r_prompt
@@ -62,7 +62,6 @@ async def chat_init(init_details: SessionInit):
 
     print(f"2 + {chat_history}")
     print(f"3 + {avatar_key} + {voice_name} + {welcome_message} + {rive_url}+ {chat_history}")
-    
     return {
         "avatar_key": avatar_key,
         "voice_name": voice_name,
@@ -112,14 +111,14 @@ async def audio_chat_ws(ws: WebSocket):
             user_id = _as_str(payload.get("user_id") or payload.get("site_id"))  # TEMP: support old key
             chat_id = _as_str(payload.get("chat_id"))
             user_text = _as_str(payload.get("message"))
-            voice_name = _as_str(payload.get("voice_name"))
+            voice_id = _as_str(payload.get("voice_name"))
 
-            if not voice_name:
+            if not voice_id:
                 try:
-                    _, voice_name, _, _, _ = rag.get_avatar(user_id, chat_id)
-                    voice_name = _as_str(voice_name)
+                    _, voice_id, _, _, _ = rag.get_avatar(user_id, chat_id)
+                    voice_id = _as_str(voice_id)
                 except Exception:
-                    voice_name = "en-US-BrianMultilingualNeural"
+                    voice_id = "UgBBYS2sOqTuMpoF3BR0"
 
             if not user_id or not chat_id or not user_text:
                 await ws.send_json({"type": "error", "message": "Missing user_id/chat_id/message"})
@@ -229,7 +228,7 @@ async def audio_chat_ws(ws: WebSocket):
 
                 audio_bytes, visemes = await tts_instance.synthesize_mp3_with_visemes(
                     text=plain_text,
-                    voice_name=voice_name,
+                    voice_id=voice_id,
                 )
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"TTS synthesis failed: {str(e)}"})
