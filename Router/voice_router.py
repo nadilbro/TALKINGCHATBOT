@@ -38,10 +38,11 @@ async def chat_init(init_details: SessionInit):
     userID = init_details.userID
     chatID = init_details.chat_id
 
-    avatar_key, voice_name, welcome_message, rive_url, rive_prompt = rag.get_avatar(userID, chatID)
+    result = rag.get_avatar(userID, chatID)
 
-    if avatar_key is None and voice_name is None and welcome_message is None and rive_url is None and rive_prompt is None:
+    if result is None:
         return {"error": "Session not found"}
+    avatar_key, voice_name, welcome_message, rive_url, rive_prompt = result
     
     raw_history = rag.get_history(userID, chatID)
 
@@ -166,7 +167,7 @@ async def audio_chat_ws(ws: WebSocket):
                             People are drawn to your honesty and quiet warmth.
                             Always respond as Mia, stay in character, and keep replies calm, thoughtful and a little mysterious.
                             REMEMBER: Your a freind, not just an assistant, so act like a freind. 
-                            
+
                             Rules:
                             - Use ONLY CONTEXT. 
                             - Dont use emoji's.
