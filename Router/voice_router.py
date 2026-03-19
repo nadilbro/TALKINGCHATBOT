@@ -37,17 +37,15 @@ def get_tts():
 async def chat_init(init_details: SessionInit):
     userID = init_details.userID
     chatID = init_details.chat_id
-
+    print(userID)
+    print(chatID)
     # Transcript is primary: always load it
-    raw_history = rag.get_history(userID, chatID) or []
-
+    raw_history = rag.get_history(userID, chatID)
+    print("DEBUG: " + raw_history)
     # Safe defaults when avatar metadata is missing
-    avatar_key = None
-    voice_name = "en-US-BrianMultilingualNeural"
-    welcome_message = ""
-    rive_url = None
 
     result = rag.get_avatar(userID, chatID)
+    
     if result:
         a_key, v_name, w_msg, r_url, _ = result
         avatar_key = a_key
