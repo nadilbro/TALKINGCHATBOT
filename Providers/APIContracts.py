@@ -39,7 +39,14 @@ class SessionInit(BaseModel):
     userID: str
     chat_id: str
 
+class SessionCreate(BaseModel):
+    user_id: str
+    title: Optional[str] = None
+    avatar_name: Optional[str] = None
 
+class SessionDelete(BaseModel):
+    id: str
+    user_id: str
 
 class SessionBase(BaseModel):
     id: str
