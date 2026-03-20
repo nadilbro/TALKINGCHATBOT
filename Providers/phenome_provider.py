@@ -1,8 +1,10 @@
 import re
 from typing import List, Dict, Any
 
-import nltk  # ← add this back
+import nltk
 # Download CMU dict if not already present
+nltk.download("cmudict", quiet=True)
+
 # ---------------------------------------------------------------------------
 # ARPAbet phoneme → Preston Blair viseme ID (0–8)
 # ---------------------------------------------------------------------------
@@ -46,7 +48,6 @@ class TextVisemeProvider:
     """
 
     def __init__(self):
-        import nltk
         nltk.download("cmudict", quiet=True)
         from nltk.corpus import cmudict
         self._cmu = cmudict.dict()
