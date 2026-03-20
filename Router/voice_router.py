@@ -177,42 +177,33 @@ async def audio_chat_ws(ws: WebSocket):
                     user_prompt = user_text
 
                 tts_instance = get_tts()
+                sentences = []
                 sentence_buffer = ""
-                sentence_tasks = []  # ordered list of asyncio tasks
 
-                # Stream Gemini — fire ElevenLabs as each sentence completes
                 async for delta in ai.stream(site_id=user_id, system=system_prompt, user=user_prompt):
                     sentence_buffer += delta
                     # Check for sentence boundaries
-                    if re.search(r'[.?,]\s', sentence_buffer) or re.search(r'[.?]\s*$', sentence_buffer):
-                        sentences = split_sentences(sentence_buffer)
-                        if len(sentences) >= 1:
-                            # Fire all complete sentences except possibly the last
-                            # (last might be incomplete if no trailing punctuation)
-                            to_fire = sentences[:-1] if not re.search(r'[.?]\s*$', sentence_buffer) else sentences
-                            remainder = sentences[-1] if not re.search(r'[.?]\s*$', sentence_buffer) else ""
+                    while re.search(r'[.?!,]\s', sentence_buffer):
+                        match = re.search(r'[.?!,]\s', sentence_buffer)
+                        cut = match.end()
+                        sentence = sentence_buffer[:cut].strip()
+                        sentence_buffer = sentence_buffer[cut:]
+                        if sentence:
+                            sentences.append(sentence)
 
-                            for s in to_fire:
-                                if s:
-                                    task = asyncio.create_task(
-                                        tts_instance.synthesize_sentence(s, voice_id)
-                                    )
-                                    sentence_tasks.append((s, task))
-
-                            sentence_buffer = remainder
-
-                # Fire any remaining text
+                # Catch any remaining text
                 if sentence_buffer.strip():
-                    task = asyncio.create_task(
-                        tts_instance.synthesize_sentence(sentence_buffer.strip(), voice_id)
-                    )
-                    sentence_tasks.append((sentence_buffer.strip(), task))
-                print(f"==> Sentence tasks: {len(sentence_tasks)}", flush=True)
-                for s, _ in sentence_tasks:
-                    print(f"==> Sentence: {s}", flush=True)
-                # Reconstruct full bot_text for saving
-                bot_text = " ".join(s for s, _ in sentence_tasks)
+                    sentences.append(sentence_buffer.strip())
 
+                print(f"==> Sentences collected: {sentences}", flush=True)
+
+                # Now fire ALL ElevenLabs calls in parallel
+                tasks = [
+                    asyncio.create_task(tts_instance.synthesize_sentence(s, voice_id))
+                    for s in sentences
+                ]
+
+                bot_text = " ".join(sentences)
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"AI failed: {str(e)}"})
                 continue
@@ -233,22 +224,23 @@ async def audio_chat_ws(ws: WebSocket):
                 all_audio = b""
                 all_visemes = []
                 cumulative_offset_ms = 0
-                for sentence, task in sentence_tasks:
-                    try:
-                        audio_bytes, visemes, duration = await task
-                        print(f"==> Got audio for: {sentence[:30]}, bytes: {len(audio_bytes)}", flush=True)
-                        for v in visemes:
-                            all_visemes.append({
-                                "t_ms": v["t_ms"] + cumulative_offset_ms,
-                                "viseme_id": v["viseme_id"],
-                            })
-                        all_audio += audio_bytes
-                        cumulative_offset_ms += int(duration * 1000)
-                    except Exception as e:
-                        print(f"==> ElevenLabs failed: {sentence[:30]}, error: {e}", flush=True)
-                        continue
+                results = await asyncio.gather(*tasks, return_exceptions=True)
 
-                # Send to frontend
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        print(f"==> ElevenLabs failed for sentence {i}: {result}", flush=True)
+                        continue
+                    audio_bytes, visemes, duration = result
+                    print(f"==> Got audio for sentence {i}, bytes: {len(audio_bytes)}", flush=True)
+                    for v in visemes:
+                        all_visemes.append({
+                            "t_ms": v["t_ms"] + cumulative_offset_ms,
+                            "viseme_id": v["viseme_id"],
+                        })
+                    all_audio += audio_bytes
+                    cumulative_offset_ms += int(duration * 1000)
+
+                # Send to frontend — THIS must be at this indent level, not inside except
                 await ws.send_json({
                     "type": "audio_begin",
                     "format": "mp3",
