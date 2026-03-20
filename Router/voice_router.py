@@ -183,7 +183,6 @@ async def audio_chat_ws(ws: WebSocket):
                 # Stream Gemini — fire ElevenLabs as each sentence completes
                 async for delta in ai.stream(site_id=user_id, system=system_prompt, user=user_prompt):
                     sentence_buffer += delta
-
                     # Check for sentence boundaries
                     if re.search(r'[.?,]\s', sentence_buffer) or re.search(r'[.?]\s*$', sentence_buffer):
                         sentences = split_sentences(sentence_buffer)
@@ -208,7 +207,9 @@ async def audio_chat_ws(ws: WebSocket):
                         tts_instance.synthesize_sentence(sentence_buffer.strip(), voice_id)
                     )
                     sentence_tasks.append((sentence_buffer.strip(), task))
-
+                print(f"==> Sentence tasks: {len(sentence_tasks)}", flush=True)
+                for s, _ in sentence_tasks:
+                    print(f"==> Sentence: {s}", flush=True)
                 # Reconstruct full bot_text for saving
                 bot_text = " ".join(s for s, _ in sentence_tasks)
 
@@ -232,19 +233,20 @@ async def audio_chat_ws(ws: WebSocket):
                 all_audio = b""
                 all_visemes = []
                 cumulative_offset_ms = 0
-
                 for sentence, task in sentence_tasks:
-                    audio_bytes, visemes, duration = await task
-
-                    # Offset visemes by cumulative duration of previous sentences
-                    for v in visemes:
-                        all_visemes.append({
-                            "t_ms": v["t_ms"] + cumulative_offset_ms,
-                            "viseme_id": v["viseme_id"],
-                        })
-
-                    all_audio += audio_bytes
-                    cumulative_offset_ms += int(duration * 1000)
+                    try:
+                        audio_bytes, visemes, duration = await task
+                        print(f"==> Got audio for: {sentence[:30]}, bytes: {len(audio_bytes)}", flush=True)
+                        for v in visemes:
+                            all_visemes.append({
+                                "t_ms": v["t_ms"] + cumulative_offset_ms,
+                                "viseme_id": v["viseme_id"],
+                            })
+                        all_audio += audio_bytes
+                        cumulative_offset_ms += int(duration * 1000)
+                    except Exception as e:
+                        print(f"==> ElevenLabs failed: {sentence[:30]}, error: {e}", flush=True)
+                        continue
 
                 # Send to frontend
                 await ws.send_json({
