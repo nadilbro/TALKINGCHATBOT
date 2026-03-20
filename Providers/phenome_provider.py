@@ -1,7 +1,6 @@
 import re
 from typing import List, Dict, Any
-import nltk
-from nltk.corpus import cmudict
+
 
 # Download CMU dict if not already present
 nltk.download("cmudict", quiet=True)
@@ -49,6 +48,9 @@ class TextVisemeProvider:
     """
 
     def __init__(self):
+        import nltk
+        nltk.download("cmudict", quiet=True)
+        from nltk.corpus import cmudict
         self._cmu = cmudict.dict()
 
     def get_visemes(self, text: str) -> List[Dict[str, Any]]:
