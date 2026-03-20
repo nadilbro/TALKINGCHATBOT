@@ -199,7 +199,7 @@ async def audio_chat_ws(ws: WebSocket):
 
                 # Now fire ALL ElevenLabs calls in parallel
                 tasks = [
-                    asyncio.create_task(tts_instance.synthesize_sentence(s, voice_id))
+                    tts_instance.synthesize_sentence(s, voice_id)
                     for s in sentences
                 ]
 
