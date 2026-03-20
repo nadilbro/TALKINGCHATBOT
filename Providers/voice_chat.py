@@ -2,9 +2,8 @@ import os
 import base64
 import re
 import httpx
+import asyncio
 from typing import List, Dict, Any, Tuple
-from fastapi.concurrency import run_in_threadpool
-from Providers.phenome_provider import TextVisemeProvider
 
 
 # ---------------------------------------------------------------------------
@@ -23,13 +22,18 @@ ARPABET_TO_VISEME = {
     "W":  7,  "Y":  6,  "Z":  15, "ZH": 16,
 }
 
+# Load CMU dict once at module level
+import nltk
+from nltk.corpus import cmudict
+nltk.download("cmudict", quiet=True)
+_CMU = cmudict.dict()
+
 
 class VoiceChatSystem:
     def __init__(self):
         self.api_key = (os.getenv("ELEVENLABS_API_KEY") or "").strip()
         if not self.api_key:
             raise RuntimeError("Missing ELEVENLABS_API_KEY env var")
-        self.viseme_provider = TextVisemeProvider()
 
     async def synthesize_sentence(
         self,
@@ -37,12 +41,16 @@ class VoiceChatSystem:
         voice_id: str,
     ) -> Tuple[bytes, List[Dict[str, Any]], float]:
         """
-        Process a single sentence through ElevenLabs.
-        Returns (audio_bytes, visemes, duration_seconds)
+        Calls ElevenLabs /with-timestamps for a single sentence.
+        Returns (audio_bytes, visemes, duration_seconds).
+        Runs in executor so it doesn't block the event loop.
         """
-        return await run_in_threadpool(self._synthesize_blocking, text, voice_id)
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None, self._call_elevenlabs, text, voice_id
+        )
 
-    def _synthesize_blocking(
+    def _call_elevenlabs(
         self, text: str, voice_id: str
     ) -> Tuple[bytes, List[Dict[str, Any]], float]:
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/with-timestamps"
@@ -70,8 +78,6 @@ class VoiceChatSystem:
         end_times = alignment.get("character_end_times_seconds", [])
 
         visemes = self._build_visemes(characters, start_times, end_times)
-
-        # Duration of this sentence's audio
         duration = end_times[-1] if end_times else 0.0
 
         return audio_bytes, visemes, duration
@@ -82,11 +88,6 @@ class VoiceChatSystem:
         start_times: List[float],
         end_times: List[float],
     ) -> List[Dict[str, Any]]:
-        import nltk
-        from nltk.corpus import cmudict
-        nltk.download("cmudict", quiet=True)
-        cmu = cmudict.dict()
-
         word_windows = self._get_word_windows(characters, start_times, end_times)
         visemes = []
 
@@ -95,7 +96,7 @@ class VoiceChatSystem:
             if not clean:
                 continue
 
-            phonemes = self._word_to_phonemes(clean, cmu)
+            phonemes = self._word_to_phonemes(clean)
             if not phonemes:
                 visemes.append({"t_ms": int(word_start * 1000), "viseme_id": 0})
                 continue
@@ -145,8 +146,8 @@ class VoiceChatSystem:
 
         return words
 
-    def _word_to_phonemes(self, word: str, cmu: dict) -> List[str]:
-        entries = cmu.get(word)
+    def _word_to_phonemes(self, word: str) -> List[str]:
+        entries = _CMU.get(word)
         if not entries:
             return []
         return [re.sub(r"\d", "", p) for p in entries[0]]
