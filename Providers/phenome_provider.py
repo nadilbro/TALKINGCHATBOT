@@ -2,8 +2,7 @@ import re
 from typing import List, Dict, Any
 
 import nltk
-# Download CMU dict if not already present
-nltk.download("cmudict", quiet=True)
+
 
 # ---------------------------------------------------------------------------
 # ARPAbet phoneme → Preston Blair viseme ID (0–8)
