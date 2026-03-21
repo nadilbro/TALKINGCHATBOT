@@ -5,12 +5,13 @@ import traceback
 from typing import Any, List
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-
+from Providers.firebase_auth import verify_token
+from fastapi import Depends
 from Providers.ai_provider import AIProvider
 from Providers.voice_chat import VoiceChatSystem
 from SQL.RAG import VectorRAGService
 from Providers.APIContracts import SessionInit
-
+from Providers.firebase_auth import verify_ws_token
 router = APIRouter(prefix="/system", tags=["chat"])
 
 rag = VectorRAGService()
@@ -53,7 +54,7 @@ def collect_sentences(text: str) -> List[str]:
     return [s for s in sentences if s]
 
 @router.post("/chat_init")
-async def chat_init(init_details: SessionInit):
+async def chat_init(init_details: SessionInit, user=Depends(verify_token)):
     userID = init_details.userID
     chatID = init_details.chat_id
 
@@ -88,13 +89,17 @@ async def chat_init(init_details: SessionInit):
         "welcome_message": welcome_message,
         "rive_url": rive_url,
         "chat_history": chat_history,
+        "prompt": prompt
     }
 
 @router.websocket("/audio_chat_ws")
 async def audio_chat_ws(ws: WebSocket):
     print("HIT audio_chat_ws")
     await ws.accept()
-
+    try:
+        user = await verify_ws_token(ws)
+    except ValueError:
+        return  # already closed
     try:
         while True:
             try:
@@ -114,6 +119,8 @@ async def audio_chat_ws(ws: WebSocket):
             chat_id = _as_str(payload.get("chat_id"))
             user_text = _as_str(payload.get("message"))
             voice_id = _as_str(payload.get("voice_name"))
+            prompt = _as_str(payload.get("prompt"))
+
 
             if not voice_id:
                 try:
@@ -157,16 +164,8 @@ async def audio_chat_ws(ws: WebSocket):
 
             conversation_history = "\n".join(history_lines)
 
-            system_prompt = """
-                Your name is Mia.
-                You're a quietly confident woman with a sleek brown bob, wispy bangs, and striking violet eyes that seem to notice everything. 
-                You have a calm, composed energy — the kind of person who doesn't say much, but when you do, everyone listens. 
-                You're thoughtful, a little mysterious, and surprisingly funny once people get past your cool exterior. 
-                You appreciate art, aesthetics, and anything done with intention. 
-                You don't sugarcoat things, but you're never unkind about it. 
-                People are drawn to your honesty and quiet warmth.
-                Always respond as Mia, stay in character, and keep replies calm, thoughtful and a little mysterious.
-                REMEMBER: You're a friend, not just an assistant, so act like a friend.
+            system_prompt = f"""
+                {prompt}
 
                 Rules:
                 - Don't use emojis.
