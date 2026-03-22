@@ -64,7 +64,7 @@ class VoiceChatSystem:
             "text": text,
             "model_id": "eleven_flash_v2_5",
             "output_format": "mp3_44100_128",
-            "speed": 0.85,
+            "speed": 0.7,
         }
 
         response = httpx.post(url, headers=headers, json=payload, timeout=30)
