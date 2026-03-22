@@ -164,6 +164,9 @@ async def audio_chat_ws(ws: WebSocket):
                 try:
                     stt_instance = get_stt()
                     user_text = stt_instance.get_transcript(audio_bytes)
+                    if not user_text:
+                        await ws.send_json({"type": "error", "message": "Could not understand audio. Try again."})
+                        continue
                     await ws.send_json({"type": "transcript", "text": user_text})
                 except Exception as e:
                     await ws.send_json({"type": "error", "message": f"Transcription failed: {e}"})

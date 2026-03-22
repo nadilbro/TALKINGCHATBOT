@@ -13,7 +13,6 @@ class DeepgramProvider:
 
     def get_transcript(self, audio_bytes) -> str:
         try:
-
             response = self.deepgram.listen.rest.v("1").transcribe_file(
                 {"buffer": audio_bytes, "mimetype": "audio/webm"},
                 model="nova-3",
@@ -21,7 +20,7 @@ class DeepgramProvider:
                 smart_format=True,
             )
             transcript = response.results.channels[0].alternatives[0].transcript
-            return transcript
-        
+            return transcript or ""
         except Exception as e:
             print(f"Exception: {e}")
+            return ""
