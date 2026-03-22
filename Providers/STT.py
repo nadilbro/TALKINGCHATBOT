@@ -1,15 +1,24 @@
-from deepgram import DeepgramClient
 import os
-from typing import List, Dict, Any, Tuple
+
+try:
+    from deepgram import DeepgramClient
+    DEEPGRAM_AVAILABLE = True
+except ImportError as e:
+    print(f"==> Deepgram import failed: {e}")
+    DEEPGRAM_AVAILABLE = False
 
 class DeepgramProvider:
-
     def __init__(self):
+        if not DEEPGRAM_AVAILABLE:
+            raise RuntimeError("deepgram-sdk not installed")
+        
+        import deepgram
+        print(f"==> Deepgram SDK version: {deepgram.__version__}")
+        
         api_key = os.getenv("DEEPGRAM_API_KEY")
         if not api_key:
             raise RuntimeError("DEEPGRAM_API_KEY is not set")
         self.deepgram = DeepgramClient(api_key=api_key)
-
 
     def get_transcript(self, audio_bytes, mimetype="audio/webm") -> str:
         try:
@@ -20,8 +29,8 @@ class DeepgramProvider:
                 language="en",
                 smart_format=True,
             )
-            print(f"==> Deepgram raw response: {response}")
             transcript = response.results.channels[0].alternatives[0].transcript
+            print(f"==> Transcript: '{transcript}'")
             return transcript or ""
         except Exception as e:
             print(f"==> Deepgram exception: {e}")
