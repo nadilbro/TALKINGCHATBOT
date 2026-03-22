@@ -3,7 +3,7 @@ import asyncio
 from html import unescape
 import traceback
 from typing import Any, List
-
+import base64
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from Providers.firebase_auth import verify_token
 from fastapi import Depends
@@ -15,7 +15,7 @@ from Providers.firebase_auth import verify_ws_token
 
 from Providers.web_search import TavilyProvider
 from Providers.summary_generator import RollingSummaryManager
-
+from Providers.STT import DeepgramProvider
 
 router = APIRouter(prefix="/system", tags=["chat"])
 
@@ -25,7 +25,7 @@ ai = AIProvider(rag)
 
 tts = None
 tav = None
-
+stt = None
 def html_to_plain_text(html_text: str) -> str:
     text = re.sub(r"<br\s*/?>", "\n", html_text, flags=re.IGNORECASE)
     text = re.sub(r"</p\s*>", "\n", text, flags=re.IGNORECASE)
@@ -37,6 +37,12 @@ def get_tts():
     if tts is None:
         tts = VoiceChatSystem()
     return tts
+
+def get_stt():
+    global stt
+    if stt is None:
+        stt = DeepgramProvider()
+    return stt
 
 def get_web_search():
     global tav
@@ -74,6 +80,12 @@ def collect_sentences(text: str) -> List[str]:
     if buffer.strip():
         sentences.append(buffer.strip())
     return [s for s in sentences if s]
+
+
+
+    
+
+
 
 @router.post("/chat_init")
 async def chat_init(init_details: SessionInit, user=Depends(verify_token)):
@@ -143,7 +155,21 @@ async def audio_chat_ws(ws: WebSocket):
             voice_id = _as_str(payload.get("voice_name"))
             prompt = _as_str(payload.get("prompt"))
             web_search = _as_str(payload.get("web_search"))
+            raw_audio = payload.get("audio_bytes")
+            audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
+            #Get transcript with audio
+            if audio_bytes:
+                try:
+                    stt_instance = get_stt()
+                    user_text = stt_instance.get_transcript(audio_bytes)
+                except Exception as e:
+                    await ws.send_json({"type": "error", "message": f"Transcription failed: {e}"})
+                    continue
 
+            if not user_id or not chat_id or not user_text:
+                await ws.send_json({"type": "error", "message": "Missing user_id/chat_id/message"})
+                continue
+                        
             if not voice_id:
                 try:
                     _, voice_id, _, _, _ = rag.get_avatar(user_id, chat_id)
