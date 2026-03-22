@@ -161,15 +161,19 @@ async def audio_chat_ws(ws: WebSocket):
             audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
             #Get transcript with audio
             if audio_bytes:
-                print(f"Audio bytes length: {len(audio_bytes)}")
+                print(f"==> Audio bytes length: {len(audio_bytes)}")
+                print(f"==> First 20 bytes: {audio_bytes[:20]}")
                 try:
                     stt_instance = get_stt()
                     user_text = stt_instance.get_transcript(audio_bytes)
+                    print(f"==> Transcript result: '{user_text}'")
                     if not user_text:
                         await ws.send_json({"type": "error", "message": "Could not understand audio. Try again."})
                         continue
                     await ws.send_json({"type": "transcript", "text": user_text})
                 except Exception as e:
+                    print(f"==> STT exception: {e}")
+                    traceback.print_exc()
                     await ws.send_json({"type": "error", "message": f"Transcription failed: {e}"})
                     continue
 
