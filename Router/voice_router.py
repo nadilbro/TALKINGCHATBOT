@@ -177,10 +177,6 @@ async def audio_chat_ws(ws: WebSocket):
                 except Exception:
                     voice_id = "UgBBYS2sOqTuMpoF3BR0"
 
-            if not user_id or not chat_id or not user_text:
-                await ws.send_json({"type": "error", "message": "Missing user_id/chat_id/message"})
-                continue
-
             try:
                 history = rag.get_recent_messages(user_id=user_id, chat_id=chat_id, limit=20)
             except Exception as e:
