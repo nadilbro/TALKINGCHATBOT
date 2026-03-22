@@ -161,6 +161,7 @@ async def audio_chat_ws(ws: WebSocket):
             audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
             #Get transcript with audio
             if audio_bytes:
+                print(f"Audio bytes length: {len(audio_bytes)}")
                 try:
                     stt_instance = get_stt()
                     user_text = stt_instance.get_transcript(audio_bytes)

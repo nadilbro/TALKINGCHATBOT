@@ -11,10 +11,10 @@ class DeepgramProvider:
         self.deepgram = DeepgramClient(api_key=api_key)
 
 
-    def get_transcript(self, audio_bytes) -> str:
+    def get_transcript(self, audio_bytes, mimetype="audio/webm") -> str:
         try:
             response = self.deepgram.listen.rest.v("1").transcribe_file(
-                {"buffer": audio_bytes, "mimetype": "audio/webm"},
+                {"buffer": audio_bytes, "mimetype": mimetype},
                 model="nova-3",
                 language="en",
                 smart_format=True,
@@ -22,5 +22,5 @@ class DeepgramProvider:
             transcript = response.results.channels[0].alternatives[0].transcript
             return transcript or ""
         except Exception as e:
-            print(f"Exception: {e}")
+            print(f"Deepgram exception: {e}")
             return ""
