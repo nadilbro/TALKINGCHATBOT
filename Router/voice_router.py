@@ -178,8 +178,16 @@ async def audio_chat_ws(ws: WebSocket):
             else:
                 system_prompt = prompt
 
-            recent_history = history[-6:] if len(history) > 6 else history
+            recent_history = history[-3:] if len(history) > 3 else history
+            
 
+            # WEBSEARCH MODULE
+            if web_search:
+                tavily_instance = get_web_search()
+                web_response = tavily_instance.web_search(user_text, 3)
+                if web_response:
+                    system_prompt = f"{system_prompt}\n\n{web_response}"
+                #def web_search(self, question: str, max_results: int = 3):
             history_lines = []
             for m in recent_history:
                 role = (m.get("role") or "").lower()
@@ -195,7 +203,7 @@ async def audio_chat_ws(ws: WebSocket):
 
             conversation_history = "\n".join(history_lines)
 
-            if conversation_history:
+            if conversation_history or summary_context:
                 user_prompt = f"Conversation history:\n{conversation_history}\n\nLatest user messages:\n{user_text}"
             else:
                 user_prompt = user_text
