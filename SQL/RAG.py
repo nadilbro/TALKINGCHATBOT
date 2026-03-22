@@ -61,7 +61,39 @@ class VectorRAGService:
         # Split on sentence-ending punctuation followed by whitespace
         parts = re.split(r'(?<=[.!?])\s+', (text or "").strip())
         return [p.strip() for p in parts if p and p.strip()]
+        
+    def update_summary(self, chat_id: str, summary: str):
+        try:
+            with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    UPDATE sessions
+                    SET summary = %s, updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (summary, chat_id)
+                )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
+    def get_summary(self, chat_id: str):
+        try:
+            with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT summary FROM sessions WHERE id = %s
+                    """,
+                    (chat_id,)
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                return row.get("summary")
+        except Exception:
+            self.conn.rollback()
+            raise
     def get_avatar(self, user_id, chat_id):
         try:
             with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -76,11 +108,6 @@ class VectorRAGService:
 
                 if not row:
                     return None
-                print(row.get("rive_avatar"),
-                    row.get("avatar_voice"),
-                    row.get("welcome_message"),
-                    row.get("rive_url"),
-                    row.get("rive_prompt"))
                 return (
                     row.get("rive_avatar"),
                     row.get("avatar_voice"),
@@ -88,6 +115,7 @@ class VectorRAGService:
                     row.get("rive_url"),
                     row.get("rive_prompt")
                 )
+    
         except Exception:
             self.conn.rollback()
             raise

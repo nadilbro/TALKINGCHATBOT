@@ -12,12 +12,19 @@ from Providers.voice_chat import VoiceChatSystem
 from SQL.RAG import VectorRAGService
 from Providers.APIContracts import SessionInit
 from Providers.firebase_auth import verify_ws_token
+
+from Providers.web_search import TavilyProvider
+from Providers.summary_generator import RollingSummaryManager
+
+
 router = APIRouter(prefix="/system", tags=["chat"])
 
+summary_mgr = None
 rag = VectorRAGService()
 ai = AIProvider(rag)
 
 tts = None
+tav = None
 
 def html_to_plain_text(html_text: str) -> str:
     text = re.sub(r"<br\s*/?>", "\n", html_text, flags=re.IGNORECASE)
@@ -30,6 +37,21 @@ def get_tts():
     if tts is None:
         tts = VoiceChatSystem()
     return tts
+
+def get_web_search():
+    global tav
+    if tav is None:
+        tav = TavilyProvider()
+    return tav
+
+def get_summary_manager():
+    global summary_mgr
+    if summary_mgr is None:
+        summary_mgr = RollingSummaryManager(
+            gemini_provider=ai.provider,
+            rag=rag
+        )
+    return summary_mgr
 
 def _as_str(x: Any) -> str:
     return (str(x) if x is not None else "").strip()
@@ -120,7 +142,7 @@ async def audio_chat_ws(ws: WebSocket):
             user_text = _as_str(payload.get("message"))
             voice_id = _as_str(payload.get("voice_name"))
             prompt = _as_str(payload.get("prompt"))
-
+            web_search = _as_str(payload.get("web_search"))
 
             if not voice_id:
                 try:
@@ -149,8 +171,17 @@ async def audio_chat_ws(ws: WebSocket):
             # -------------------------
             # Build prompt
             # -------------------------
+            smgr = get_summary_manager()
+            summary_context = smgr.build_context(chat_id)
+            if summary_context:
+                system_prompt = f"{prompt}\n\n{summary_context}"
+            else:
+                system_prompt = prompt
+
+            recent_history = history[-6:] if len(history) > 6 else history
+
             history_lines = []
-            for m in history:
+            for m in recent_history:
                 role = (m.get("role") or "").lower()
                 content = (m.get("content") or "").strip()
                 if not content:
@@ -164,12 +195,8 @@ async def audio_chat_ws(ws: WebSocket):
 
             conversation_history = "\n".join(history_lines)
 
-            system_prompt = f"""
-                {prompt}
-            """
-
             if conversation_history:
-                user_prompt = f"Conversation history:\n{conversation_history}\n\nLatest user message:\n{user_text}"
+                user_prompt = f"Conversation history:\n{conversation_history}\n\nLatest user messages:\n{user_text}"
             else:
                 user_prompt = user_text
 
@@ -214,7 +241,16 @@ async def audio_chat_ws(ws: WebSocket):
                 rag.update_last_message(chat_id=chat_id, last_message=bot_text)
             except Exception:
                 pass
-
+            
+            # Trigger rolling summary update
+            try:
+                smgr = get_summary_manager()
+                recent_for_summary = history[-6:] if len(history) > 6 else list(history)
+                recent_for_summary.append({"role": "user", "content": user_text})
+                recent_for_summary.append({"role": "assistant", "content": bot_text})
+                await smgr.on_new_message(chat_id, recent_for_summary[-6:])
+            except Exception as e:
+                print(f"Summary update error: {e}")
             # -------------------------
             # Fire ALL ElevenLabs calls in parallel, then combine
             # -------------------------
