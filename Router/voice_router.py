@@ -180,13 +180,14 @@ async def audio_chat_ws(ws: WebSocket):
 
             recent_history = history[-3:] if len(history) > 3 else history
             
-
+            
+            web_response = "Websearch is Disabled"
             # WEBSEARCH MODULE
             if web_search:
                 tavily_instance = get_web_search()
                 web_response = tavily_instance.web_search(user_text, 3)
-                if web_response:
-                    system_prompt = f"{system_prompt}\n\n{web_response}"
+                
+            system_prompt = f"{system_prompt}\n\n{web_response}"
                 #def web_search(self, question: str, max_results: int = 3):
             history_lines = []
             for m in recent_history:
