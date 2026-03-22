@@ -14,7 +14,7 @@ class DeepgramProvider:
     def get_transcript(self, audio_bytes, mimetype="audio/webm") -> str:
         try:
             print(f"==> Deepgram: sending {len(audio_bytes)} bytes, mimetype={mimetype}")
-            response = self.deepgram.listen.rest.v("1").transcribe_file(
+            response = self.deepgram.listen.prerecorded.v("1").transcribe_file(
                 {"buffer": audio_bytes, "mimetype": mimetype},
                 model="nova-3",
                 language="en",
