@@ -156,6 +156,8 @@ async def audio_chat_ws(ws: WebSocket):
             prompt = _as_str(payload.get("prompt"))
             web_search = _as_str(payload.get("web_search"))
             raw_audio = payload.get("audio_bytes")
+            if raw_audio and "," in raw_audio:
+                raw_audio = raw_audio.split(",", 1)[1]
             audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
             #Get transcript with audio
             if audio_bytes:
@@ -167,7 +169,7 @@ async def audio_chat_ws(ws: WebSocket):
                     await ws.send_json({"type": "error", "message": f"Transcription failed: {e}"})
                     continue
 
-            if not user_id or not chat_id or not user_text:
+            if not user_id or not chat_id or (not user_text and not audio_bytes):
                 await ws.send_json({"type": "error", "message": "Missing user_id/chat_id/message"})
                 continue
                         
