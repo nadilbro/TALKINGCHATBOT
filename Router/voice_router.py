@@ -54,7 +54,7 @@ def get_summary_manager():
     global summary_mgr
     if summary_mgr is None:
         summary_mgr = RollingSummaryManager(
-            gemini_provider=ai.provider,
+            gemini_provider=ai._providers["gemini"],
             rag=rag
         )
     return summary_mgr
