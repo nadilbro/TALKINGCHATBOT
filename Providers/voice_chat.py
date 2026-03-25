@@ -22,6 +22,9 @@ ARPABET_TO_VISEME = {
     "W":  7,  "Y":  6,  "Z":  15, "ZH": 16,
 }
 
+# Minimum milliseconds per phoneme — prevents flickering on long words
+MIN_PHONEME_MS = 60
+
 # Load CMU dict once at module level
 import nltk
 from nltk.corpus import cmudict
@@ -40,11 +43,6 @@ class VoiceChatSystem:
         text: str,
         voice_id: str,
     ) -> Tuple[bytes, List[Dict[str, Any]], float]:
-        """
-        Calls ElevenLabs /with-timestamps for a single sentence.
-        Returns (audio_bytes, visemes, duration_seconds).
-        Runs in executor so it doesn't block the event loop.
-        """
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(
             None, self._call_elevenlabs, text, voice_id
@@ -64,7 +62,11 @@ class VoiceChatSystem:
             "text": text,
             "model_id": "eleven_flash_v2_5",
             "output_format": "mp3_44100_128",
-            "speed": 0.4,
+            "voice_settings": {
+                "stability": 0.5,
+                "similarity_boost": 0.75,
+                "speed": 0.9,  # slightly slower than default, reduces flickering
+            }
         }
 
         response = httpx.post(url, headers=headers, json=payload, timeout=30)
@@ -104,6 +106,9 @@ class VoiceChatSystem:
 
             word_duration = word_end - word_start
             phoneme_duration = word_duration / len(phonemes)
+
+            # Enforce minimum phoneme duration to prevent flickering on long words
+            phoneme_duration = max(phoneme_duration, MIN_PHONEME_MS / 1000)
 
             for i, phoneme in enumerate(phonemes):
                 t_ms = int((word_start + i * phoneme_duration) * 1000)
