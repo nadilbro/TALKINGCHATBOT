@@ -9,7 +9,7 @@ from Providers.Account_Manager import AccountManager
 router = APIRouter(prefix="/startup", tags=["startup"])
 
 rag = VectorRAGService()
-account = AccountManager()
+account = AccountManager(rag)
 ai = AIProvider(rag)
 startup = StartUp()
 from Providers.firebase_auth import verify_token
