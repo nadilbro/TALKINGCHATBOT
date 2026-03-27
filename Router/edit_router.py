@@ -3,7 +3,7 @@ from fastapi.responses import StreamingResponse
 import asyncio
 import time
 from Providers.APIContracts import ChatBotEdits
-from SQL.RAG import VectorRAGService
+from SQL.SQLManager import VectorRAGService
 from Providers.ai_provider import AIProvider
 import os
 from fastapi import UploadFile, File, Form

@@ -1,7 +1,7 @@
 from typing import AsyncIterator
 from Providers.open_ai import OpenAIProvider
 from Providers.gemeni import GeminiProvider
-from SQL.RAG import VectorRAGService
+from SQL.SQLManager import VectorRAGService
 import uuid
 from Providers.APIContracts import ChatBotEdits
 from urllib.parse import urlparse
