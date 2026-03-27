@@ -520,3 +520,11 @@ class VectorRAGService:
     def checkBillingCycleExpired(self, user_id: str) -> bool:
         """Alias for checkBillingCycleReset."""
         return self.checkBillingCycleReset(user_id)
+    
+    def getSubscriptionStatus(self, user_id: str) -> bool:
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT is_subscribed FROM accounts WHERE user_id = %s
+            """, (user_id,))
+            row = cur.fetchone()
+            return bool(row["is_subscribed"]) if row else False

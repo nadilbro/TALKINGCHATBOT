@@ -9,10 +9,9 @@ from Providers.firebase_auth import verify_token
 from fastapi import Depends
 from Providers.ai_provider import AIProvider
 from Providers.voice_chat import VoiceChatSystem
-from SQL.RAG import VectorRAGService
+from SQL.SQLManager import VectorRAGService
 from Providers.APIContracts import SessionInit
 from Providers.firebase_auth import verify_ws_token
-
 from Providers.web_search import TavilyProvider
 from Providers.summary_generator import RollingSummaryManager
 from Providers.STT import DeepgramProvider
@@ -26,6 +25,10 @@ ai = AIProvider(rag)
 tts = None
 tav = None
 stt = None
+
+# 1 credit = 7 minutes of audio
+MINUTES_PER_CREDIT = 7
+
 def html_to_plain_text(html_text: str) -> str:
     text = re.sub(r"<br\s*/?>", "\n", html_text, flags=re.IGNORECASE)
     text = re.sub(r"</p\s*>", "\n", text, flags=re.IGNORECASE)
@@ -68,31 +71,11 @@ def _as_int(x: Any, default: int = 0) -> int:
     except Exception:
         return default
 
-def collect_sentences(text: str) -> List[str]:
-    """Split text into sentences on . ? ! ,"""
-    sentences = []
-    buffer = ""
-    for char in text:
-        buffer += char
-        if char in ".?!," and len(buffer.strip()) > 3:
-            sentences.append(buffer.strip())
-            buffer = ""
-    if buffer.strip():
-        sentences.append(buffer.strip())
-    return [s for s in sentences if s]
-
-
-
-    
-
-
-
 @router.post("/chat_init")
 async def chat_init(init_details: SessionInit, user=Depends(verify_token)):
     userID = init_details.userID
     chatID = init_details.chat_id
 
-    # Safe defaults
     avatar_key = ""
     voice_name = ""
     welcome_message = ""
@@ -133,7 +116,8 @@ async def audio_chat_ws(ws: WebSocket):
     try:
         user = await verify_ws_token(ws)
     except ValueError:
-        return  # already closed
+        return
+
     try:
         while True:
             try:
@@ -159,10 +143,22 @@ async def audio_chat_ws(ws: WebSocket):
             if raw_audio and "," in raw_audio:
                 raw_audio = raw_audio.split(",", 1)[1]
             audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
-            #Get transcript with audio
+
+            # -------------------------
+            # CHECK CREDITS BEFORE DOING ANYTHING
+            # -------------------------
+            if not rag.hasEnoughCredits(user_id):
+                await ws.send_json({
+                    "type": "error",
+                    "message": "You have no credits remaining. Please top up to continue chatting.",
+                    "code": "NO_CREDITS"
+                })
+                await ws.send_json({"type": "done"})
+                continue
+
+            # STT
             if audio_bytes:
                 print(f"==> Audio bytes length: {len(audio_bytes)}")
-                print(f"==> First 20 bytes: {audio_bytes[:20]}")
                 try:
                     stt_instance = get_stt()
                     user_text = stt_instance.get_transcript(audio_bytes)
@@ -180,7 +176,7 @@ async def audio_chat_ws(ws: WebSocket):
             if not user_id or not chat_id or (not user_text and not audio_bytes):
                 await ws.send_json({"type": "error", "message": "Missing user_id/chat_id/message"})
                 continue
-                        
+
             if not voice_id:
                 try:
                     _, voice_id, _, _, _ = rag.get_avatar(user_id, chat_id)
@@ -201,9 +197,7 @@ async def audio_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "error", "message": f"Failed to save user message: {str(e)}"})
                 continue
 
-            # -------------------------
             # Build prompt
-            # -------------------------
             smgr = get_summary_manager()
             summary_context = smgr.build_context(chat_id)
             if summary_context:
@@ -212,16 +206,14 @@ async def audio_chat_ws(ws: WebSocket):
                 system_prompt = prompt
 
             recent_history = history[-3:] if len(history) > 3 else history
-            
-            
+
             web_response = "Websearch is Disabled"
-            # WEBSEARCH MODULE
             if web_search:
                 tavily_instance = get_web_search()
                 web_response = tavily_instance.web_search(user_text, 3)
-                
+
             system_prompt = f"{system_prompt}\n\n{web_response}"
-                #def web_search(self, question: str, max_results: int = 3):
+
             history_lines = []
             for m in recent_history:
                 role = (m.get("role") or "").lower()
@@ -242,9 +234,7 @@ async def audio_chat_ws(ws: WebSocket):
             else:
                 user_prompt = user_text
 
-            # -------------------------
             # Stream Gemini + collect sentences
-            # -------------------------
             try:
                 tts_instance = get_tts()
                 sentences = []
@@ -275,7 +265,6 @@ async def audio_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "error", "message": f"AI failed: {str(e)}"})
                 continue
 
-            # Send text immediately
             await ws.send_json({"type": "text", "text": bot_text})
 
             try:
@@ -283,8 +272,8 @@ async def audio_chat_ws(ws: WebSocket):
                 rag.update_last_message(chat_id=chat_id, last_message=bot_text)
             except Exception:
                 pass
-            
-            # Trigger rolling summary update
+
+            # Rolling summary
             try:
                 smgr = get_summary_manager()
                 recent_for_summary = history[-6:] if len(history) > 6 else list(history)
@@ -293,9 +282,8 @@ async def audio_chat_ws(ws: WebSocket):
                 await smgr.on_new_message(chat_id, recent_for_summary[-6:])
             except Exception as e:
                 print(f"Summary update error: {e}")
-            # -------------------------
-            # Fire ALL ElevenLabs calls in parallel, then combine
-            # -------------------------
+
+            # Fire ALL ElevenLabs calls in parallel
             try:
                 print(f"==> Firing {len(sentences)} ElevenLabs tasks in parallel", flush=True)
 
@@ -307,13 +295,14 @@ async def audio_chat_ws(ws: WebSocket):
                 all_audio = b""
                 all_visemes = []
                 cumulative_offset_ms = 0
+                total_duration_seconds = 0.0
 
                 for i, result in enumerate(results):
                     if isinstance(result, Exception):
                         print(f"==> Sentence {i} failed: {result}", flush=True)
                         continue
-                    audio_bytes, visemes, duration = result
-                    print(f"==> Sentence {i} OK — {len(audio_bytes)} bytes, {duration:.2f}s", flush=True)
+                    audio_bytes_chunk, visemes, duration = result
+                    print(f"==> Sentence {i} OK — {len(audio_bytes_chunk)} bytes, {duration:.2f}s", flush=True)
 
                     for v in visemes:
                         all_visemes.append({
@@ -321,8 +310,9 @@ async def audio_chat_ws(ws: WebSocket):
                             "viseme_id": v["viseme_id"],
                         })
 
-                    all_audio += audio_bytes
+                    all_audio += audio_bytes_chunk
                     cumulative_offset_ms += int(duration * 1000)
+                    total_duration_seconds += duration
 
                 if not all_audio:
                     await ws.send_json({"type": "error", "message": "TTS produced no audio"})
@@ -349,6 +339,18 @@ async def audio_chat_ws(ws: WebSocket):
 
                 await ws.send_json({"type": "audio_end"})
                 await ws.send_json({"type": "done"})
+
+                # -------------------------
+                # DEDUCT CREDITS AFTER SUCCESSFUL AUDIO
+                # credits used = audio duration in minutes / 7
+                # -------------------------
+                try:
+                    total_duration_minutes = total_duration_seconds / 60
+                    credits_used = total_duration_minutes / MINUTES_PER_CREDIT
+                    remaining = rag.deductCredits(user_id, credits_used)
+                    print(f"==> Deducted {credits_used:.4f} credits. Remaining: {remaining}", flush=True)
+                except Exception as e:
+                    print(f"==> Credit deduction failed: {e}", flush=True)
 
             except Exception as e:
                 print(f"==> TTS error: {e}", flush=True)
