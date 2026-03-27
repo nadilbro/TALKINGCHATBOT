@@ -282,3 +282,241 @@ class VectorRAGService:
         # reverse so it's chronological (oldest -> newest)
         return list(reversed(rows))
     
+    def updateCurrentTokens(self, user_id: str, amount: float):
+        try:
+            with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    UPDATE accounts
+                    SET monthly_token_used = monthly_token_used + %s
+                    WHERE user_id = %s;
+                """, (amount, user_id))  # ← was wrong order before
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def getTokens(self, user_id: str) -> float:
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT monthly_token_used 
+                FROM accounts 
+                WHERE user_id = %s
+            """, (user_id,))  # ← SQL was wrong, missing = and comma
+            row = cur.fetchone()
+            return row["monthly_token_used"] if row else 0.0
+
+    def getLimitTokens(self, user_id: str) -> float:
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT monthly_token_limit 
+                FROM accounts 
+                WHERE user_id = %s
+            """, (user_id,))
+            row = cur.fetchone()
+            return row["monthly_token_limit"] if row else 0.0
+
+    def checkBillingCycleReset(self, user_id: str) -> bool:
+        """
+        Returns True if 30 days have passed since billing_cycle_start.
+        Returns False if still within the cycle or billing hasn't started.
+        Does NOT update anything — caller decides what to do.
+        """
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT billing_cycle_start 
+                FROM accounts 
+                WHERE user_id = %s
+            """, (user_id,))
+            row = cur.fetchone()
+
+            if not row or row["billing_cycle_start"] is None:
+                return False  # No billing start = not a paid member, don't reset
+
+            cur.execute("""
+                SELECT billing_cycle_start <= NOW() - INTERVAL '30 days' AS cycle_expired
+                FROM accounts
+                WHERE user_id = %s
+            """, (user_id,))
+            result = cur.fetchone()
+            return bool(result["cycle_expired"]) if result else False
+
+    def resetBillingCycle(self, user_id: str):
+        """
+        Call this only after confirming payment/subscription is valid.
+        Resets monthly_token_used and updates billing_cycle_start to now.
+        """
+        try:
+            with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    UPDATE accounts
+                    SET 
+                        monthly_token_used = 0,
+                        billing_cycle_start = NOW()
+                    WHERE user_id = %s
+                """, (user_id,))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    #STRIPE
+    # -----------------------------------------------------------------------
+    # STRIPE METHODS — paste these into VectorRAGService
+    # -----------------------------------------------------------------------
+    
+    def getStripeCustomerId(self, user_id: str) -> str | None:
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT stripe_customer_id FROM accounts WHERE user_id = %s
+            """, (user_id,))
+            row = cur.fetchone()
+            return row["stripe_customer_id"] if row else None
+    
+    def setStripeCustomerId(self, user_id: str, stripe_customer_id: str):
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE accounts
+                    SET stripe_customer_id = %s, updated_at = NOW()
+                    WHERE user_id = %s
+                """, (stripe_customer_id, user_id))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+    
+    def getUserIdByStripeCustomerId(self, stripe_customer_id: str) -> str | None:
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT user_id FROM accounts WHERE stripe_customer_id = %s
+            """, (stripe_customer_id,))
+            row = cur.fetchone()
+            return row["user_id"] if row else None
+    
+    def getUserEmail(self, user_id: str) -> str | None:
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT email FROM accounts WHERE user_id = %s
+            """, (user_id,))
+            row = cur.fetchone()
+            return row["email"] if row else None
+    
+    def setSubscriptionActive(self, user_id: str, is_active: bool):
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE accounts
+                    SET 
+                        is_subscribed = %s,
+                        subscription_status = %s,
+                        updated_at = NOW()
+                    WHERE user_id = %s
+                """, (is_active, "active" if is_active else "cancelled", user_id))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+    
+    # -----------------------------------------------------------------------
+    # CREDITS METHODS
+    # -----------------------------------------------------------------------
+    
+    def getCreditsRemaining(self, user_id: str) -> int:
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT credits_remaining FROM accounts WHERE user_id = %s
+            """, (user_id,))
+            row = cur.fetchone()
+            return row["credits_remaining"] if row else 0
+    
+    def addCredits(self, user_id: str, amount: int):
+        """Adds credits on top of existing — used for top-up purchases."""
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE accounts
+                    SET credits_remaining = credits_remaining + %s, updated_at = NOW()
+                    WHERE user_id = %s
+                """, (amount, user_id))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+    
+    def resetCredits(self, user_id: str, amount: int):
+        """Sets credits to exact amount — used on monthly renewal."""
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE accounts
+                    SET credits_remaining = %s, updated_at = NOW()
+                    WHERE user_id = %s
+                """, (amount, user_id))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+    
+    def deductCredits(self, user_id: str, credits_used: float):
+        """
+        Deducts credits after a conversation.
+        credits_used = conversation_duration_minutes / 7
+        Returns remaining credits after deduction.
+        """
+        try:
+            with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    UPDATE accounts
+                    SET 
+                        credits_remaining = GREATEST(credits_remaining - %s, 0),
+                        monthly_token_used = monthly_token_used + %s,
+                        updated_at = NOW()
+                    WHERE user_id = %s
+                    RETURNING credits_remaining
+                """, (credits_used, credits_used, user_id))
+                row = cur.fetchone()
+            self.conn.commit()
+            return row["credits_remaining"] if row else 0
+        except Exception:
+            self.conn.rollback()
+            raise
+    
+    def hasEnoughCredits(self, user_id: str, min_credits: float = 0.1) -> bool:
+        """
+        Quick check before starting a conversation.
+        Returns False if user has run out of credits.
+        """
+        remaining = self.getCreditsRemaining(user_id)
+        return remaining >= min_credits
+    
+    # -----------------------------------------------------------------------
+    # COST TRACKING METHODS (keep existing but rename for clarity)
+    # -----------------------------------------------------------------------
+    
+    def updateCurrentCost(self, user_id: str, amount: float):
+        """Alias for updateCurrentTokens — tracks dollar cost of API usage."""
+        self.updateCurrentTokens(user_id, amount)
+    
+    def getCurrentCost(self, user_id: str) -> float:
+        return self.getTokens(user_id)
+    
+    def getCostLimit(self, user_id: str) -> float:
+        return self.getLimitTokens(user_id)
+    
+    def resetMonthlyCost(self, user_id: str):
+        """Resets monthly cost tracking — called alongside resetBillingCycle."""
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE accounts
+                    SET monthly_token_used = 0, updated_at = NOW()
+                    WHERE user_id = %s
+                """, (user_id,))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+    
+    def checkBillingCycleExpired(self, user_id: str) -> bool:
+        """Alias for checkBillingCycleReset."""
+        return self.checkBillingCycleReset(user_id)

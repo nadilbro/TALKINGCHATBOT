@@ -5,6 +5,7 @@ from Router.edit_router import router as edit_router
 from Router.startup_router import router as startup_router 
 from Router.voice_router import router as voice_router 
 from fastapi.middleware.cors import CORSMiddleware
+from Router.stripe_manager import router as stripe_router
 from SQL.db_init import init_db
 app = FastAPI()
 
@@ -23,6 +24,7 @@ app.add_middleware(
 # THEN routers
 app.include_router(edit_router)
 app.include_router(startup_router)
+app.include_router(stripe_router)
 app.include_router(voice_router)
 
 
