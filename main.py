@@ -10,8 +10,6 @@ from SQL.db_init import init_db
 app = FastAPI()
 
 
-
-
 # CORS FIRST
 app.add_middleware(
     CORSMiddleware,

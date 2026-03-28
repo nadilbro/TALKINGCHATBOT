@@ -189,12 +189,21 @@ class VectorRAGService:
                 ORDER BY m.created_at ASC
             """, (user_id, chat_id))
             return cur.fetchall()
-
+        
     def create_session(self, user_id: str, title: str | None = None, avatar_name: str | None = None) -> str:
         self._get_conn()
         chat_id = str(uuid.uuid4())
         try:
             with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Safety net — create account if it doesn't exist yet
+                cur.execute("""
+                    INSERT INTO accounts (user_id, credits_remaining, credits_reserved,
+                        monthly_token_used, monthly_token_limit, is_subscribed,
+                        subscription_status, billing_cycle_start)
+                    VALUES (%s, 1, 0, 0, 0, FALSE, 'free', NOW())
+                    ON CONFLICT (user_id) DO NOTHING
+                """, (user_id,))
+
                 avatar_id = None
                 if avatar_name:
                     cur.execute("""
@@ -203,10 +212,12 @@ class VectorRAGService:
                     row = cur.fetchone()
                     if row:
                         avatar_id = row["avatar_id"]
+
                 cur.execute("""
                     INSERT INTO sessions (id, user_id, title, avatar_id, status)
                     VALUES (%s, %s, %s, %s, 'Open')
                 """, (chat_id, user_id, title, avatar_id))
+
             self.conn.commit()
             return chat_id
         except Exception:
