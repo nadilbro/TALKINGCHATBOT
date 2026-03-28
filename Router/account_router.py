@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query
 
-from Providers.APIContracts import SessionBase, SessionCreate, SessionDelete
+from Providers.APIContracts import SessionBase, SessionCreate, SessionDelete, AccountCreate
 from SQL.SQLManager import VectorRAGService
 from Providers.ai_provider import AIProvider
 from Providers.startup_provider import StartUp
@@ -15,10 +15,13 @@ startup = StartUp()
 from Providers.firebase_auth import verify_token
 from fastapi import Depends
 
+
+    
 @router.get("/initialise_sessions")
 #This is used to initialise the sessions so upon the user login, the old sessions can load.
 async def initialise_sessions(user_id: str = Query(...), user=Depends(verify_token)):
     return rag.get_session_history(user_id)
+
 
 @router.post("/create_session")
 async def create_session_route(data: SessionCreate, user=Depends(verify_token)):
@@ -45,22 +48,21 @@ async def get_usage_route(user_id: str = Query(...), user=Depends(verify_token))
 
 @router.get("/check_subscription")
 async def check_subscription(user_id: str = Query(...), user=Depends(verify_token)):
-    """
-    Called on every login. Checks billing cycle and returns current subscription status.
-    """
-    # Check if 30 days have passed and reset if subscription is still active
     cycle_expired = rag.checkBillingCycleReset(user_id)
+    is_subscribed = rag.getSubscriptionStatus(user_id)
+
     if cycle_expired:
-        is_active = account.checkSubscription(user_id)
-        if is_active:
-            rag.resetCredits(user_id, 50)  # reset to 50 credits
+        if is_subscribed:
+            rag.resetCredits(user_id, 50)
             rag.resetBillingCycle(user_id)
         else:
-            # Subscription lapsed — zero out credits
             rag.resetCredits(user_id, 0)
             rag.setSubscriptionActive(user_id, False)
 
-    # Return current status to frontend
+    # Free weekly credit for non-subscribed users
+    if not is_subscribed:
+        rag.grantFreeWeeklyCredit(user_id)
+
     credits = rag.getCreditsRemaining(user_id)
     is_subscribed = rag.getSubscriptionStatus(user_id)
 
@@ -68,3 +70,18 @@ async def check_subscription(user_id: str = Query(...), user=Depends(verify_toke
         "is_subscribed": is_subscribed,
         "credits_remaining": credits,
     }
+
+@router.post("/create")
+async def create_account(data: AccountCreate, user=Depends(verify_token)):
+    """
+    Called once after Firebase signup. Creates the account row with full details.
+    Safe to call multiple times — won't overwrite existing data.
+    """
+    rag.createAccount(data.user_id, data.email, data.name, data.phone)
+    return {"success": True}
+
+
+@router.get("/me")
+async def get_account(user_id: str = Query(...), user=Depends(verify_token)):
+    """Returns the user's account details."""
+    return rag.getAccount(user_id)

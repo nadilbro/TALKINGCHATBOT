@@ -40,6 +40,13 @@ class SessionInit(BaseModel):
     userID: str
     chat_id: str
 
+class AccountCreate(BaseModel):
+    user_id: str
+    email: str | None = None
+    name: str | None = None
+    phone: str | None = None
+
+
 class SessionCreate(BaseModel):
     user_id: str
     title: Optional[str] = None
