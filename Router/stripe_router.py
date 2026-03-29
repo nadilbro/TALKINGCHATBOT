@@ -122,8 +122,9 @@ async def subscription_status(user_id: str = Query(...)):
         }
 
     except Exception as e:
+        print(f"==> subscription-status ERROR: {type(e).__name__}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
+    
 @router.post("/create-portal-session")
 async def create_portal_session(req: CancelRequest):
     try:
