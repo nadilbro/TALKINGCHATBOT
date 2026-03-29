@@ -7,6 +7,7 @@ COST_PER_1K_ELEVENLABS = 0.08        # Flash/Turbo
 COST_PER_MIN_DEEPGRAM = 0.0043       # nova-3
 COST_PER_SEARCH_TAVILY = 0.008 * 10  # Pay As You Go (avg 3 searches)
 COST_PER_GEMINI_INPUT_1M = 0.25      # Per Million tokens
+AVERAGE_TOKEN_AMOUNT = 3000      
 COST_PER_GEMINI_OUTPUT_1M = 1.50     # Per Million tokens
 
 
@@ -40,7 +41,7 @@ class AccountManager:
         cost += outputCharacters * COST_PER_GEMINI_OUTPUT_1M / 1_000_000
         cost += COST_PER_1K_ELEVENLABS * (outputCharacters / 1000)
         cost += COST_PER_MIN_DEEPGRAM * (SST_Length_seconds / 60)
-
+        cost += AVERAGE_TOKEN_AMOUNT * (COST_PER_GEMINI_INPUT_1M / 1_000_000) 
         if webSearch:
             cost += COST_PER_SEARCH_TAVILY
 

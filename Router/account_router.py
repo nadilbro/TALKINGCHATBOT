@@ -61,7 +61,7 @@ async def check_subscription(user_id: str = Query(...), user=Depends(verify_toke
 
     # Free weekly credit for non-subscribed users
     if not is_subscribed:
-        rag.grantFreeWeeklyCredit(user_id)
+        rag.grantFreeDailyCredit(user_id)
 
     credits = rag.getCreditsRemaining(user_id)
     is_subscribed = rag.getSubscriptionStatus(user_id)
