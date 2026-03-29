@@ -114,11 +114,21 @@ async def subscription_status(user_id: str = Query(...)):
 
         sub = subscriptions.data[0]
 
+        try:
+            period_end = sub.current_period_end
+        except AttributeError:
+            period_end = sub.get("current_period_end") or None
+
+        try:
+            cancel_at_period_end = sub.cancel_at_period_end
+        except AttributeError:
+            cancel_at_period_end = sub.get("cancel_at_period_end") or False
+
         return {
             "plan": "basic",
             "credits_remaining": credits_remaining or 0,
-            "period_end": sub.current_period_end,
-            "cancel_at_period_end": sub.cancel_at_period_end,
+            "period_end": period_end,
+            "cancel_at_period_end": cancel_at_period_end,
         }
 
     except Exception as e:
