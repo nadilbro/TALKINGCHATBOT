@@ -145,6 +145,10 @@ async def stripe_webhook(request: Request):
 
     try:
         if event_type == "checkout.session.completed":
+            print(f"==> checkout data keys: {list(data.keys())}")
+            print(f"==> client_reference_id: {data.get('client_reference_id')}")
+            print(f"==> customer: {data.get('customer')}")
+            print(f"==> mode: {data.get('mode')}")
             user_id = data.get("client_reference_id")
             stripe_customer_id = data.get("customer")
             mode = data.get("mode")
