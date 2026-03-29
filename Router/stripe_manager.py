@@ -42,8 +42,9 @@ async def create_checkout_session(req: CheckoutRequest):
             payment_method_types=["card"],
             line_items=[{"price": req.price_id, "quantity": 1}],
             mode=req.mode,
-            success_url=os.getenv("STRIPE_SUCCESS_URL", "https://yourapp.com/success"),
-            cancel_url=os.getenv("STRIPE_CANCEL_URL", "https://yourapp.com/cancel"),
+            
+            success_url=(os.getenv("STRIPE_SUCCESS_URL") or "...").strip(),
+            cancel_url=(os.getenv("STRIPE_CANCEL_URL") or "...").strip(),
         )
 
         return {"url": session.url}

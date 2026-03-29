@@ -9,7 +9,7 @@ class TavilyProvider:
             raise RuntimeError("TAVILY_API_KEY is not set")
         self.client = TavilyClient(api_key=api_key)
 
-    def web_search(self, question: str, max_results: int = 3) -> str:
+    def web_search(self, question: str, max_results: int = 5) -> str:
         try: 
             response = self.client.search(
                 query=question,
