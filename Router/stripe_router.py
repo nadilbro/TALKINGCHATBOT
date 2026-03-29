@@ -218,3 +218,31 @@ async def stripe_webhook(request: Request):
         return {"status": "error", "detail": str(e)}
 
     return {"status": "ok"}
+
+@router.post("/resume-subscription")
+async def resume_subscription(req: CancelRequest):
+    try:
+        stripe_customer_id = rag.getStripeCustomerId(req.user_id)
+        if not stripe_customer_id:
+            raise HTTPException(status_code=404, detail="No Stripe customer found")
+
+        subscriptions = stripe.Subscription.list(
+            customer=stripe_customer_id,
+            status="active",
+            limit=1,
+        )
+
+        if not subscriptions.data:
+            raise HTTPException(status_code=404, detail="No active subscription found")
+
+        stripe.Subscription.modify(
+            subscriptions.data[0].id,
+            cancel_at_period_end=False,
+        )
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
