@@ -143,54 +143,56 @@ async def stripe_webhook(request: Request):
     event_type = event["type"]
     data = event["data"]["object"]
 
-    # User subscribes or buys a top-up
-    if event_type == "checkout.session.completed":
-        user_id = data.get("client_reference_id")
-        stripe_customer_id = data.get("customer")
-        mode = data.get("mode")
+    try:
+        if event_type == "checkout.session.completed":
+            user_id = data.get("client_reference_id")
+            stripe_customer_id = data.get("customer")
+            mode = data.get("mode")
 
-        if not user_id:
-            return {"status": "ok"}
+            if not user_id:
+                return {"status": "ok"}
 
-        rag.setStripeCustomerId(user_id, stripe_customer_id)
+            rag.setStripeCustomerId(user_id, stripe_customer_id)
 
-        if mode == "payment":
-            # Top-up purchase
-            rag.addCredits(user_id, 15)
-            print(f"==> Top-up: +15 credits for {user_id}")
+            if mode == "payment":
+                rag.addCredits(user_id, 15)
+                print(f"==> Top-up: +15 credits for {user_id}")
+            elif mode == "subscription":
+                rag.setSubscriptionActive(user_id, True)
+                rag.resetCredits(user_id, CREDITS_PER_MONTH)
+                rag.resetBillingCycle(user_id)
+                print(f"==> New subscription: granted {CREDITS_PER_MONTH} credits to {user_id}")
 
-        elif mode == "subscription":
-            # New subscription — activate and grant credits
+        elif event_type == "invoice.paid":
+            stripe_customer_id = data.get("customer")
+            user_id = rag.getUserIdByStripeCustomerId(stripe_customer_id)
+            if not user_id:
+                print(f"==> invoice.paid: no user found for customer {stripe_customer_id}, skipping")
+                return {"status": "ok"}
+            rag.resetCredits(user_id, CREDITS_PER_MONTH)
+            rag.resetBillingCycle(user_id)
             rag.setSubscriptionActive(user_id, True)
-            rag.resetCredits(user_id, CREDITS_PER_MONTH)
-            rag.resetBillingCycle(user_id)
-            print(f"==> New subscription: granted {CREDITS_PER_MONTH} credits to {user_id}")
-
-    # Monthly renewal — reset credits
-    elif event_type == "invoice.paid":
-        stripe_customer_id = data.get("customer")
-        user_id = rag.getUserIdByStripeCustomerId(stripe_customer_id)
-        if user_id:
-            rag.resetCredits(user_id, CREDITS_PER_MONTH)
-            rag.resetBillingCycle(user_id)
             print(f"==> Invoice paid: reset to {CREDITS_PER_MONTH} credits for {user_id}")
 
-    # Subscription changed
-    elif event_type == "customer.subscription.updated":
-        stripe_customer_id = data.get("customer")
-        user_id = rag.getUserIdByStripeCustomerId(stripe_customer_id)
-        if user_id:
-            is_active = data.get("status") == "active"
-            rag.setSubscriptionActive(user_id, is_active)
-            print(f"==> Subscription updated: {user_id} active={is_active}")
+        elif event_type == "customer.subscription.updated":
+            stripe_customer_id = data.get("customer")
+            user_id = rag.getUserIdByStripeCustomerId(stripe_customer_id)
+            if user_id:
+                is_active = data.get("status") == "active"
+                rag.setSubscriptionActive(user_id, is_active)
+                print(f"==> Subscription updated: {user_id} active={is_active}")
 
-    # Subscription cancelled
-    elif event_type == "customer.subscription.deleted":
-        stripe_customer_id = data.get("customer")
-        user_id = rag.getUserIdByStripeCustomerId(stripe_customer_id)
-        if user_id:
-            rag.setSubscriptionActive(user_id, False)
-            rag.resetCredits(user_id, 0)
-            print(f"==> Subscription cancelled: revoked {user_id}")
+        elif event_type == "customer.subscription.deleted":
+            stripe_customer_id = data.get("customer")
+            user_id = rag.getUserIdByStripeCustomerId(stripe_customer_id)
+            if user_id:
+                rag.setSubscriptionActive(user_id, False)
+                rag.resetCredits(user_id, 0)
+                print(f"==> Subscription cancelled: revoked {user_id}")
+
+    except Exception as e:
+        print(f"==> Webhook handler error for {event_type}: {e}")
+        # Still return 200 so Stripe doesn't keep retrying
+        return {"status": "error", "detail": str(e)}
 
     return {"status": "ok"}
