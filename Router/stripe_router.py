@@ -188,14 +188,23 @@ async def stripe_webhook(request: Request):
 
         elif event_type == "invoice.paid":
             stripe_customer_id = obj.customer
+            billing_reason = obj.billing_reason  # "subscription_create", "subscription_cycle", etc
             user_id = rag.getUserIdByStripeCustomerId(stripe_customer_id)
             if not user_id:
                 print(f"==> invoice.paid: no user found for {stripe_customer_id}, skipping")
                 return {"status": "ok"}
-            rag.resetCredits(user_id, CREDITS_PER_MONTH)
-            rag.resetBillingCycle(user_id)
-            rag.setSubscriptionActive(user_id, True)
-            print(f"==> Invoice paid: reset to {CREDITS_PER_MONTH} credits for {user_id}")
+            
+            if billing_reason == "subscription_cycle":
+                # Monthly renewal — reset credits
+                rag.resetCredits(user_id, CREDITS_PER_MONTH)
+                rag.resetBillingCycle(user_id)
+                rag.setSubscriptionActive(user_id, True)
+                print(f"==> Invoice renewal: reset to {CREDITS_PER_MONTH} credits for {user_id}")
+            elif billing_reason == "subscription_create":
+                # Already handled in checkout.session.completed — don't reset again
+                print(f"==> Invoice create: skipping credit reset for {user_id}")
+            else:
+                print(f"==> Invoice paid ({billing_reason}): no credit change for {user_id}")
 
         elif event_type == "customer.subscription.updated":
             stripe_customer_id = obj.customer
