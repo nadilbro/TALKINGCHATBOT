@@ -122,7 +122,24 @@ async def subscription_status(user_id: str = Query(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/create-portal-session")
+async def create_portal_session(req: CancelRequest):
+    try:
+        stripe_customer_id = rag.getStripeCustomerId(req.user_id)
+        if not stripe_customer_id:
+            raise HTTPException(status_code=404, detail="No Stripe customer found")
 
+        session = stripe.billing_portal.Session.create(
+            customer=stripe_customer_id,
+            return_url=os.getenv("STRIPE_CANCEL_URL", "https://nahnothingcool.lovable.app"),
+        )
+
+        return {"url": session.url}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 # ------------------------------------------------------------------
 # POST /stripe/webhook
 # ------------------------------------------------------------------
