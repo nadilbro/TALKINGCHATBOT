@@ -111,7 +111,7 @@ async def subscription_status(user_id: str = Query(...)):
             }
 
         sub = subscriptions.data[0]
-        period_end = sub["current_period_end"]  # unix timestamp
+        period_end = sub.current_period_end  # dot notation
 
         return {
             "plan": "basic",
