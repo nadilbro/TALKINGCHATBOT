@@ -142,7 +142,7 @@ async def stripe_webhook(request: Request):
 
     event_type = event["type"]
     data = event["data"]["object"]
-
+    print(f"==> Full event data: {event['data']}")
     try:
         if event_type == "checkout.session.completed":
             print(f"==> checkout data keys: {list(data.keys())}")
