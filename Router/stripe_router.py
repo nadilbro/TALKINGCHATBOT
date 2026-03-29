@@ -85,6 +85,7 @@ async def cancel_subscription(req: CancelRequest):
 # GET /stripe/subscription-status?user_id=...
 # ------------------------------------------------------------------
 @router.get("/subscription-status")
+@router.get("/subscription-status")
 async def subscription_status(user_id: str = Query(...)):
     try:
         stripe_customer_id = rag.getStripeCustomerId(user_id)
@@ -95,6 +96,7 @@ async def subscription_status(user_id: str = Query(...)):
                 "plan": "free",
                 "credits_remaining": credits_remaining or 0,
                 "period_end": None,
+                "cancel_at_period_end": False,
             }
 
         subscriptions = stripe.Subscription.list(
@@ -108,15 +110,16 @@ async def subscription_status(user_id: str = Query(...)):
                 "plan": "free",
                 "credits_remaining": credits_remaining or 0,
                 "period_end": None,
+                "cancel_at_period_end": False,
             }
 
         sub = subscriptions.data[0]
-        period_end = sub.current_period_end  # dot notation
 
         return {
             "plan": "basic",
             "credits_remaining": credits_remaining or 0,
-            "period_end": period_end,
+            "period_end": sub.current_period_end,
+            "cancel_at_period_end": sub.cancel_at_period_end,
         }
 
     except Exception as e:
