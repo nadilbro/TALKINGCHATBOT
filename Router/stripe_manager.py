@@ -20,7 +20,8 @@ class CheckoutRequest(BaseModel):
     price_id: str
     mode: str  # "subscription" or "payment"
 
-
+class CancelRequest(BaseModel):
+    user_id: str
 # ------------------------------------------------------------------
 # POST /stripe/create-checkout-session
 # ------------------------------------------------------------------
@@ -52,7 +53,34 @@ async def create_checkout_session(req: CheckoutRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/cancel-subscription")
+async def cancel_subscription(req: CancelRequest):
+    try:
+        stripe_customer_id = rag.getStripeCustomerId(req.user_id)
+        if not stripe_customer_id:
+            raise HTTPException(status_code=404, detail="No Stripe customer found")
 
+        subscriptions = stripe.Subscription.list(
+            customer=stripe_customer_id,
+            status="active",
+            limit=1,
+        )
+
+        if not subscriptions.data:
+            raise HTTPException(status_code=404, detail="No active subscription found")
+
+        # Cancel at period end — user keeps access until billing date
+        stripe.Subscription.modify(
+            subscriptions.data[0].id,
+            cancel_at_period_end=True,
+        )
+
+        return {"success": True, "message": "Subscription will cancel at end of billing period"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 # ------------------------------------------------------------------
 # GET /stripe/subscription-status?user_id=...
 # ------------------------------------------------------------------
