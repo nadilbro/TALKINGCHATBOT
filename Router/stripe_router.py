@@ -113,16 +113,8 @@ async def subscription_status(user_id: str = Query(...)):
             }
 
         sub = subscriptions.data[0]
-
-        try:
-            period_end = sub.current_period_end
-        except AttributeError:
-            period_end = sub.get("current_period_end") or None
-
-        try:
-            cancel_at_period_end = sub.cancel_at_period_end
-        except AttributeError:
-            cancel_at_period_end = sub.get("cancel_at_period_end") or False
+        period_end = getattr(sub, "current_period_end", None)
+        cancel_at_period_end = getattr(sub, "cancel_at_period_end", False)
 
         return {
             "plan": "basic",
@@ -130,6 +122,10 @@ async def subscription_status(user_id: str = Query(...)):
             "period_end": period_end,
             "cancel_at_period_end": cancel_at_period_end,
         }
+
+    except Exception as e:
+        print(f"==> subscription-status ERROR: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
     except Exception as e:
         print(f"==> subscription-status ERROR: {type(e).__name__}: {e}")
