@@ -85,7 +85,6 @@ async def cancel_subscription(req: CancelRequest):
 # GET /stripe/subscription-status?user_id=...
 # ------------------------------------------------------------------
 @router.get("/subscription-status")
-@router.get("/subscription-status")
 async def subscription_status(user_id: str = Query(...)):
     try:
         stripe_customer_id = rag.getStripeCustomerId(user_id)
