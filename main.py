@@ -4,12 +4,14 @@ from fastapi import FastAPI, Request
 from Router.edit_router import router as edit_router 
 from Router.account_router import router as account_router 
 from Router.voice_router import router as voice_router 
+
 from fastapi.middleware.cors import CORSMiddleware
-from Router.stripe_manager import router as stripe_router
+from Router.stripe_router import router as stripe_router
 from SQL.db_init import init_db
 app = FastAPI()
 
-
+from Router.startup_router import router as startup_router
+app.include_router(startup_router)
 # CORS FIRST
 app.add_middleware(
     CORSMiddleware,

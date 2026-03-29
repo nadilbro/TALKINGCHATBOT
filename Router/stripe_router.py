@@ -155,8 +155,16 @@ async def stripe_webhook(request: Request):
         rag.setStripeCustomerId(user_id, stripe_customer_id)
 
         if mode == "payment":
+            # Top-up purchase
             rag.addCredits(user_id, 15)
             print(f"==> Top-up: +15 credits for {user_id}")
+
+        elif mode == "subscription":
+            # New subscription — activate and grant credits
+            rag.setSubscriptionActive(user_id, True)
+            rag.resetCredits(user_id, CREDITS_PER_MONTH)
+            rag.resetBillingCycle(user_id)
+            print(f"==> New subscription: granted {CREDITS_PER_MONTH} credits to {user_id}")
 
     # Monthly renewal — reset credits
     elif event_type == "invoice.paid":
