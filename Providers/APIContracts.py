@@ -3,7 +3,12 @@ from typing import Optional, List, Dict
 from datetime import datetime
 
 
+class TextIngestionRequest(BaseModel):
+    api_key: str
+    content: str
+    title: str = "Manual Entry"
 
+    
 class ChatRequest(BaseModel):
     user_id: str
     message: str
