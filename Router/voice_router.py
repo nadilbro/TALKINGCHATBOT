@@ -398,24 +398,25 @@ async def embed_chat_ws(ws: WebSocket):
     """
     print("HIT embed_chat_ws")
     await ws.accept()
- 
-    # Verify API key
+    print("==> embed WS accepted")
+
     api_key = ws.query_params.get("api_key")
+    print(f"==> api_key: {api_key}")
+    
     if not api_key:
+        print("==> No api_key, closing")
         await ws.close(code=4001, reason="Missing api_key")
         return
- 
+
     key_data = rag.getApiKey(api_key)
+    print(f"==> key_data: {key_data}")
+    
     if not key_data or not key_data.get("is_active"):
+        print("==> Invalid key, closing")
         await ws.close(code=4001, reason="Invalid or inactive API key")
         return
- 
-    # Check conversation limit
-    if key_data.get("conversations_used", 0) >= key_data.get("monthly_limit", 500):
-        await ws.send_json({"type": "error", "message": "Monthly conversation limit reached", "code": "LIMIT_REACHED"})
-        await ws.close()
-        return
- 
+
+    print("==> Key valid, entering message loop")
     try:
         while True:
             try:
