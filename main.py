@@ -4,7 +4,7 @@ from fastapi import FastAPI, Request
 from Router.edit_router import router as edit_router 
 from Router.account_router import router as account_router 
 from Router.voice_router import router as voice_router 
-from Router.embed_router import router as embbed_router
+from Router.embed_router import router as embed_router
 from fastapi.middleware.cors import CORSMiddleware
 from Router.stripe_router import router as stripe_router
 from SQL.db_init import init_db
