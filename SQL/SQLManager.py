@@ -581,3 +581,245 @@ class VectorRAGService:
 
     def hasEnoughCredits(self, user_id: str, min_credits: float = 0.1) -> bool:
         return self.getCreditsRemaining(user_id) >= min_credits
+    
+    # -----------------------------------------------------------------------
+    # Add these methods to your VectorRAGService class in SQL/SQLManager.py
+    # -----------------------------------------------------------------------
+
+    # Also run these SQL statements on your database first:
+    '''
+    CREATE EXTENSION IF NOT EXISTS vector;
+
+    CREATE TABLE IF NOT EXISTS api_keys (
+        key TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL REFERENCES accounts(user_id) ON DELETE CASCADE,
+        business_name TEXT NOT NULL,
+        avatar_name TEXT DEFAULT 'Mia Sterling',
+        system_prompt TEXT,
+        monthly_limit INT DEFAULT 500,
+        conversations_used INT DEFAULT 0,
+        is_active BOOLEAN DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS api_keys_owner_idx ON api_keys (owner_user_id);
+
+    CREATE TABLE IF NOT EXISTS document_chunks (
+        chunk_id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
+        doc_id TEXT NOT NULL,
+        api_key TEXT NOT NULL REFERENCES api_keys(key) ON DELETE CASCADE,
+        chunk_index INT NOT NULL,
+        content TEXT NOT NULL,
+        embedding vector(1536),
+        filename TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS doc_chunks_api_key_idx ON document_chunks (api_key);
+    CREATE INDEX IF NOT EXISTS doc_chunks_doc_id_idx ON document_chunks (doc_id);
+    CREATE INDEX IF NOT EXISTS doc_chunks_embedding_idx ON document_chunks 
+        USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
+    '''
+
+    # -----------------------------------------------------------------------
+    # API KEY METHODS
+    # -----------------------------------------------------------------------
+
+    def createApiKey(
+        self,
+        key: str,
+        owner_user_id: str,
+        business_name: str,
+        avatar_name: str = "Mia Sterling",
+        system_prompt: str = None,
+        monthly_limit: int = 500,
+    ):
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO api_keys (
+                        key, owner_user_id, business_name,
+                        avatar_name, system_prompt, monthly_limit
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (key, owner_user_id, business_name, avatar_name, system_prompt, monthly_limit))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def getApiKey(self, key: str) -> dict | None:
+        self._get_conn()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM api_keys WHERE key = %s", (key,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def listApiKeys(self, owner_user_id: str) -> list:
+        self._get_conn()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT key, business_name, avatar_name, monthly_limit,
+                    conversations_used, is_active, created_at
+                FROM api_keys
+                WHERE owner_user_id = %s
+                ORDER BY created_at DESC
+            """, (owner_user_id,))
+            return [dict(r) for r in cur.fetchall()]
+
+    def updateApiKey(
+        self,
+        key: str,
+        business_name: str = None,
+        avatar_name: str = None,
+        system_prompt: str = None,
+        monthly_limit: int = None,
+        is_active: bool = None,
+    ):
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE api_keys SET
+                        business_name = COALESCE(%s, business_name),
+                        avatar_name = COALESCE(%s, avatar_name),
+                        system_prompt = COALESCE(%s, system_prompt),
+                        monthly_limit = COALESCE(%s, monthly_limit),
+                        is_active = COALESCE(%s, is_active),
+                        updated_at = NOW()
+                    WHERE key = %s
+                """, (business_name, avatar_name, system_prompt, monthly_limit, is_active, key))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def deleteApiKey(self, key: str):
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("DELETE FROM api_keys WHERE key = %s", (key,))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def incrementConversationCount(self, key: str):
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE api_keys
+                    SET conversations_used = conversations_used + 1, updated_at = NOW()
+                    WHERE key = %s
+                """, (key,))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def resetConversationCounts(self):
+        """Call this monthly to reset all API key conversation counts."""
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("UPDATE api_keys SET conversations_used = 0, updated_at = NOW()")
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    # -----------------------------------------------------------------------
+    # AVATAR LOOKUP
+    # -----------------------------------------------------------------------
+
+    def getAvatarByName(self, name: str) -> dict | None:
+        self._get_conn()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM rive_avatars WHERE name = %s", (name,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    # -----------------------------------------------------------------------
+    # DOCUMENT / RAG METHODS
+    # -----------------------------------------------------------------------
+
+    async def embedText(self, text: str) -> list[float]:
+        """Generates an embedding vector for a piece of text using OpenAI."""
+        response = await self.oai.embeddings.create(
+            model="text-embedding-3-small",
+            input=text,
+        )
+        return response.data[0].embedding
+
+    def storeDocumentChunk(
+        self,
+        doc_id: str,
+        api_key: str,
+        chunk_index: int,
+        content: str,
+        embedding: list[float],
+        filename: str = None,
+    ):
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO document_chunks (
+                        doc_id, api_key, chunk_index, content, embedding, filename
+                    )
+                    VALUES (%s, %s, %s, %s, %s::vector, %s)
+                """, (doc_id, api_key, chunk_index, content, embedding, filename))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def searchDocumentChunks(
+        self,
+        api_key: str,
+        embedding: list[float],
+        limit: int = 3,
+    ) -> list[dict]:
+        """
+        Finds the most relevant document chunks for a query using cosine similarity.
+        Returns top N chunks ordered by relevance.
+        """
+        self._get_conn()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT content, filename, chunk_index,
+                    1 - (embedding <=> %s::vector) AS similarity
+                FROM document_chunks
+                WHERE api_key = %s
+                ORDER BY embedding <=> %s::vector
+                LIMIT %s
+            """, (embedding, api_key, embedding, limit))
+            return [dict(r) for r in cur.fetchall()]
+
+    def listDocuments(self, api_key: str) -> list[dict]:
+        """Lists unique documents uploaded for an API key."""
+        self._get_conn()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT DISTINCT doc_id, filename, COUNT(*) as chunks,
+                    MIN(created_at) as uploaded_at
+                FROM document_chunks
+                WHERE api_key = %s
+                GROUP BY doc_id, filename
+                ORDER BY uploaded_at DESC
+            """, (api_key,))
+            return [dict(r) for r in cur.fetchall()]
+
+    def deleteDocument(self, doc_id: str):
+        """Deletes all chunks for a document."""
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("DELETE FROM document_chunks WHERE doc_id = %s", (doc_id,))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
