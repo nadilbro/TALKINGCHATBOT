@@ -71,22 +71,6 @@ def _as_int(x: Any, default: int = 0) -> int:
     except Exception:
         return default
 
-
-@router.websocket("/embed_chat_ws")
-async def embed_chat_ws(ws: WebSocket):
-    await ws.accept()
-    api_key = ws.query_params.get("api_key")
-    if not api_key:
-        await ws.close(code=4001, reason="Missing api_key")
-        return
-    key_data = rag.getApiKey(api_key)
-    if not key_data or not key_data.get("is_active"):
-        await ws.close(code=4001, reason="Invalid API key")
-        return
-    # rest of the chat logic same as audio_chat_ws
-    # but skip credit checks — billing is per API key not per user
-
-
 @router.post("/chat_init")
 async def chat_init(init_details: SessionInit, user=Depends(verify_token)):
     userID = init_details.userID
