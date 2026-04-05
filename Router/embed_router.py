@@ -9,7 +9,7 @@ from pydantic import BaseModel
 from typing import Optional
 from SQL.SQLManager import VectorRAGService
 from Providers.firebase_auth import verify_token
-
+from Providers.APIContracts import TextIngestionRequest
 router = APIRouter(prefix="/embed", tags=["embed"])
 rag = VectorRAGService()
 _bearer = HTTPBearer()
@@ -292,3 +292,37 @@ async def _extract_pdf_text(content: bytes) -> str:
     except ImportError:
         # fallback — treat as plain text
         return content.decode("utf-8", errors="ignore")
+    
+
+@router.post("/keys/{key}/text")
+async def ingest_text(
+        key: str,
+        req: TextIngestionRequest,
+        user=Depends(verify_token),
+    ):
+    """Business pastes text directly — no file upload needed."""
+    owner_data = rag.getApiKey(key)
+    if not owner_data or owner_data.get("owner_user_id") != user["uid"]:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    if not req.content.strip():
+        raise HTTPException(status_code=400, detail="Content cannot be empty")
+
+    chunks = _chunk_text(req.content)
+    doc_id = str(uuid.uuid4())
+
+    for i, chunk in enumerate(chunks):
+        embedding = await rag.embedText(chunk)
+        rag.storeDocumentChunk(
+            doc_id=doc_id,
+            api_key=key,
+            chunk_index=i,
+            content=chunk,
+            filename=req.title,
+        )
+
+    return {
+        "doc_id": doc_id,
+        "title": req.title,
+        "chunks": len(chunks),
+    }

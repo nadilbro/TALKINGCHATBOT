@@ -14,7 +14,7 @@ import time
 from dotenv import load_dotenv
 import psycopg2
 from typing import Optional, List, Dict, Any
-from Providers.APIContracts import ChatMessageStructure, ChatBotEdits, ClientListSetUp
+from Providers.APIContracts import ChatMessageStructure, ChatBotEdits, ClientListSetUp, TextIngestionRequest
 from psycopg2.extras import RealDictCursor
 from openai import AsyncOpenAI
 from fastapi.concurrency import run_in_threadpool
