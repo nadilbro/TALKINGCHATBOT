@@ -10,13 +10,14 @@ https://platform.openai.com/docs/pricing#embeddings
 https://platform.openai.com/docs/guides/embeddings 
 '''
 import os
+import time
 from dotenv import load_dotenv
 import psycopg2
 from typing import Optional, List, Dict, Any
 from Providers.APIContracts import ChatMessageStructure, ChatBotEdits, ClientListSetUp
 from psycopg2.extras import RealDictCursor
 from openai import AsyncOpenAI
-import datetime
+from fastapi.concurrency import run_in_threadpool
 import re
 import uuid
 
@@ -189,13 +190,12 @@ class VectorRAGService:
                 ORDER BY m.created_at ASC
             """, (user_id, chat_id))
             return cur.fetchall()
-        
+
     def create_session(self, user_id: str, title: str | None = None, avatar_name: str | None = None) -> str:
         self._get_conn()
         chat_id = str(uuid.uuid4())
         try:
             with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
-                # Safety net — create account if it doesn't exist yet
                 cur.execute("""
                     INSERT INTO accounts (user_id, credits_remaining, credits_reserved,
                         monthly_token_used, monthly_token_limit, is_subscribed,
@@ -206,9 +206,7 @@ class VectorRAGService:
 
                 avatar_id = None
                 if avatar_name:
-                    cur.execute("""
-                        SELECT avatar_id FROM rive_avatars WHERE name = %s
-                    """, (avatar_name,))
+                    cur.execute("SELECT avatar_id FROM rive_avatars WHERE name = %s", (avatar_name,))
                     row = cur.fetchone()
                     if row:
                         avatar_id = row["avatar_id"]
@@ -228,9 +226,7 @@ class VectorRAGService:
         self._get_conn()
         try:
             with self.conn.cursor() as cur:
-                cur.execute("""
-                    DELETE FROM sessions WHERE id = %s AND user_id = %s
-                """, (chat_id, user_id))
+                cur.execute("DELETE FROM sessions WHERE id = %s AND user_id = %s", (chat_id, user_id))
                 deleted = cur.rowcount
             self.conn.commit()
             return deleted == 1
@@ -376,12 +372,6 @@ class VectorRAGService:
             raise
 
     def grantFreeDailyCredit(self, user_id: str):
-        """
-        Grants 1 free credit if:
-        - User is not subscribed
-        - credits_remaining < 1
-        - 24 hours have passed since last grant
-        """
         self._get_conn()
         try:
             with self.conn.cursor() as cur:
@@ -581,46 +571,6 @@ class VectorRAGService:
 
     def hasEnoughCredits(self, user_id: str, min_credits: float = 0.1) -> bool:
         return self.getCreditsRemaining(user_id) >= min_credits
-    
-    # -----------------------------------------------------------------------
-    # Add these methods to your VectorRAGService class in SQL/SQLManager.py
-    # -----------------------------------------------------------------------
-
-    # Also run these SQL statements on your database first:
-    '''
-    CREATE EXTENSION IF NOT EXISTS vector;
-
-    CREATE TABLE IF NOT EXISTS api_keys (
-        key TEXT PRIMARY KEY,
-        owner_user_id TEXT NOT NULL REFERENCES accounts(user_id) ON DELETE CASCADE,
-        business_name TEXT NOT NULL,
-        avatar_name TEXT DEFAULT 'Mia Sterling',
-        system_prompt TEXT,
-        monthly_limit INT DEFAULT 500,
-        conversations_used INT DEFAULT 0,
-        is_active BOOLEAN DEFAULT TRUE,
-        created_at TIMESTAMPTZ DEFAULT NOW(),
-        updated_at TIMESTAMPTZ DEFAULT NOW()
-    );
-
-    CREATE INDEX IF NOT EXISTS api_keys_owner_idx ON api_keys (owner_user_id);
-
-    CREATE TABLE IF NOT EXISTS document_chunks (
-        chunk_id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
-        doc_id TEXT NOT NULL,
-        api_key TEXT NOT NULL REFERENCES api_keys(key) ON DELETE CASCADE,
-        chunk_index INT NOT NULL,
-        content TEXT NOT NULL,
-        embedding vector(1536),
-        filename TEXT,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-    );
-
-    CREATE INDEX IF NOT EXISTS doc_chunks_api_key_idx ON document_chunks (api_key);
-    CREATE INDEX IF NOT EXISTS doc_chunks_doc_id_idx ON document_chunks (doc_id);
-    CREATE INDEX IF NOT EXISTS doc_chunks_embedding_idx ON document_chunks 
-        USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
-    '''
 
     # -----------------------------------------------------------------------
     # API KEY METHODS
@@ -721,7 +671,6 @@ class VectorRAGService:
             raise
 
     def resetConversationCounts(self):
-        """Call this monthly to reset all API key conversation counts."""
         self._get_conn()
         try:
             with self.conn.cursor() as cur:
@@ -743,16 +692,20 @@ class VectorRAGService:
             return dict(row) if row else None
 
     # -----------------------------------------------------------------------
-    # DOCUMENT / RAG METHODS
+    # EMBEDDING
     # -----------------------------------------------------------------------
 
     async def embedText(self, text: str) -> list[float]:
-        """Generates an embedding vector for a piece of text using OpenAI."""
+        """Generates an embedding vector using OpenAI text-embedding-3-small."""
         response = await self.oai.embeddings.create(
             model="text-embedding-3-small",
             input=text,
         )
         return response.data[0].embedding
+
+    # -----------------------------------------------------------------------
+    # DOCUMENT STORAGE
+    # -----------------------------------------------------------------------
 
     def storeDocumentChunk(
         self,
@@ -777,21 +730,66 @@ class VectorRAGService:
             self.conn.rollback()
             raise
 
+    # -----------------------------------------------------------------------
+    # RAG RETRIEVAL
+    # -----------------------------------------------------------------------
+
+    async def processEmbedQuestion(
+        self,
+        user_question: str,
+        api_key: str,
+        num_results: int = 3,
+    ) -> tuple[str, float]:
+        """
+        Main RAG method for the embed system.
+        Takes a user question, finds the most relevant document chunks,
+        returns (context_text, best_similarity_score).
+        """
+        t0 = time.perf_counter()
+        embedding = await self.embedText(user_question)
+        t_embed = time.perf_counter() - t0
+
+        def _db_search():
+            t1 = time.perf_counter()
+            self._get_conn()
+            with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT content,
+                           filename,
+                           chunk_index,
+                           1 - (embedding <=> (%s)::vector) AS similarity
+                    FROM document_chunks
+                    WHERE api_key = %s
+                    ORDER BY embedding <=> (%s)::vector
+                    LIMIT %s;
+                """, (embedding, api_key, embedding, num_results))
+                rows = cur.fetchall()
+            t_sql = time.perf_counter() - t1
+            return rows, t_sql
+
+        rows, t_sql = await run_in_threadpool(_db_search)
+        print(f"==> RAG embed: {t_embed:.3f}s  sql: {t_sql:.3f}s  results: {len(rows)}")
+
+        if not rows:
+            return "(No relevant context found in knowledge base.)", 0.0
+
+        best_similarity = rows[0]["similarity"]
+        context_text = "\n".join(f"- {r['content']}" for r in rows)
+
+        return context_text, best_similarity
+
     def searchDocumentChunks(
         self,
         api_key: str,
         embedding: list[float],
         limit: int = 3,
     ) -> list[dict]:
-        """
-        Finds the most relevant document chunks for a query using cosine similarity.
-        Returns top N chunks ordered by relevance.
-        """
+        """Synchronous version of RAG retrieval."""
         self._get_conn()
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
                 SELECT content, filename, chunk_index,
-                    1 - (embedding <=> %s::vector) AS similarity
+                       1 - (embedding <=> %s::vector) AS similarity
                 FROM document_chunks
                 WHERE api_key = %s
                 ORDER BY embedding <=> %s::vector
@@ -799,12 +797,16 @@ class VectorRAGService:
             """, (embedding, api_key, embedding, limit))
             return [dict(r) for r in cur.fetchall()]
 
+    # -----------------------------------------------------------------------
+    # DOCUMENT MANAGEMENT
+    # -----------------------------------------------------------------------
+
     def listDocuments(self, api_key: str) -> list[dict]:
-        """Lists unique documents uploaded for an API key."""
         self._get_conn()
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
-                SELECT DISTINCT doc_id, filename, COUNT(*) as chunks,
+                SELECT DISTINCT doc_id, filename,
+                    COUNT(*) as chunks,
                     MIN(created_at) as uploaded_at
                 FROM document_chunks
                 WHERE api_key = %s
@@ -814,11 +816,20 @@ class VectorRAGService:
             return [dict(r) for r in cur.fetchall()]
 
     def deleteDocument(self, doc_id: str):
-        """Deletes all chunks for a document."""
         self._get_conn()
         try:
             with self.conn.cursor() as cur:
                 cur.execute("DELETE FROM document_chunks WHERE doc_id = %s", (doc_id,))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def deleteAllDocuments(self, api_key: str):
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("DELETE FROM document_chunks WHERE api_key = %s", (api_key,))
             self.conn.commit()
         except Exception:
             self.conn.rollback()
