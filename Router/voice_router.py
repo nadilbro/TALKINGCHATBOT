@@ -71,6 +71,22 @@ def _as_int(x: Any, default: int = 0) -> int:
     except Exception:
         return default
 
+
+@router.websocket("/embed_chat_ws")
+async def embed_chat_ws(ws: WebSocket):
+    await ws.accept()
+    api_key = ws.query_params.get("api_key")
+    if not api_key:
+        await ws.close(code=4001, reason="Missing api_key")
+        return
+    key_data = rag.getApiKey(api_key)
+    if not key_data or not key_data.get("is_active"):
+        await ws.close(code=4001, reason="Invalid API key")
+        return
+    # rest of the chat logic same as audio_chat_ws
+    # but skip credit checks — billing is per API key not per user
+
+
 @router.post("/chat_init")
 async def chat_init(init_details: SessionInit, user=Depends(verify_token)):
     userID = init_details.userID
@@ -372,3 +388,195 @@ async def audio_chat_ws(ws: WebSocket):
             await ws.close()
         except Exception:
             pass
+
+@router.websocket("/embed_chat_ws")
+async def embed_chat_ws(ws: WebSocket):
+    """
+    WebSocket endpoint for embedded widget.
+    Auth via API key in query param instead of Firebase token.
+    No credit checks — billing is handled per API key.
+    """
+    print("HIT embed_chat_ws")
+    await ws.accept()
+ 
+    # Verify API key
+    api_key = ws.query_params.get("api_key")
+    if not api_key:
+        await ws.close(code=4001, reason="Missing api_key")
+        return
+ 
+    key_data = rag.getApiKey(api_key)
+    if not key_data or not key_data.get("is_active"):
+        await ws.close(code=4001, reason="Invalid or inactive API key")
+        return
+ 
+    # Check conversation limit
+    if key_data.get("conversations_used", 0) >= key_data.get("monthly_limit", 500):
+        await ws.send_json({"type": "error", "message": "Monthly conversation limit reached", "code": "LIMIT_REACHED"})
+        await ws.close()
+        return
+ 
+    try:
+        while True:
+            try:
+                payload = await ws.receive_json()
+            except WebSocketDisconnect:
+                return
+            except Exception:
+                await ws.send_json({"type": "error", "message": "Invalid JSON payload"})
+                continue
+ 
+            if _as_str(payload.get("type")).lower() == "close":
+                await ws.send_json({"type": "done"})
+                await ws.close()
+                return
+ 
+            user_text = _as_str(payload.get("message"))
+            voice_id = _as_str(payload.get("voice_name"))
+            prompt = _as_str(payload.get("prompt"))
+            rag_context = _as_str(payload.get("rag_context"))
+            raw_audio = payload.get("audio_bytes")
+ 
+            if raw_audio and "," in raw_audio:
+                raw_audio = raw_audio.split(",", 1)[1]
+            audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
+ 
+            # STT
+            if audio_bytes:
+                try:
+                    stt_instance = get_stt()
+                    user_text = stt_instance.get_transcript(audio_bytes)
+                    if not user_text:
+                        await ws.send_json({"type": "error", "message": "Could not understand audio."})
+                        continue
+                    await ws.send_json({"type": "transcript", "text": user_text})
+                except Exception as e:
+                    await ws.send_json({"type": "error", "message": f"Transcription failed: {e}"})
+                    continue
+ 
+            if not user_text:
+                await ws.send_json({"type": "error", "message": "Missing message"})
+                continue
+ 
+            # Get voice from avatar config if not provided
+            if not voice_id:
+                avatar_name = key_data.get("avatar_name", "Mia Sterling")
+                avatar = rag.getAvatarByName(avatar_name)
+                voice_id = avatar.get("voice", "UgBBYS2sOqTuMpoF3BR0") if avatar else "UgBBYS2sOqTuMpoF3BR0"
+ 
+            # Build system prompt with RAG context if provided
+            system_prompt = prompt or key_data.get("system_prompt") or ""
+            if rag_context and rag_context != "(No relevant context found in knowledge base.)":
+                system_prompt = f"{system_prompt}\n\nRelevant information from our knowledge base:\n{rag_context}"
+ 
+            # Stream Gemini
+            try:
+                tts_instance = get_tts()
+                sentences = []
+                sentence_buffer = ""
+ 
+                async for delta in ai.stream(site_id=api_key, system=system_prompt, user=user_text):
+                    sentence_buffer += delta
+                    while re.search(r'[.?!,]\s', sentence_buffer):
+                        match = re.search(r'[.?!,]\s', sentence_buffer)
+                        cut = match.end()
+                        sentence = sentence_buffer[:cut].strip()
+                        sentence_buffer = sentence_buffer[cut:]
+                        if sentence and len(sentence) > 2:
+                            sentences.append(sentence)
+ 
+                if sentence_buffer.strip() and len(sentence_buffer.strip()) > 2:
+                    sentences.append(sentence_buffer.strip())
+ 
+                if not sentences:
+                    await ws.send_json({"type": "error", "message": "No response generated"})
+                    await ws.send_json({"type": "done"})
+                    continue
+ 
+                bot_text = " ".join(sentences)
+ 
+            except Exception as e:
+                await ws.send_json({"type": "error", "message": f"AI failed: {str(e)}"})
+                continue
+ 
+            await ws.send_json({"type": "text", "text": bot_text})
+ 
+            # Increment conversation count
+            try:
+                rag.incrementConversationCount(api_key)
+            except Exception as e:
+                print(f"==> Failed to increment conversation count: {e}")
+ 
+            # ElevenLabs parallel TTS
+            try:
+                results = await asyncio.gather(
+                    *[tts_instance.synthesize_sentence(s, voice_id) for s in sentences],
+                    return_exceptions=True
+                )
+ 
+                all_audio = b""
+                all_visemes = []
+                cumulative_offset_ms = 0
+ 
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        print(f"==> Embed sentence {i} failed: {result}")
+                        continue
+                    audio_bytes_chunk, visemes, duration = result
+ 
+                    for v in visemes:
+                        all_visemes.append({
+                            "t_ms": v["t_ms"] + cumulative_offset_ms,
+                            "viseme_id": v["viseme_id"],
+                        })
+ 
+                    all_audio += audio_bytes_chunk
+                    cumulative_offset_ms += int(duration * 1000)
+ 
+                if not all_audio:
+                    await ws.send_json({"type": "error", "message": "TTS produced no audio"})
+                    await ws.send_json({"type": "done"})
+                    continue
+ 
+                await ws.send_json({
+                    "type": "audio_begin",
+                    "format": "mp3",
+                    "sample_rate_hz": 44100,
+                    "channels": 1,
+                    "visemes": [
+                        {
+                            "t_ms": _as_int(v.get("t_ms"), 0),
+                            "viseme_id": _as_int(v.get("viseme_id"), 0),
+                        }
+                        for v in all_visemes
+                    ],
+                })
+ 
+                CHUNK = 32_000
+                for i in range(0, len(all_audio), CHUNK):
+                    await ws.send_bytes(all_audio[i:i + CHUNK])
+ 
+                await ws.send_json({"type": "audio_end"})
+                await ws.send_json({"type": "done"})
+ 
+            except Exception as e:
+                print(f"==> Embed TTS error: {e}")
+                traceback.print_exc()
+                await ws.send_json({"type": "error", "message": f"TTS failed: {str(e)}"})
+                await ws.send_json({"type": "done"})
+                continue
+ 
+    except WebSocketDisconnect:
+        return
+    except Exception as e:
+        print("❌ Embed WS error:", repr(e))
+        traceback.print_exc()
+        try:
+            await ws.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+        try:
+            await ws.close()
+        except Exception:
+            pass
+ 
