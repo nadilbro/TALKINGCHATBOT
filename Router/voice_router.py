@@ -408,7 +408,7 @@ async def embed_chat_ws(ws: WebSocket):
  
     business_name = key_data.get("business_name", "")
     business_description = key_data.get("business_description", "")
- 
+    personality_on = key_data.get("personality_on", True)  
     print("==> Key valid, entering message loop")
     try:
         while True:
@@ -428,8 +428,17 @@ async def embed_chat_ws(ws: WebSocket):
             user_text = _as_str(payload.get("message"))
             voice_id = _as_str(payload.get("voice_name"))
             prompt = _as_str(payload.get("prompt"))
-            rag_context = _as_str(payload.get("rag_context"))
-            personality_on = payload.get("personality_on", True)
+            rag_context = ""
+            try:
+                embedding = await rag.embedText(user_text)
+                chunks = rag.searchDocumentChunks(api_key=api_key, embedding=embedding, limit=3)
+                if chunks:
+                    best_similarity = chunks[0].get("similarity", 0)
+                    if best_similarity >= 0.3:
+                        rag_context = "\n".join(f"- {c['content']}" for c in chunks)
+                print(f"==> RAG context similarity: {chunks[0].get('similarity', 0) if chunks else 0:.3f}")
+            except Exception as e:
+                print(f"==> RAG failed: {e}")
             raw_audio = payload.get("audio_bytes")
  
             if raw_audio and "," in raw_audio:
@@ -468,12 +477,14 @@ async def embed_chat_ws(ws: WebSocket):
                 "no dashes, no colons, no semicolons. Write in plain conversational paragraphs only. "
                 "This is spoken aloud, not read on screen."
             )
- 
+    
             if personality_on:
-                # Use avatar personality prompt
-                system_prompt = prompt or key_data.get("system_prompt") or ""
+                # Get avatar prompt directly from DB — don't trust frontend
+                avatar_name = key_data.get("avatar_name", "Mia Sterling")
+                avatar = rag.getAvatarByName(avatar_name)
+                system_prompt = (avatar.get("prompt") if avatar else "") or key_data.get("system_prompt") or ""
             else:
-                # Generic support agent prompt — no personality
+                # Generic support agent — ignore any prompt from frontend
                 system_prompt = (
                     f"{FORMATTING_RULE}\n\n"
                     f"You are a helpful support agent for {business_name}. "
