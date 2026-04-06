@@ -383,23 +383,32 @@ async def embed_chat_ws(ws: WebSocket):
     print("HIT embed_chat_ws")
     await ws.accept()
     print("==> embed WS accepted")
-
+ 
     api_key = ws.query_params.get("api_key")
     print(f"==> api_key: {api_key}")
-    
+ 
     if not api_key:
         print("==> No api_key, closing")
         await ws.close(code=4001, reason="Missing api_key")
         return
-
+ 
     key_data = rag.getApiKey(api_key)
     print(f"==> key_data: {key_data}")
-    
+ 
     if not key_data or not key_data.get("is_active"):
         print("==> Invalid key, closing")
         await ws.close(code=4001, reason="Invalid or inactive API key")
         return
-
+ 
+    # Check conversation limit
+    if key_data.get("conversations_used", 0) >= key_data.get("monthly_limit", 500):
+        await ws.send_json({"type": "error", "message": "Monthly conversation limit reached", "code": "LIMIT_REACHED"})
+        await ws.close()
+        return
+ 
+    business_name = key_data.get("business_name", "")
+    business_description = key_data.get("business_description", "")
+ 
     print("==> Key valid, entering message loop")
     try:
         while True:
@@ -420,6 +429,7 @@ async def embed_chat_ws(ws: WebSocket):
             voice_id = _as_str(payload.get("voice_name"))
             prompt = _as_str(payload.get("prompt"))
             rag_context = _as_str(payload.get("rag_context"))
+            personality_on = payload.get("personality_on", True)
             raw_audio = payload.get("audio_bytes")
  
             if raw_audio and "," in raw_audio:
@@ -449,8 +459,31 @@ async def embed_chat_ws(ws: WebSocket):
                 avatar = rag.getAvatarByName(avatar_name)
                 voice_id = avatar.get("voice", "UgBBYS2sOqTuMpoF3BR0") if avatar else "UgBBYS2sOqTuMpoF3BR0"
  
-            # Build system prompt with RAG context if provided
-            system_prompt = prompt or key_data.get("system_prompt") or ""
+            # -------------------------
+            # BUILD SYSTEM PROMPT
+            # -------------------------
+            FORMATTING_RULE = (
+                "CRITICAL FORMATTING RULE: Never use markdown formatting of any kind. "
+                "No asterisks, no bold, no headers, no hashtags, no bullet points, no numbered lists, "
+                "no dashes, no colons, no semicolons. Write in plain conversational paragraphs only. "
+                "This is spoken aloud, not read on screen."
+            )
+ 
+            if personality_on:
+                # Use avatar personality prompt
+                system_prompt = prompt or key_data.get("system_prompt") or ""
+            else:
+                # Generic support agent prompt — no personality
+                system_prompt = (
+                    f"{FORMATTING_RULE}\n\n"
+                    f"You are a helpful support agent for {business_name}. "
+                    f"{business_description} "
+                    f"Answer the user's questions accurately and helpfully. "
+                    f"Do not make up information you do not have. "
+                    f"If you don't know the answer, say so honestly."
+                )
+ 
+            # Inject RAG context if available and relevant
             if rag_context and rag_context != "(No relevant context found in knowledge base.)":
                 system_prompt = f"{system_prompt}\n\nRelevant information from our knowledge base:\n{rag_context}"
  
@@ -479,6 +512,7 @@ async def embed_chat_ws(ws: WebSocket):
                     continue
  
                 bot_text = " ".join(sentences)
+                print(f"==> embed {len(sentences)} sentences", flush=True)
  
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"AI failed: {str(e)}"})
