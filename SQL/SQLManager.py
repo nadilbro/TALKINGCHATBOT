@@ -584,6 +584,8 @@ class VectorRAGService:
         avatar_name: str = "Mia Sterling",
         system_prompt: str = None,
         monthly_limit: int = 500,
+        business_description: str = None,  # ADD THIS
+        personality_on : bool = None,  # ADD THIS
     ):
         self._get_conn()
         try:
@@ -591,10 +593,10 @@ class VectorRAGService:
                 cur.execute("""
                     INSERT INTO api_keys (
                         key, owner_user_id, business_name,
-                        avatar_name, system_prompt, monthly_limit
+                        avatar_name, system_prompt, monthly_limit, business_description, personality_on 
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """, (key, owner_user_id, business_name, avatar_name, system_prompt, monthly_limit))
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, (key, owner_user_id, business_name, avatar_name, system_prompt, monthly_limit, business_description, personality_on))
             self.conn.commit()
         except Exception:
             self.conn.rollback()
@@ -618,16 +620,9 @@ class VectorRAGService:
                 ORDER BY created_at DESC
             """, (owner_user_id,))
             return [dict(r) for r in cur.fetchall()]
-
-    def updateApiKey(
-        self,
-        key: str,
-        business_name: str = None,
-        avatar_name: str = None,
-        system_prompt: str = None,
-        monthly_limit: int = None,
-        is_active: bool = None,
-    ):
+    def updateApiKey(self, key, business_name=None, avatar_name=None,
+                    system_prompt=None, monthly_limit=None, is_active=None,
+                    business_description=None, personality_on=None):
         self._get_conn()
         try:
             with self.conn.cursor() as cur:
@@ -638,9 +633,11 @@ class VectorRAGService:
                         system_prompt = COALESCE(%s, system_prompt),
                         monthly_limit = COALESCE(%s, monthly_limit),
                         is_active = COALESCE(%s, is_active),
+                        business_description = COALESCE(%s, business_description),
+                        personality_on = COALESCE(%s, personality_on),
                         updated_at = NOW()
                     WHERE key = %s
-                """, (business_name, avatar_name, system_prompt, monthly_limit, is_active, key))
+                """, (business_name, avatar_name, system_prompt, monthly_limit, is_active, business_description, personality_on, key))
             self.conn.commit()
         except Exception:
             self.conn.rollback()

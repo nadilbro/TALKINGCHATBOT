@@ -42,7 +42,8 @@ class CreateApiKeyRequest(BaseModel):
     avatar_name: Optional[str] = "Mia Sterling"
     system_prompt: Optional[str] = None
     monthly_limit: Optional[int] = 500
-
+    business_description: Optional[str] = None
+    personality_on: Optional[bool] = True  # ADD
 
 class UpdateApiKeyRequest(BaseModel):
     business_name: Optional[str] = None
@@ -50,6 +51,8 @@ class UpdateApiKeyRequest(BaseModel):
     system_prompt: Optional[str] = None
     monthly_limit: Optional[int] = None
     is_active: Optional[bool] = None
+    business_description: Optional[str] = None
+    personality_on: Optional[bool] = None  # ADD
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +71,7 @@ async def create_api_key(req: CreateApiKeyRequest, user=Depends(verify_token)):
         avatar_name=req.avatar_name,
         system_prompt=req.system_prompt,
         monthly_limit=req.monthly_limit,
+        business_description=req.business_description,
     )
     return {
         "api_key": key,
