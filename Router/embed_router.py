@@ -103,6 +103,8 @@ async def update_api_key(key: str, req: UpdateApiKeyRequest, user=Depends(verify
         system_prompt=req.system_prompt,
         monthly_limit=req.monthly_limit,
         is_active=req.is_active,
+        business_description=req.business_description,
+        personality_on=req.personality_on,
     )
     return {"success": True}
 
