@@ -396,37 +396,21 @@ async def audio_chat_ws(ws: WebSocket):
 async def embed_chat_ws(ws: WebSocket):
     """
     WebSocket endpoint for embedded widget.
-    Auth via API key in query param instead of Firebase token.
-    No credit checks — billing is handled per API key.
+    Auth via API key in query param. No credit checks — billing per API key.
     """
     print("HIT embed_chat_ws")
     await ws.accept()
-    print("==> embed WS accepted")
 
     api_key = ws.query_params.get("api_key")
-    print(f"==> api_key: {api_key}")
-
     if not api_key:
-        print("==> No api_key, closing")
         await ws.close(code=4001, reason="Missing api_key")
         return
 
-    key_data = rag.getApiKey(api_key)
-    print(f"==> key_data: {key_data}")
-
-    if not key_data or not key_data.get("is_active"):
-        print("==> Invalid key, closing")
+    # Initial validation only — full key_data is re-fetched per message
+    initial_key_data = rag.getApiKey(api_key)
+    if not initial_key_data or not initial_key_data.get("is_active"):
         await ws.close(code=4001, reason="Invalid or inactive API key")
         return
-
-    if key_data.get("conversations_used", 0) >= key_data.get("monthly_limit", 500):
-        await ws.send_json({"type": "error", "message": "Monthly conversation limit reached", "code": "LIMIT_REACHED"})
-        await ws.close()
-        return
-
-    business_name = key_data.get("business_name", "")
-    business_description = key_data.get("business_description", "")
-    personality_on = key_data.get("personality_on", True)
 
     FORMATTING_RULE = (
         "CRITICAL FORMATTING RULE: Never use markdown formatting of any kind. "
@@ -435,7 +419,8 @@ async def embed_chat_ws(ws: WebSocket):
         "This is spoken aloud, not read on screen."
     )
 
-    print("==> Key valid, entering message loop")
+    print(f"==> embed WS opened for api_key={api_key}")
+
     try:
         while True:
             try:
@@ -451,9 +436,28 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.close()
                 return
 
+            # RE-FETCH key_data on every message so dashboard toggles take effect mid-session
+            key_data = rag.getApiKey(api_key)
+            if not key_data or not key_data.get("is_active"):
+                await ws.send_json({"type": "error", "message": "API key deactivated", "code": "INVALID_KEY"})
+                await ws.close()
+                return
+
+            if key_data.get("conversations_used", 0) >= key_data.get("monthly_limit", 500):
+                await ws.send_json({"type": "error", "message": "Monthly conversation limit reached", "code": "LIMIT_REACHED"})
+                await ws.close()
+                return
+
+            business_name = key_data.get("business_name") or ""
+            business_description = key_data.get("business_description") or ""
+            avatar_name = key_data.get("avatar_name") or "Mia Sterling"
+
+            # Safer default: if column is NULL or missing, treat as OFF
+            personality_on = bool(key_data.get("personality_on"))
+
             user_text = _as_str(payload.get("message"))
             voice_id = _as_str(payload.get("voice_name"))
-            audio_on = payload.get("voice_on", True)  # default True
+            audio_on = payload.get("voice_on", True)
             raw_audio = payload.get("audio_bytes")
 
             if raw_audio and "," in raw_audio:
@@ -477,30 +481,29 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "error", "message": "Missing message"})
                 continue
 
-            # Get voice from avatar config if not provided
+            # Look up avatar once — used for voice and (maybe) prompt
+            avatar = rag.getAvatarByName(avatar_name)
+
+            # Resolve voice
             if not voice_id:
-                avatar_name = key_data.get("avatar_name", "Mia Sterling")
-                avatar = rag.getAvatarByName(avatar_name)
-                voice_id = avatar.get("voice", "UgBBYS2sOqTuMpoF3BR0") if avatar else "UgBBYS2sOqTuMpoF3BR0"
+                voice_id = (avatar.get("voice") if avatar else None) or "UgBBYS2sOqTuMpoF3BR0"
 
             # RAG lookup
             rag_context = ""
             try:
                 embedding = await rag.embedText(user_text)
                 chunks = rag.searchDocumentChunks(api_key=api_key, embedding=embedding, limit=3)
-                if chunks:
-                    best_similarity = chunks[0].get("similarity", 0)
-                    if best_similarity >= 0.3:
-                        rag_context = "\n".join(f"- {c['content']}" for c in chunks)
+                if chunks and chunks[0].get("similarity", 0) >= 0.3:
+                    rag_context = "\n".join(f"- {c['content']}" for c in chunks)
                 print(f"==> RAG similarity: {chunks[0].get('similarity', 0) if chunks else 0:.3f}")
             except Exception as e:
                 print(f"==> RAG failed: {e}")
 
-            # Build system prompt
+            # Build system prompt — explicit branches, no fallback bleed
             if personality_on:
-                avatar_name = key_data.get("avatar_name", "Mia Sterling")
-                avatar = rag.getAvatarByName(avatar_name)
-                system_prompt = (avatar.get("prompt") if avatar else "") or key_data.get("system_prompt") or ""
+                avatar_prompt = (avatar.get("prompt") if avatar else "") or ""
+                fallback_prompt = key_data.get("system_prompt") or ""
+                system_prompt = avatar_prompt or fallback_prompt
             else:
                 system_prompt = (
                     f"{FORMATTING_RULE}\n\n"
@@ -513,6 +516,9 @@ async def embed_chat_ws(ws: WebSocket):
 
             if rag_context:
                 system_prompt = f"{system_prompt}\n\nRelevant information from our knowledge base:\n{rag_context}"
+
+            # DEBUG — remove once confirmed working
+            print(f"==> personality_on={personality_on} | prompt_preview={system_prompt[:200]!r}")
 
             # Stream Gemini
             try:
@@ -549,7 +555,7 @@ async def embed_chat_ws(ws: WebSocket):
             except Exception as e:
                 print(f"==> Failed to increment conversation count: {e}")
 
-            # TTS — only if audio is on
+            # TTS
             if audio_on:
                 try:
                     print(f"==> Embed firing {len(sentences)} ElevenLabs tasks in parallel", flush=True)
