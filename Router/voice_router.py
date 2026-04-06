@@ -360,11 +360,11 @@ async def audio_chat_ws(ws: WebSocket):
                             webSearch=bool(web_search),
                             voice_on=bool(audio_on),
                         )
-                        credits_used = cost / 0.15 * MINUTES_PER_CREDIT  # convert cost to credits
+                        credits_used = cost / 0.15
                         remaining = rag.deductCredits(user_id, credits_used)
                         print(f"==> Cost: ${cost:.4f} | Deducted {credits_used:.4f} credits. Remaining: {remaining}", flush=True)
                     except Exception as e:
-                        print(f"==> Cost tracking failed: {e}", flush=True)
+                        print(f"==> Cost tracking failed: {e}", flush=True) 
 
                 except Exception as e:
                     print(f"==> TTS error: {e}", flush=True)
