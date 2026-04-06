@@ -23,30 +23,26 @@ class AccountManager:
 
     def processUsedCost(
         self,
-        user_id: str,
         outputText: str,
         inputText: str,
         SST_Length_seconds: float = 0,
         webSearch: bool = False,
-    ):
-        """
-        Calculates the API cost for one conversation turn and adds it to the user's monthly usage.
-        SST_Length_seconds: length of the user's voice input in seconds (0 if text only).
-        """
+        voice_on: bool = False,
+    ) -> float:
         cost = 0.0
         outputCharacters = len(outputText)
         inputCharacters = len(inputText)
 
         cost += inputCharacters * COST_PER_GEMINI_INPUT_1M / 1_000_000
         cost += outputCharacters * COST_PER_GEMINI_OUTPUT_1M / 1_000_000
-        cost += COST_PER_1K_ELEVENLABS * (outputCharacters / 1000)
+        if voice_on:
+            cost += COST_PER_1K_ELEVENLABS * (outputCharacters / 1000)
         cost += COST_PER_MIN_DEEPGRAM * (SST_Length_seconds / 60)
-        cost += AVERAGE_TOKEN_AMOUNT * (COST_PER_GEMINI_INPUT_1M / 1_000_000) 
+        cost += AVERAGE_TOKEN_AMOUNT * (COST_PER_GEMINI_INPUT_1M / 1_000_000)
         if webSearch:
             cost += COST_PER_SEARCH_TAVILY
 
-        self.rag.updateCurrentCost(user_id, cost)
-
+        return cost  # just return it, don't update anything
     ####################
     ## LIMIT CHECKING ##
     ####################

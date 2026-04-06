@@ -499,11 +499,10 @@ class VectorRAGService:
                     UPDATE accounts
                     SET
                         credits_remaining = GREATEST(credits_remaining - %s, 0),
-                        monthly_token_used = monthly_token_used + %s,
                         updated_at = NOW()
                     WHERE user_id = %s
                     RETURNING credits_remaining
-                """, (credits_used, credits_used, user_id))
+                """, (credits_used, user_id))
                 row = cur.fetchone()
             self.conn.commit()
             return row["credits_remaining"] if row else 0
