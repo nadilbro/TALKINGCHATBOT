@@ -372,6 +372,7 @@ async def audio_chat_ws(ws: WebSocket):
                         f"answer, output NONE."
                     )
                     raw = await ai.get_diagram(site_id=user_id, user=diagram_input)
+                    print(f"==> Raw diagram response: {raw[:500]!r}")
                     if not raw:
                         return None
                     if raw.strip().upper().startswith("NONE"):
@@ -407,7 +408,6 @@ async def audio_chat_ws(ws: WebSocket):
                         # Cost tracking
                         try:
                             cost = account_manager.processUsedCost(
-                                user_id=user_id,
                                 outputText=bot_text,
                                 inputText=user_prompt,
                                 SST_Length_seconds=len(audio_bytes) / 16000 if audio_bytes else 0,
