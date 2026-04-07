@@ -294,8 +294,8 @@ async def audio_chat_ws(ws: WebSocket):
             else:
                 user_prompt = user_text
 
-            # ----------------------------------------------------------
-            # NEW: Check if diagrams are enabled for this user
+              # ----------------------------------------------------------
+            # Check if diagrams are enabled for this user
             # ----------------------------------------------------------
             try:
                 diagrams_enabled = rag.get_diagram_usage(user_id)
@@ -303,11 +303,9 @@ async def audio_chat_ws(ws: WebSocket):
                 diagrams_enabled = False
 
             # ----------------------------------------------------------
-            # NEW: Define the two parallel tasks
+            # Generate chat response first (needed as context for diagram)
             # ----------------------------------------------------------
-
             async def _generate_chat():
-                """Stream Gemini for the spoken response, return (sentences, bot_text)."""
                 sentences = []
                 sentence_buffer = ""
                 async for delta in ai.stream(site_id=user_id, system=system_prompt, user=user_prompt):
@@ -324,61 +322,27 @@ async def audio_chat_ws(ws: WebSocket):
                 bot_text = " ".join(sentences)
                 return sentences, bot_text
 
-            async def _generate_diagram():
-                """Call Gemini for an SVG. Returns SVG string or None if not warranted."""
-                if not diagrams_enabled:
-                    print("Disabled")
-                    return None
-                try:
-                    print("Generating Diagram")
-                    raw = await ai.get_diagram(site_id=user_id, user=user_text)
-                    if not raw:
-                        return None
-                    # Self-skip sentinel from the diagram prompt
-                    if raw.strip().upper().startswith("NONE"):
-                        return None
-                    # Extract just the <svg>...</svg> block in case the model wrapped it
-                    match = re.search(r'<svg.*?</svg>', raw, re.DOTALL | re.IGNORECASE)
-                    print(match)
-                    return match.group(0) if match else None
-                except Exception as e:
-                    print(f"==> Diagram generation failed: {e}", flush=True)
-                    return None
-
-            # ----------------------------------------------------------
-            # NEW: Run both in parallel
-            # ----------------------------------------------------------
             try:
-                (sentences, bot_text), svg = await asyncio.gather(
-                    _generate_chat(),
-                    _generate_diagram(),
-                )
-
+                sentences, bot_text = await _generate_chat()
                 if not sentences:
                     await ws.send_json({"type": "error", "message": "No response generated"})
                     await ws.send_json({"type": "done"})
                     continue
-
-                print(f"==> {len(sentences)} sentences | diagram={'yes' if svg else 'no'}", flush=True)
-
+                print(f"==> {len(sentences)} sentences", flush=True)
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"AI failed: {str(e)}"})
                 continue
 
-            # Send the spoken text
+            # Send the spoken text immediately
             await ws.send_json({"type": "text", "text": bot_text})
 
-            # NEW: Send the diagram if we have one
-            if svg:
-                await ws.send_json({"type": "diagram", "svg": svg})
-
+            # Save assistant message and update rolling summary
             try:
                 rag.add_message(chat_id=chat_id, role="assistant", content=bot_text)
                 rag.update_last_message(chat_id=chat_id, last_message=bot_text)
             except Exception:
                 pass
 
-            # Rolling summary
             try:
                 smgr = get_summary_manager()
                 recent_for_summary = history[-6:] if len(history) > 6 else list(history)
@@ -388,7 +352,48 @@ async def audio_chat_ws(ws: WebSocket):
             except Exception as e:
                 print(f"Summary update error: {e}")
 
+            # ----------------------------------------------------------
+            # Define the diagram task — uses bot_text as context so the
+            # diagram illustrates exactly what the avatar is saying
+            # ----------------------------------------------------------
+            async def _generate_diagram_with_context():
+                if not diagrams_enabled:
+                    print("Diagrams disabled for this user")
+                    return None
+                try:
+                    print("Generating diagram...")
+                    diagram_input = (
+                        f"User's question: {user_text}\n\n"
+                        f"Spoken answer that was just given to the user:\n{bot_text}\n\n"
+                        f"Draw a diagram that illustrates the spoken answer above. "
+                        f"The diagram must match the structure, steps, and terminology "
+                        f"of the spoken answer. Do not invent new steps or use different "
+                        f"labels. If a diagram does not meaningfully illustrate this "
+                        f"answer, output NONE."
+                    )
+                    raw = await ai.get_diagram(site_id=user_id, user=diagram_input)
+                    if not raw:
+                        return None
+                    if raw.strip().upper().startswith("NONE"):
+                        print("Diagram model returned NONE")
+                        return None
+                    match = re.search(r'<svg.*?</svg>', raw, re.DOTALL | re.IGNORECASE)
+                    if not match:
+                        print("No <svg> block found in diagram response")
+                        return None
+                    return match.group(0)
+                except Exception as e:
+                    print(f"==> Diagram generation failed: {e}", flush=True)
+                    return None
+
+            # ----------------------------------------------------------
+            # Kick off diagram in the background — it runs while TTS runs
+            # ----------------------------------------------------------
+            diagram_task = asyncio.create_task(_generate_diagram_with_context())
+
+            # ----------------------------------------------------------
             # TTS — only if audio is on
+            # ----------------------------------------------------------
             if audio_on:
                 try:
                     print(f"==> Firing {len(sentences)} ElevenLabs tasks in parallel", flush=True)
@@ -396,30 +401,41 @@ async def audio_chat_ws(ws: WebSocket):
 
                     if not all_audio:
                         await ws.send_json({"type": "error", "message": "TTS produced no audio"})
-                        await ws.send_json({"type": "done"})
-                        continue
+                    else:
+                        await _send_audio(ws, all_audio, all_visemes)
 
-                    await _send_audio(ws, all_audio, all_visemes)
-
-                    try:
-                        cost = account_manager.processUsedCost(
-                            user_id=user_id,
-                            outputText=bot_text,
-                            inputText=user_prompt,
-                            SST_Length_seconds=len(audio_bytes) / 16000 if audio_bytes else 0,
-                            webSearch=bool(web_search),
-                            voice_on=bool(audio_on),
-                        )
-                        credits_used = cost / 0.15
-                        remaining = rag.deductCredits(user_id, credits_used)
-                        print(f"==> Cost: ${cost:.4f} | Deducted {credits_used:.4f} credits. Remaining: {remaining}", flush=True)
-                    except Exception as e:
-                        print(f"==> Cost tracking failed: {e}", flush=True)
+                        # Cost tracking
+                        try:
+                            cost = account_manager.processUsedCost(
+                                user_id=user_id,
+                                outputText=bot_text,
+                                inputText=user_prompt,
+                                SST_Length_seconds=len(audio_bytes) / 16000 if audio_bytes else 0,
+                                webSearch=bool(web_search),
+                                voice_on=bool(audio_on),
+                            )
+                            credits_used = cost / 0.15
+                            remaining = rag.deductCredits(user_id, credits_used)
+                            print(f"==> Cost: ${cost:.4f} | Deducted {credits_used:.4f} credits. Remaining: {remaining}", flush=True)
+                        except Exception as e:
+                            print(f"==> Cost tracking failed: {e}", flush=True)
 
                 except Exception as e:
                     print(f"==> TTS error: {e}", flush=True)
                     traceback.print_exc()
                     await ws.send_json({"type": "error", "message": f"TTS failed: {str(e)}"})
+
+            # ----------------------------------------------------------
+            # Now await the diagram — likely already done by this point
+            # ----------------------------------------------------------
+            try:
+                svg = await diagram_task
+            except Exception as e:
+                print(f"==> Diagram task error: {e}", flush=True)
+                svg = None
+
+            if svg:
+                await ws.send_json({"type": "diagram", "svg": svg})
 
             await ws.send_json({"type": "done"})
 
