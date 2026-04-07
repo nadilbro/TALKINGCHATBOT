@@ -103,3 +103,7 @@ class ClientListSetUp(BaseModel):
 class UserID(BaseModel):
     user_id: str
 
+
+    
+class toggleDiagram(BaseModel):
+    toggle: bool

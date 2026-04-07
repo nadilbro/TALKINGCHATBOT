@@ -1,16 +1,17 @@
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator
 from google import genai
 import os
 
 from Providers.diagram_manager import diagram_manager
+
+
 class GeminiProvider:
     def __init__(self, chat_model: str, embed_model: str):
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise RuntimeError("GEMINI_API_KEY is not set")
-        
 
-        self.client = genai.Client(api_key=api_key) if api_key else genai.Client()
+        self.client = genai.Client(api_key=api_key)
         self.chat_model = chat_model
         self.embed_model = embed_model
 
@@ -27,9 +28,8 @@ class GeminiProvider:
         self,
         system: str,
         user: str,
-        max_output_tokens: int = 500
+        max_output_tokens: int = 500,
     ) -> AsyncIterator[str]:
-
         stream = await self.client.aio.models.generate_content_stream(
             model=self.chat_model,
             contents=user,
@@ -38,36 +38,32 @@ class GeminiProvider:
                 "max_output_tokens": max_output_tokens,
             },
         )
-
         async for chunk in stream:
             txt = getattr(chunk, "text", None)
             if txt:
                 yield txt
 
-
     def stream_chat(
         self,
         system: str,
         user: str,
-        max_output_tokens: int = 120
+        max_output_tokens: int = 120,
     ) -> AsyncIterator[str]:
         return self._stream(system=system, user=user, max_output_tokens=max_output_tokens)
-    
+
     async def response(
         self,
-        site_id: str,   # keep this so AIProvider can call providers consistently
+        site_id: str,
         system: str,
         user: str,
-        max_output_tokens: int = 500
+        max_output_tokens: int = 500,
     ) -> str:
-        # simplest: join the streaming chunks
         out = []
         async for delta in self._stream(system=system, user=user, max_output_tokens=max_output_tokens):
             out.append(delta)
         return "".join(out)
 
     async def get_chat(self, system: str, user: str, max_output_tokens: int = 500) -> str:
-        # Non-streaming version
         resp = await self.client.aio.models.generate_content(
             model=self.chat_model,
             contents=user,
@@ -77,8 +73,15 @@ class GeminiProvider:
             },
         )
         return getattr(resp, "text", None) or ""
-    
 
-    async def create_diagram(self, user: str, system: str):
-        #Main gemeni functionality will take part here, however other functions will be in diagram_creator.py for cleanliness of code
-        pass
+    async def get_diagram(self, user: str, max_output_tokens: int = 2000) -> str:
+        diagram_system_prompt = diagram_manager.get_prompt()
+        resp = await self.client.aio.models.generate_content(
+            model=self.chat_model,
+            contents=user,
+            config={
+                "system_instruction": diagram_system_prompt,
+                "max_output_tokens": max_output_tokens,
+            },
+        )
+        return getattr(resp, "text", None) or ""

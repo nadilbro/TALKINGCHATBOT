@@ -874,3 +874,28 @@ class VectorRAGService:
 
     def hasEnoughBusinessCredits(self, user_id: str, min_credits: float = 0.01) -> bool:
         return self.getBusinessCredits(user_id) >= min_credits
+    
+    #Check Diagram toggle
+    def toggle_diagram_usage(self, user_id: str, value: bool):
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE accounts
+                    SET diagram_use = %s
+                    WHERE user_id = %s
+                """, (value, user_id))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        
+
+
+    #Check Diagram toggle
+    def get_diagram_usage(self, user_id: str) -> bool:
+        self._get_conn()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT diagram_use FROM accounts WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            return bool(row["diagram_use"]) if row else True

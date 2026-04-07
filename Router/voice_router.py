@@ -125,6 +125,9 @@ async def _send_audio(ws: WebSocket, all_audio: bytes, all_visemes: list):
     await ws.send_json({"type": "audio_end"})
 
 
+
+
+
 # -----------------------------------------------------------------------
 # CHAT INIT
 # -----------------------------------------------------------------------
@@ -202,7 +205,7 @@ async def audio_chat_ws(ws: WebSocket):
             voice_id = _as_str(payload.get("voice_name"))
             prompt = _as_str(payload.get("prompt"))
             web_search = _as_str(payload.get("web_search"))
-            audio_on = payload.get("voice_on", True)  # default True
+            audio_on = payload.get("voice_on", True)
             raw_audio = payload.get("audio_bytes")
 
             if raw_audio and "," in raw_audio:
@@ -291,8 +294,20 @@ async def audio_chat_ws(ws: WebSocket):
             else:
                 user_prompt = user_text
 
-            # Stream Gemini
+            # ----------------------------------------------------------
+            # NEW: Check if diagrams are enabled for this user
+            # ----------------------------------------------------------
             try:
+                diagrams_enabled = rag.get_diagram_usage(user_id)
+            except Exception:
+                diagrams_enabled = False
+
+            # ----------------------------------------------------------
+            # NEW: Define the two parallel tasks
+            # ----------------------------------------------------------
+
+            async def _generate_chat():
+                """Stream Gemini for the spoken response, return (sentences, bot_text)."""
                 sentences = []
                 sentence_buffer = ""
                 async for delta in ai.stream(site_id=user_id, system=system_prompt, user=user_prompt):
@@ -306,20 +321,53 @@ async def audio_chat_ws(ws: WebSocket):
                             sentences.append(sentence)
                 if sentence_buffer.strip() and len(sentence_buffer.strip()) > 2:
                     sentences.append(sentence_buffer.strip())
+                bot_text = " ".join(sentences)
+                return sentences, bot_text
+
+            async def _generate_diagram():
+                """Call Gemini for an SVG. Returns SVG string or None if not warranted."""
+                if not diagrams_enabled:
+                    return None
+                try:
+                    raw = await ai.get_diagram(site_id=user_id, user=user_text)
+                    if not raw:
+                        return None
+                    # Self-skip sentinel from the diagram prompt
+                    if raw.strip().upper().startswith("NONE"):
+                        return None
+                    # Extract just the <svg>...</svg> block in case the model wrapped it
+                    match = re.search(r'<svg.*?</svg>', raw, re.DOTALL | re.IGNORECASE)
+                    return match.group(0) if match else None
+                except Exception as e:
+                    print(f"==> Diagram generation failed: {e}", flush=True)
+                    return None
+
+            # ----------------------------------------------------------
+            # NEW: Run both in parallel
+            # ----------------------------------------------------------
+            try:
+                (sentences, bot_text), svg = await asyncio.gather(
+                    _generate_chat(),
+                    _generate_diagram(),
+                )
 
                 if not sentences:
                     await ws.send_json({"type": "error", "message": "No response generated"})
                     await ws.send_json({"type": "done"})
                     continue
 
-                bot_text = " ".join(sentences)
-                print(f"==> {len(sentences)} sentences", flush=True)
+                print(f"==> {len(sentences)} sentences | diagram={'yes' if svg else 'no'}", flush=True)
 
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"AI failed: {str(e)}"})
                 continue
 
+            # Send the spoken text
             await ws.send_json({"type": "text", "text": bot_text})
+
+            # NEW: Send the diagram if we have one
+            if svg:
+                await ws.send_json({"type": "diagram", "svg": svg})
 
             try:
                 rag.add_message(chat_id=chat_id, role="assistant", content=bot_text)
@@ -342,7 +390,7 @@ async def audio_chat_ws(ws: WebSocket):
                 try:
                     print(f"==> Firing {len(sentences)} ElevenLabs tasks in parallel", flush=True)
                     all_audio, all_visemes, total_duration_seconds = await _run_tts(sentences, voice_id)
-                    
+
                     if not all_audio:
                         await ws.send_json({"type": "error", "message": "TTS produced no audio"})
                         await ws.send_json({"type": "done"})
@@ -350,7 +398,6 @@ async def audio_chat_ws(ws: WebSocket):
 
                     await _send_audio(ws, all_audio, all_visemes)
 
-                    # Deduct credits based on audio duration
                     try:
                         cost = account_manager.processUsedCost(
                             user_id=user_id,
@@ -364,7 +411,7 @@ async def audio_chat_ws(ws: WebSocket):
                         remaining = rag.deductCredits(user_id, credits_used)
                         print(f"==> Cost: ${cost:.4f} | Deducted {credits_used:.4f} credits. Remaining: {remaining}", flush=True)
                     except Exception as e:
-                        print(f"==> Cost tracking failed: {e}", flush=True) 
+                        print(f"==> Cost tracking failed: {e}", flush=True)
 
                 except Exception as e:
                     print(f"==> TTS error: {e}", flush=True)
