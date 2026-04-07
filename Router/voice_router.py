@@ -294,7 +294,7 @@ async def audio_chat_ws(ws: WebSocket):
             else:
                 user_prompt = user_text
 
-              # ----------------------------------------------------------
+            # ----------------------------------------------------------
             # Check if diagrams are enabled for this user
             # ----------------------------------------------------------
             try:
@@ -303,7 +303,83 @@ async def audio_chat_ws(ws: WebSocket):
                 diagrams_enabled = False
 
             # ----------------------------------------------------------
-            # Generate chat response first (needed as context for diagram)
+            # Diagram generation (runs FIRST so chat can reference it)
+            # ----------------------------------------------------------
+            async def _generate_diagram_first():
+                """Generate a diagram based purely on the user's question.
+                Returns (svg_string_or_None, short_description_or_None)."""
+                if not diagrams_enabled:
+                    print("Diagrams disabled for this user")
+                    return None
+                try:
+                    print("Generating diagram (pre-chat)...")
+                    raw = await ai.get_diagram(site_id=user_id, user=user_text)
+                    print(f"==> Raw diagram response: {raw[:500]!r}")
+
+                    if not raw:
+                        return None
+                    if raw.strip().upper().startswith("NONE"):
+                        print("Diagram model returned NONE")
+                        return None
+
+                    match = re.search(r'<svg.*?</svg>', raw, re.DOTALL | re.IGNORECASE)
+                    if match:
+                        return match.group(0)
+
+                    if '<svg' in raw.lower() and '</svg>' not in raw.lower():
+                        print(f"==> Diagram response appears truncated ({len(raw)} chars)")
+                        return None
+
+                    print("No <svg> block found in diagram response")
+                    return None
+                except Exception as e:
+                    print(f"==> Diagram generation failed: {e}", flush=True)
+                    return None
+
+            # Tell the frontend we're working on a diagram (optional UX hint)
+            if diagrams_enabled:
+                try:
+                    await ws.send_json({"type": "diagram_pending"})
+                except Exception:
+                    pass
+
+            svg = await _generate_diagram_first()
+
+            # Send the diagram immediately if we got one — frontend shows it
+            # while Mia is still generating her spoken response
+            if svg:
+                await ws.send_json({"type": "diagram", "svg": svg})
+            else:
+                try:
+                    await ws.send_json({"type": "diagram_none"})
+                except Exception:
+                    pass
+
+            # ----------------------------------------------------------
+            # Extract text labels from the SVG to give Mia grounding
+            # ----------------------------------------------------------
+            diagram_summary = ""
+            if svg:
+                # Pull all <text>...</text> contents out of the SVG
+                labels = re.findall(r'<text[^>]*>(.*?)</text>', svg, re.DOTALL | re.IGNORECASE)
+                labels = [re.sub(r'\s+', ' ', lbl).strip() for lbl in labels if lbl.strip()]
+                if labels:
+                    diagram_summary = (
+                        "A diagram has been shown to the user alongside your response. "
+                        "It contains the following labels and elements: "
+                        + ", ".join(labels) + ". "
+                        "Speak naturally about the topic. Your explanation should be "
+                        "consistent with these diagram elements, but do not announce "
+                        "the diagram, do not say 'as you can see', and do not describe "
+                        "the diagram in words. Just explain the concept."
+                    )
+
+            # Append diagram grounding to the system prompt if we have one
+            if diagram_summary:
+                system_prompt = f"{system_prompt}\n\n{diagram_summary}"
+
+            # ----------------------------------------------------------
+            # Now generate the chat response
             # ----------------------------------------------------------
             async def _generate_chat():
                 sentences = []
@@ -324,25 +400,40 @@ async def audio_chat_ws(ws: WebSocket):
 
             try:
                 sentences, bot_text = await _generate_chat()
+
+                # Strip any stray code fences Flash might sneak in
+                bot_text = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
+                bot_text = re.sub(r'\n\s*\n', '\n\n', bot_text)
+
+                # Rebuild sentences from cleaned text
+                sentences = [
+                    s.strip()
+                    for s in re.split(r'(?<=[.?!])\s+', bot_text)
+                    if len(s.strip()) > 2
+                ]
+
                 if not sentences:
                     await ws.send_json({"type": "error", "message": "No response generated"})
                     await ws.send_json({"type": "done"})
                     continue
-                print(f"==> {len(sentences)} sentences", flush=True)
+
+                print(f"==> {len(sentences)} sentences | diagram={'yes' if svg else 'no'}", flush=True)
+
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"AI failed: {str(e)}"})
                 continue
 
-            # Send the spoken text immediately
+            # Send the spoken text
             await ws.send_json({"type": "text", "text": bot_text})
 
-            # Save assistant message and update rolling summary
+            # Persist assistant message
             try:
                 rag.add_message(chat_id=chat_id, role="assistant", content=bot_text)
                 rag.update_last_message(chat_id=chat_id, last_message=bot_text)
             except Exception:
                 pass
 
+            # Rolling summary
             try:
                 smgr = get_summary_manager()
                 recent_for_summary = history[-6:] if len(history) > 6 else list(history)
@@ -353,47 +444,7 @@ async def audio_chat_ws(ws: WebSocket):
                 print(f"Summary update error: {e}")
 
             # ----------------------------------------------------------
-            # Define the diagram task — uses bot_text as context so the
-            # diagram illustrates exactly what the avatar is saying
-            # ----------------------------------------------------------
-            async def _generate_diagram_with_context():
-                if not diagrams_enabled:
-                    print("Diagrams disabled for this user")
-                    return None
-                try:
-                    print("Generating diagram...")
-                    diagram_input = (
-                        f"User's question: {user_text}\n\n"
-                        f"Spoken answer that was just given to the user:\n{bot_text}\n\n"
-                        f"Draw a diagram that illustrates the spoken answer above. "
-                        f"The diagram must match the structure, steps, and terminology "
-                        f"of the spoken answer. Do not invent new steps or use different "
-                        f"labels. If a diagram does not meaningfully illustrate this "
-                        f"answer, output NONE."
-                    )
-                    raw = await ai.get_diagram(site_id=user_id, user=diagram_input)
-                    print(f"==> Raw diagram response: {raw[:500]!r}")
-                    if not raw:
-                        return None
-                    if raw.strip().upper().startswith("NONE"):
-                        print("Diagram model returned NONE")
-                        return None
-                    match = re.search(r'<svg.*?</svg>', raw, re.DOTALL | re.IGNORECASE)
-                    if not match:
-                        print("No <svg> block found in diagram response")
-                        return None
-                    return match.group(0)
-                except Exception as e:
-                    print(f"==> Diagram generation failed: {e}", flush=True)
-                    return None
-
-            # ----------------------------------------------------------
-            # Kick off diagram in the background — it runs while TTS runs
-            # ----------------------------------------------------------
-            diagram_task = asyncio.create_task(_generate_diagram_with_context())
-
-            # ----------------------------------------------------------
-            # TTS — only if audio is on
+            # TTS
             # ----------------------------------------------------------
             if audio_on:
                 try:
@@ -405,9 +456,9 @@ async def audio_chat_ws(ws: WebSocket):
                     else:
                         await _send_audio(ws, all_audio, all_visemes)
 
-                        # Cost tracking
                         try:
                             cost = account_manager.processUsedCost(
+                                user_id=user_id,
                                 outputText=bot_text,
                                 inputText=user_prompt,
                                 SST_Length_seconds=len(audio_bytes) / 16000 if audio_bytes else 0,
@@ -425,18 +476,6 @@ async def audio_chat_ws(ws: WebSocket):
                     traceback.print_exc()
                     await ws.send_json({"type": "error", "message": f"TTS failed: {str(e)}"})
 
-            # ----------------------------------------------------------
-            # Now await the diagram — likely already done by this point
-            # ----------------------------------------------------------
-            try:
-                svg = await diagram_task
-            except Exception as e:
-                print(f"==> Diagram task error: {e}", flush=True)
-                svg = None
-
-            if svg:
-                await ws.send_json({"type": "diagram", "svg": svg})
-
             await ws.send_json({"type": "done"})
 
     except WebSocketDisconnect:
@@ -452,194 +491,6 @@ async def audio_chat_ws(ws: WebSocket):
             await ws.close()
         except Exception:
             pass
-
-
-# -----------------------------------------------------------------------
-# EMBED CHAT WEBSOCKET
-# -----------------------------------------------------------------------
-
-@router.websocket("/embed_chat_ws")
-async def embed_chat_ws(ws: WebSocket):
-    """
-    WebSocket endpoint for embedded widget.
-    Auth via API key in query param. No credit checks — billing per API key.
-    """
-    print("HIT embed_chat_ws")
-    await ws.accept()
-
-    api_key = ws.query_params.get("api_key")
-    if not api_key:
-        await ws.close(code=4001, reason="Missing api_key")
-        return
-
-    # Initial validation only — full key_data is re-fetched per message
-    initial_key_data = rag.getApiKey(api_key)
-    if not initial_key_data or not initial_key_data.get("is_active"):
-        await ws.close(code=4001, reason="Invalid or inactive API key")
-        return
-
-    FORMATTING_RULE = (
-        "CRITICAL FORMATTING RULE: Never use markdown formatting of any kind. "
-        "No asterisks, no bold, no headers, no hashtags, no bullet points, no numbered lists, "
-        "no dashes, no colons, no semicolons. Write in plain conversational paragraphs only. "
-        "This is spoken aloud, not read on screen."
-    )
-
-    print(f"==> embed WS opened for api_key={api_key}")
-
-    try:
-        while True:
-            try:
-                payload = await ws.receive_json()
-            except WebSocketDisconnect:
-                return
-            except Exception:
-                await ws.send_json({"type": "error", "message": "Invalid JSON payload"})
-                continue
-
-            if _as_str(payload.get("type")).lower() == "close":
-                await ws.send_json({"type": "done"})
-                await ws.close()
-                return
-
-            # RE-FETCH key_data on every message so dashboard toggles take effect mid-session
-            key_data = rag.getApiKey(api_key)
-            if not key_data or not key_data.get("is_active"):
-                await ws.send_json({"type": "error", "message": "API key deactivated", "code": "INVALID_KEY"})
-                await ws.close()
-                return
-
-            if key_data.get("conversations_used", 0) >= key_data.get("monthly_limit", 500):
-                await ws.send_json({"type": "error", "message": "Monthly conversation limit reached", "code": "LIMIT_REACHED"})
-                await ws.close()
-                return
-
-            business_name = key_data.get("business_name") or ""
-            business_description = key_data.get("business_description") or ""
-            avatar_name = key_data.get("avatar_name") or "Mia Sterling"
-
-            # Safer default: if column is NULL or missing, treat as OFF
-            personality_on = bool(key_data.get("personality_on"))
-
-            user_text = _as_str(payload.get("message"))
-            voice_id = _as_str(payload.get("voice_name"))
-            audio_on = payload.get("voice_on", True)
-            raw_audio = payload.get("audio_bytes")
-
-            if raw_audio and "," in raw_audio:
-                raw_audio = raw_audio.split(",", 1)[1]
-            audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
-
-            # STT
-            if audio_bytes:
-                try:
-                    stt_instance = get_stt()
-                    user_text = stt_instance.get_transcript(audio_bytes)
-                    if not user_text:
-                        await ws.send_json({"type": "error", "message": "Could not understand audio."})
-                        continue
-                    await ws.send_json({"type": "transcript", "text": user_text})
-                except Exception as e:
-                    await ws.send_json({"type": "error", "message": f"Transcription failed: {e}"})
-                    continue
-
-            if not user_text:
-                await ws.send_json({"type": "error", "message": "Missing message"})
-                continue
-
-            # Look up avatar once — used for voice and (maybe) prompt
-            avatar = rag.getAvatarByName(avatar_name)
-
-            # Resolve voice
-            if not voice_id:
-                voice_id = (avatar.get("voice") if avatar else None) or "UgBBYS2sOqTuMpoF3BR0"
-
-            # RAG lookup
-            rag_context = ""
-            try:
-                embedding = await rag.embedText(user_text)
-                chunks = rag.searchDocumentChunks(api_key=api_key, embedding=embedding, limit=3)
-                if chunks and chunks[0].get("similarity", 0) >= 0.3:
-                    rag_context = "\n".join(f"- {c['content']}" for c in chunks)
-                print(f"==> RAG similarity: {chunks[0].get('similarity', 0) if chunks else 0:.3f}")
-            except Exception as e:
-                print(f"==> RAG failed: {e}")
-
-            # Build system prompt — explicit branches, no fallback bleed
-            if personality_on:
-                avatar_prompt = (avatar.get("prompt") if avatar else "") or ""
-                fallback_prompt = key_data.get("system_prompt") or ""
-                system_prompt = avatar_prompt or fallback_prompt
-            else:
-                system_prompt = (
-                    f"{FORMATTING_RULE}\n\n"
-                    f"You are a helpful support agent for {business_name}. "
-                    f"{business_description} "
-                    f"Answer the user's questions accurately and helpfully. "
-                    f"Do not make up information you do not have. "
-                    f"If you don't know the answer, say so honestly."
-                )
-
-            if rag_context:
-                system_prompt = f"{system_prompt}\n\nRelevant information from our knowledge base:\n{rag_context}"
-
-            # DEBUG — remove once confirmed working
-            print(f"==> personality_on={personality_on} | prompt_preview={system_prompt[:200]!r}")
-
-            # Stream Gemini
-            try:
-                sentences = []
-                sentence_buffer = ""
-                async for delta in ai.stream(site_id=api_key, system=system_prompt, user=user_text):
-                    sentence_buffer += delta
-                    while re.search(r'[.?!,]\s', sentence_buffer):
-                        match = re.search(r'[.?!,]\s', sentence_buffer)
-                        cut = match.end()
-                        sentence = sentence_buffer[:cut].strip()
-                        sentence_buffer = sentence_buffer[cut:]
-                        if sentence and len(sentence) > 2:
-                            sentences.append(sentence)
-                if sentence_buffer.strip() and len(sentence_buffer.strip()) > 2:
-                    sentences.append(sentence_buffer.strip())
-
-                if not sentences:
-                    await ws.send_json({"type": "error", "message": "No response generated"})
-                    await ws.send_json({"type": "done"})
-                    continue
-
-                bot_text = " ".join(sentences)
-                print(f"==> embed {len(sentences)} sentences", flush=True)
-
-            except Exception as e:
-                await ws.send_json({"type": "error", "message": f"AI failed: {str(e)}"})
-                continue
-
-            await ws.send_json({"type": "text", "text": bot_text})
-
-            try:
-                rag.incrementConversationCount(api_key)
-            except Exception as e:
-                print(f"==> Failed to increment conversation count: {e}")
-
-            # TTS
-            if audio_on:
-                try:
-                    print(f"==> Embed firing {len(sentences)} ElevenLabs tasks in parallel", flush=True)
-                    all_audio, all_visemes, _ = await _run_tts(sentences, voice_id)
-
-                    if not all_audio:
-                        await ws.send_json({"type": "error", "message": "TTS produced no audio"})
-                        await ws.send_json({"type": "done"})
-                        continue
-
-                    await _send_audio(ws, all_audio, all_visemes)
-
-                except Exception as e:
-                    print(f"==> Embed TTS error: {e}")
-                    traceback.print_exc()
-                    await ws.send_json({"type": "error", "message": f"TTS failed: {str(e)}"})
-
-            await ws.send_json({"type": "done"})
 
     except WebSocketDisconnect:
         return
