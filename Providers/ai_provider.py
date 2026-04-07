@@ -20,7 +20,7 @@ class AIProvider:
                 embed_model="gemini-embedding-001",     # ← verify with Google's docs
             ),
             "gemini_pro": GeminiProvider(
-                chat_model="gemini-3.1-pro-preview",            # ← verify with Google's docs
+                chat_model="gemini-3-flash-preview",            # ← verify with Google's docs
                 embed_model="gemini-embedding-001",     # ← verify with Google's docs
             ),
         }
