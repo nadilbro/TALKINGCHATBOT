@@ -327,8 +327,10 @@ async def audio_chat_ws(ws: WebSocket):
             async def _generate_diagram():
                 """Call Gemini for an SVG. Returns SVG string or None if not warranted."""
                 if not diagrams_enabled:
+                    print("Disabled")
                     return None
                 try:
+                    print("Generating Diagram")
                     raw = await ai.get_diagram(site_id=user_id, user=user_text)
                     if not raw:
                         return None
@@ -337,6 +339,7 @@ async def audio_chat_ws(ws: WebSocket):
                         return None
                     # Extract just the <svg>...</svg> block in case the model wrapped it
                     match = re.search(r'<svg.*?</svg>', raw, re.DOTALL | re.IGNORECASE)
+                    print(match)
                     return match.group(0) if match else None
                 except Exception as e:
                     print(f"==> Diagram generation failed: {e}", flush=True)
