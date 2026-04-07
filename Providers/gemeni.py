@@ -2,6 +2,7 @@ from typing import AsyncIterator, Optional
 from google import genai
 import os
 
+from Providers.diagram_manager import diagram_manager
 class GeminiProvider:
     def __init__(self, chat_model: str, embed_model: str):
         api_key = os.getenv("GEMINI_API_KEY")
@@ -76,3 +77,8 @@ class GeminiProvider:
             },
         )
         return getattr(resp, "text", None) or ""
+    
+
+    async def create_diagram(self, user: str, system: str):
+        #Main gemeni functionality will take part here, however other functions will be in diagram_creator.py for cleanliness of code
+        pass

@@ -11,10 +11,12 @@ class AIProvider:
         self._providers = {
             "openai": OpenAIProvider(chat_model="gpt-5-nano", embed_model="text-embedding-3-small"),
             "gemini": GeminiProvider(chat_model="gemini-3.1-flash-lite-preview", embed_model="gemini-2.0-pro"),
+            "gemeni_diagram": GeminiProvider(chat_model="gemini-3.1-flash-lite-preview", embed_model="gemini-2.0-pro"),
         }
 
 
     async def _tenant_provider_name(self, site_id: str) -> str: #TEMPERORY
+        #this function should let the user use the model they want
         return "gemini" 
 
     async def stream(self, site_id: str, system: str, user: str) -> AsyncIterator[str]:
@@ -29,5 +31,12 @@ class AIProvider:
         provider = self._providers[provider_name]
         
         return await provider.response(site_id=site_id, system=system, user=user)
+    
+    async def diagram_create(self, site_id: str, system: str, user: str) -> str:
+        site_id = 'gemeni_diagram' #temp
+        provider_name = await self._tenant_provider_name(site_id)
+        provider = self._providers[provider_name]
+        
+        return await provider.create_diagram(site_id, system)
 
         
