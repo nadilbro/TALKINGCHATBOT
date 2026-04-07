@@ -245,9 +245,12 @@ async def audio_chat_ws(ws: WebSocket):
 
             if not voice_id:
                 try:
-                    _, voice_id, _, _, _ = rag.get_avatar(user_id, chat_id)
-                    voice_id = _as_str(voice_id)
+                    avatar_data = rag.get_avatar(user_id, chat_id)
+                    if avatar_data:
+                        voice_id = _as_str(avatar_data[1])
                 except Exception:
+                    pass
+                if not voice_id:
                     voice_id = "UgBBYS2sOqTuMpoF3BR0"
 
             try:
@@ -458,47 +461,34 @@ async def audio_chat_ws(ws: WebSocket):
                     else:
                         await _send_audio(ws, all_audio, all_visemes)
 
-                        try:
-                            cost = account_manager.processUsedCost(
-                                outputText=system_prompt,
-                                outputDiagramText=svg,
-                                inputText=user_prompt,
-                                SST_Length_seconds=len(audio_bytes) / 16000 if audio_bytes else 0,
-                                webSearch=bool(web_search),
-                                voice_on=bool(audio_on),
-                                diagram_on=bool(diagrams_enabled),
-                            )
-                            credits_used = cost / 0.15
-                            remaining = rag.deductCredits(user_id, credits_used)
-                            print(f"==> Cost: ${cost:.4f} | Deducted {credits_used:.4f} credits. Remaining: {remaining}", flush=True)
-                        except Exception as e:
-                            print(f"==> Cost tracking failed: {e}", flush=True)
-
                 except Exception as e:
                     print(f"==> TTS error: {e}", flush=True)
                     traceback.print_exc()
                     await ws.send_json({"type": "error", "message": f"TTS failed: {str(e)}"})
-            
+            try:
+                print(f"==> bot_text length={len(bot_text)}, preview={bot_text[:200]!r}")
+                print(f"==> svg length={len(svg) if svg else 0}")
+                print(f"For testing sake: input text: {user_prompt}")
+                cost = account_manager.processUsedCost(
+                    outputText=bot_text,
+                    outputDiagramText=(svg or ""),
+                    inputText=user_prompt,
+                    SST_Length_seconds=len(audio_bytes) / 16000 if audio_bytes else 0,
+                    webSearch=bool(web_search),
+                    voice_on=bool(audio_on),
+                    diagram_on=bool(svg),
+                )
+                credits_used = cost / 0.15
+                remaining = rag.deductCredits(user_id, credits_used)
+                print(f"==> Cost: ${cost:.4f} | Deducted {credits_used:.4f} credits. Remaining: {remaining}", flush=True)
+            except Exception as e:
+                print(f"==> Cost tracking failed: {e}", flush=True)
             await ws.send_json({"type": "done"})
 
     except WebSocketDisconnect:
         return
     except Exception as e:
         print("❌ WS error:", repr(e))
-        traceback.print_exc()
-        try:
-            await ws.send_json({"type": "error", "message": str(e)})
-        except Exception:
-            pass
-        try:
-            await ws.close()
-        except Exception:
-            pass
-
-    except WebSocketDisconnect:
-        return
-    except Exception as e:
-        print("❌ Embed WS error:", repr(e))
         traceback.print_exc()
         try:
             await ws.send_json({"type": "error", "message": str(e)})
