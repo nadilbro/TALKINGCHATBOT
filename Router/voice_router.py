@@ -460,12 +460,13 @@ async def audio_chat_ws(ws: WebSocket):
 
                         try:
                             cost = account_manager.processUsedCost(
-                                user_id=user_id,
-                                outputText=bot_text,
+                                outputText=system_prompt,
+                                outputDiagramText=svg,
                                 inputText=user_prompt,
                                 SST_Length_seconds=len(audio_bytes) / 16000 if audio_bytes else 0,
                                 webSearch=bool(web_search),
                                 voice_on=bool(audio_on),
+                                diagram_on=bool(diagrams_enabled),
                             )
                             credits_used = cost / 0.15
                             remaining = rag.deductCredits(user_id, credits_used)
@@ -477,7 +478,7 @@ async def audio_chat_ws(ws: WebSocket):
                     print(f"==> TTS error: {e}", flush=True)
                     traceback.print_exc()
                     await ws.send_json({"type": "error", "message": f"TTS failed: {str(e)}"})
-
+            
             await ws.send_json({"type": "done"})
 
     except WebSocketDisconnect:

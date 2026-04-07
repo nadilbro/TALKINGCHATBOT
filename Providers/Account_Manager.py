@@ -2,6 +2,7 @@ from SQL.SQLManager import VectorRAGService
 from typing import Optional
 import stripe
 import os
+from Providers.gemeni import DIAGRAM_PROMPT
 
 COST_PER_1K_ELEVENLABS = 0.08        # Flash/Turbo
 COST_PER_MIN_DEEPGRAM = 0.0043       # nova-3
@@ -20,20 +21,22 @@ class AccountManager:
     ####################
     ## COST TRACKING  ##
     ####################
-
     def processUsedCost(
         self,
         outputText: str,
+        outputDiagramText: str,
         inputText: str,
         SST_Length_seconds: float = 0,
         webSearch: bool = False,
         voice_on: bool = False,
+        diagram_on: bool = False,
     ) -> float:
         cost = 0.0
-        outputCharacters = len(outputText)
-        inputCharacters = len(inputText)
-
-        cost += inputCharacters * COST_PER_GEMINI_INPUT_1M / 1_000_000
+        outputCharacters = len(outputText) + len(outputDiagramText)
+        inputCharacters = len(inputText) 
+        if diagram_on:
+            inputCharacters += len(DIAGRAM_PROMPT)
+        cost += (inputCharacters) * COST_PER_GEMINI_INPUT_1M / 1_000_000
         cost += outputCharacters * COST_PER_GEMINI_OUTPUT_1M / 1_000_000
         if voice_on:
             cost += COST_PER_1K_ELEVENLABS * (outputCharacters / 1000)

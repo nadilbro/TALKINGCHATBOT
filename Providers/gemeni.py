@@ -264,3 +264,4 @@ class GeminiProvider:
             },
         )
         return getattr(resp, "text", None) or ""
+    
