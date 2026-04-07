@@ -81,7 +81,8 @@ class AccountManager:
 
         # ---- Convert USD → AUD ----
         cost_aud = cost_usd * USD_TO_AUD
-
+        print(f"==> COST DEBUG: inputText={len(inputText)} chars, outputText={len(outputText)} chars, outputDiagram={len(outputDiagramText)} chars, voice={voice_on}, diagram={diagram_on}, stt={SST_Length_seconds}")
+        print(f"==> COST DEBUG: cost_usd=${cost_usd:.5f}, cost_aud=${cost_aud:.5f}, credits={cost_aud / 0.15:.4f}")
         return cost_aud
     ####################
     ## LIMIT CHECKING ##
