@@ -8,6 +8,7 @@ from Router.embed_router import router as embed_router
 from fastapi.middleware.cors import CORSMiddleware
 from Router.stripe_router import router as stripe_router
 from SQL.db_init import init_db
+from Router.stripe_business_router import router as stripe_business_router
 app = FastAPI()
 
 
@@ -26,6 +27,7 @@ app.include_router(account_router)
 app.include_router(stripe_router)
 app.include_router(voice_router)
 app.include_router(embed_router)   
+app.include_router(stripe_business_router)
 
 @app.get("/")
 def root():
