@@ -2,7 +2,6 @@ from typing import AsyncIterator
 from google import genai
 import os
 
-from Providers.diagram_manager import diagram_manager
 
 DIAGRAM_PROMPT = '''You are a diagram generator. Your ONLY job is to produce an SVG diagram
 that helps explain the user's question, or to decline when a diagram would
