@@ -377,6 +377,8 @@ async def audio_chat_ws(ws: WebSocket):
             # Append diagram grounding to the system prompt if we have one
             if diagram_summary:
                 system_prompt = f"{system_prompt}\n\n{diagram_summary}"
+            else:
+                system_prompt = f"{system_prompt}\n\n{"No Diagram has been given with this question"}"
 
             # ----------------------------------------------------------
             # Now generate the chat response
