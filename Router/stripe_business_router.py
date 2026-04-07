@@ -17,9 +17,9 @@ EMBED_STRIPE_WEBHOOK_SECRET = os.getenv("EMBED_STRIPE_WEBHOOK_SECRET")
 # Set these as env vars and create the matching products in Stripe dashboard.
 # Pricing idea: businesses get cheaper per-credit rate than consumers.
 CREDIT_PACKS = {
-    os.getenv("STRIPE_BUSINESS_PRICE_SMALL", ""): 500,    # e.g. $25 → 500 credits
-    os.getenv("STRIPE_BUSINESS_PRICE_MEDIUM", ""): 1200,  # e.g. $50 → 1200 credits
-    os.getenv("STRIPE_BUSINESS_PRICE_LARGE", ""): 3000,   # e.g. $100 → 3000 credits
+    os.getenv("STRIPE_BUSINESS_PRICE_STARTER", ""): 500,    # e.g. $25 → 500 credits
+    os.getenv("STRIPE_BUSINESS_PRICE_GROWTH", ""): 1200,  # e.g. $50 → 1200 credits
+    os.getenv("STRIPE_BUSINESS_PRICE_SCALE", ""): 3000,   # e.g. $100 → 3000 credits
 }
 
 
