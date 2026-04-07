@@ -253,7 +253,7 @@ class GeminiProvider:
         )
         return getattr(resp, "text", None) or ""
 
-    async def get_diagram(self, user: str, max_output_tokens: int = 2000) -> str:
+    async def get_diagram(self, user: str, max_output_tokens: int = 20000) -> str:
         diagram_system_prompt = DIAGRAM_PROMPT
         resp = await self.client.aio.models.generate_content(
             model=self.chat_model,
