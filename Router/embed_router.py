@@ -271,7 +271,39 @@ async def embed_chat(
         "conversations_remaining": monthly_limit - conversations_used - 1,
     }
 
+#Business Credit Managers
+# ---------------------------------------------------------------------------
+# Business credit management — read-only endpoints
+# ---------------------------------------------------------------------------
 
+@router.get("/credits")
+async def get_business_credits(user=Depends(verify_token)):
+    """Returns the business credits balance for the logged-in developer."""
+    user_id = user["uid"]
+    credits = rag.getBusinessCredits(user_id)
+    return {"business_credits": credits}
+
+
+@router.get("/credits/usage")
+async def get_credits_usage_summary(user=Depends(verify_token)):
+    """
+    Returns total usage across all of this developer's API keys,
+    plus current credit balance. Useful for the dashboard overview.
+    """
+    user_id = user["uid"]
+    credits = rag.getBusinessCredits(user_id)
+    keys = rag.listApiKeys(user_id)
+
+    total_conversations = sum(k.get("conversations_used", 0) for k in keys)
+    total_keys = len(keys)
+    active_keys = sum(1 for k in keys if k.get("is_active"))
+
+    return {
+        "business_credits": credits,
+        "total_keys": total_keys,
+        "active_keys": active_keys,
+        "total_conversations": total_conversations,
+    }
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

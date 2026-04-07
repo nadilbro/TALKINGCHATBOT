@@ -830,3 +830,47 @@ class VectorRAGService:
         except Exception:
             self.conn.rollback()
             raise
+
+    '''Business Credit Handling'''
+    def getBusinessCredits(self, user_id: str) -> float:
+        self._get_conn()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT business_credits FROM accounts WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            return float(row["business_credits"]) if row else 0.0
+
+    def deductBusinessCredits(self, user_id: str, amount: float) -> float:
+        self._get_conn()
+        try:
+            with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    UPDATE accounts
+                    SET business_credits = GREATEST(business_credits - %s, 0),
+                        updated_at = NOW()
+                    WHERE user_id = %s
+                    RETURNING business_credits
+                """, (amount, user_id))
+                row = cur.fetchone()
+            self.conn.commit()
+            return float(row["business_credits"]) if row else 0.0
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def addBusinessCredits(self, user_id: str, amount: float):
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE accounts
+                    SET business_credits = business_credits + %s,
+                        updated_at = NOW()
+                    WHERE user_id = %s
+                """, (amount, user_id))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def hasEnoughBusinessCredits(self, user_id: str, min_credits: float = 0.01) -> bool:
+        return self.getBusinessCredits(user_id) >= min_credits
