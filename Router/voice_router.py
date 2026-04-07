@@ -378,7 +378,7 @@ async def audio_chat_ws(ws: WebSocket):
             if diagram_summary:
                 system_prompt = f"{system_prompt}\n\n{diagram_summary}"
             else:
-                system_prompt = f"{system_prompt}\n\n{"No Diagram has been given with this question"}"
+                system_prompt = f"{system_prompt}\n\n{"Either a Diagram has been deemed unneccesary for this question, or the user has not toggled the diagram button"}"
 
             # ----------------------------------------------------------
             # Now generate the chat response
