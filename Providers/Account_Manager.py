@@ -4,13 +4,24 @@ import stripe
 import os
 from Providers.gemeni import DIAGRAM_PROMPT
 
-COST_PER_1K_ELEVENLABS = 0.08        # Flash/Turbo
-COST_PER_MIN_DEEPGRAM = 0.0043       # nova-3
-COST_PER_SEARCH_TAVILY = 0.008 * 10  # Pay As You Go (avg 3 searches)
-COST_PER_GEMINI_INPUT_1M = 0.25      # Per Million tokens
-AVERAGE_TOKEN_AMOUNT = 3000      
-COST_PER_GEMINI_OUTPUT_1M = 1.50     # Per Million tokens
+# Pricing — all in USD per million tokens unless noted
+COST_PER_1K_ELEVENLABS = 0.08              # USD per 1000 characters (Flash/Turbo)
+COST_PER_MIN_DEEPGRAM = 0.0043             # USD per minute (Nova-3)
+COST_PER_SEARCH_TAVILY = 0.008 * 10        # USD per search batch (avg 3 searches)
 
+# Gemini 2.5 Flash — used for the chat / spoken response
+COST_PER_GEMINI_2FLASH_INPUT_1M = 0.30
+COST_PER_GEMINI_2FLASH_OUTPUT_1M = 2.50
+
+# Gemini 3 Flash Preview — used for the diagram generation
+COST_PER_GEMINI_3FLASH_INPUT_1M = 0.75
+COST_PER_GEMINI_3FLASH_OUTPUT_1M = 4.50
+
+# 1 token ≈ 4 characters of English
+CHARS_PER_TOKEN = 4
+
+# AUD conversion (rough — update periodically or pull from an API)
+USD_TO_AUD = 1.55 
 
 class AccountManager:
 
@@ -20,7 +31,7 @@ class AccountManager:
 
     ####################
     ## COST TRACKING  ##
-    ####################
+
     def processUsedCost(
         self,
         outputText: str,
@@ -31,21 +42,47 @@ class AccountManager:
         voice_on: bool = False,
         diagram_on: bool = False,
     ) -> float:
-        cost = 0.0
-        outputCharacters = len(outputText) + len(outputDiagramText)
-        inputCharacters = len(inputText) 
-        if diagram_on:
-            inputCharacters += len(DIAGRAM_PROMPT)
-        cost += (inputCharacters) * COST_PER_GEMINI_INPUT_1M / 1_000_000
-        cost += outputCharacters * COST_PER_GEMINI_OUTPUT_1M / 1_000_000
-        if voice_on:
-            cost += COST_PER_1K_ELEVENLABS * (outputCharacters / 1000)
-        cost += COST_PER_MIN_DEEPGRAM * (SST_Length_seconds / 60)
-        cost += AVERAGE_TOKEN_AMOUNT * (COST_PER_GEMINI_INPUT_1M / 1_000_000)
-        if webSearch:
-            cost += COST_PER_SEARCH_TAVILY
+        """
+        Returns the total cost of this turn in AUD.
+        """
+        cost_usd = 0.0
 
-        return cost  # just return it, don't update anything
+        # ---- Chat call (Gemini 2.5 Flash) ----
+        # Spoken response only — never the diagram SVG
+        chat_input_tokens = len(inputText) / CHARS_PER_TOKEN
+        chat_output_tokens = len(outputText) / CHARS_PER_TOKEN
+
+        cost_usd += chat_input_tokens * COST_PER_GEMINI_2FLASH_INPUT_1M / 1_000_000
+        cost_usd += chat_output_tokens * COST_PER_GEMINI_2FLASH_OUTPUT_1M / 1_000_000
+
+        # ---- Diagram call (Gemini 3 Flash Preview) — only if diagrams are on ----
+        if diagram_on:
+            # Diagram input = the user's question + the full diagram system prompt
+            diagram_input_chars = len(inputText) + len(DIAGRAM_PROMPT)
+            diagram_output_chars = len(outputDiagramText)
+
+            diagram_input_tokens = diagram_input_chars / CHARS_PER_TOKEN
+            diagram_output_tokens = diagram_output_chars / CHARS_PER_TOKEN
+
+            cost_usd += diagram_input_tokens * COST_PER_GEMINI_3FLASH_INPUT_1M / 1_000_000
+            cost_usd += diagram_output_tokens * COST_PER_GEMINI_3FLASH_OUTPUT_1M / 1_000_000
+
+        # ---- ElevenLabs TTS — spoken text only ----
+        if voice_on:
+            cost_usd += COST_PER_1K_ELEVENLABS * (len(outputText) / 1000)
+
+        # ---- Deepgram STT ----
+        if SST_Length_seconds > 0:
+            cost_usd += COST_PER_MIN_DEEPGRAM * (SST_Length_seconds / 60)
+
+        # ---- Tavily web search ----
+        if webSearch:
+            cost_usd += COST_PER_SEARCH_TAVILY
+
+        # ---- Convert USD → AUD ----
+        cost_aud = cost_usd * USD_TO_AUD
+
+        return cost_aud
     ####################
     ## LIMIT CHECKING ##
     ####################
