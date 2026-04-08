@@ -223,6 +223,7 @@ async def audio_chat_ws(ws: WebSocket):
             raw_audio = payload.get("audio_bytes")
             raw_file = payload.get("file_bytes")
             file_name = payload.get("file_name")
+            pro_mode = payload.get("pro_mode")
             if raw_audio and "," in raw_audio:
                 raw_audio = raw_audio.split(",", 1)[1]
             audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
@@ -638,6 +639,10 @@ async def audio_chat_ws(ws: WebSocket):
                     traceback.print_exc()
                     await ws.send_json({"type": "error", "message": f"TTS failed: {str(e)}"})
  
+            # Replace your existing COST TRACKING block in audio_chat_ws with this.
+            # It fixes the missing comma, folds file text into billing, and handles
+            # image uploads separately from text file uploads.
+            
             # ----------------------------------------------------------
             # COST TRACKING
             # ----------------------------------------------------------
@@ -649,11 +654,32 @@ async def audio_chat_ws(ws: WebSocket):
                     billable_visual_text = visual_aid["svg"]
                 elif visual_aid and visual_aid["type"] == "code":
                     billable_visual_text = visual_aid["code"]
-                
+            
+                # Figure out whether the uploaded file was an image or a text-based doc.
+                # Images go through Gemini's vision pricing; text files just add input tokens.
+                file_text_chars = 0
+                image_count = 0
+            
+                if raw_file and file_name:
+                    lower_name = file_name.lower()
+                    image_extensions = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".heif")
+                    
+                    if lower_name.endswith(image_extensions):
+                        # Image file — billed as vision input, not extracted text
+                        # (assumes your FileExtractor passes image bytes through to Gemini
+                        # rather than OCR'ing them. If it OCRs, use file_text_chars instead.)
+                        image_count = 1
+                    else:
+                        # Text-based file (PDF, DOCX, TXT, MD, CSV, etc.)
+                        # The extracted text was appended to system_prompt, so we need to
+                        # bill for those characters as extra input tokens
+                        file_text_chars = len(file_context) if file_context else 0
+            
                 print(f"==> bot_text length={len(bot_text)}, preview={bot_text[:200]!r}")
                 print(f"==> visual_aid length={len(billable_visual_text)}")
+                print(f"==> file_text_chars={file_text_chars}, image_count={image_count}")
                 print(f"For testing sake: input text: {user_prompt}")
- 
+            
                 cost = account_manager.processUsedCost(
                     outputText=bot_text,
                     outputDiagramText=billable_visual_text,
@@ -662,14 +688,15 @@ async def audio_chat_ws(ws: WebSocket):
                     webSearch=bool(web_search),
                     voice_on=bool(audio_on),
                     diagram_on=bool(visual_aid),
+                    pro_mode=bool(pro_mode),
+                    file_text_chars=file_text_chars,
+                    image_count=image_count,
                 )
                 credits_used = cost / 0.15
                 remaining = rag.deductCredits(user_id, credits_used)
                 print(f"==> Cost: ${cost:.4f} | Deducted {credits_used:.4f} credits. Remaining: {remaining}", flush=True)
             except Exception as e:
                 print(f"==> Cost tracking failed: {e}", flush=True)
- 
-            await ws.send_json({"type": "done"})
  
     except WebSocketDisconnect:
         return
