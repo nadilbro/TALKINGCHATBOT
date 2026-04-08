@@ -523,9 +523,9 @@ async def audio_chat_ws(ws: WebSocket):
                 math_preview = visual_aid["content"][:1500]
                 visual_aid_summary = (
                     f"A mathematical derivation has been shown to the user:\n\n{math_preview}\n\n"
-                    "Walk through the intuition and approach conversationally. "
-                    "Do not read equations literally. Explain what each step is doing and why. "
-                    "Do not announce that math was shown."
+                    "Give a brief 2-3 sentence spoken summary of what the derivation shows. "
+                    "Do not walk through every step. The user can read the working themselves. "
+                    "Just tell them the key idea and the result. Keep it under 50 words."
                 )
 
             if visual_aid_summary:
