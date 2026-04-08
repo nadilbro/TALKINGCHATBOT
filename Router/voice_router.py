@@ -183,7 +183,7 @@ async def chat_diagram_init(init_details: SessionInit, user=Depends(verify_token
             "language": v.get("language"),
             "created_at": str(v.get("created_at", "")),
         })
-
+    print(f"=> VISUALS {visuals}")
     return {"visuals": visuals}
 # -----------------------------------------------------------------------
 # MAIN CHAT WEBSOCKET
