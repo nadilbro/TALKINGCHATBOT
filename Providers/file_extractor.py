@@ -1,5 +1,6 @@
 import io
 import csv as csv_lib
+from typing import Union
 from Providers.ai_provider import AIProvider
 
 import fitz
@@ -9,13 +10,40 @@ from pptx import Presentation
 
 class FileExtractor:
 
-    SUPPORTED_EXTENSIONS = {"pdf", "docx", "txt", "md", "csv", "pptx", "png", "jpg", "jpeg", "webp"}
+    SUPPORTED_EXTENSIONS = {"pdf", "docx", "txt", "md", "csv", "pptx", "png", "jpg", "jpeg", "webp", "gif", "bmp"}
     MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+    IMAGE_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "gif", "bmp"}
+
+    MIME_MAP = {
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "webp": "image/webp",
+        "gif": "image/gif",
+        "bmp": "image/bmp",
+    }
 
     def __init__(self, ai: AIProvider):
         self.ai = ai
 
+    def is_image(self, filename: str) -> bool:
+        """Check if a filename is an image type we handle as vision input."""
+        ext = filename.lower().split(".")[-1]
+        return ext in self.IMAGE_EXTENSIONS
+
+    def get_image_mime(self, filename: str) -> str:
+        """Return the MIME type for an image filename."""
+        ext = filename.lower().split(".")[-1]
+        return self.MIME_MAP.get(ext, "image/png")
+
     async def extract_text(self, file_bytes: bytes, filename: str) -> str:
+        """
+        Extract text from a document file. Raises ValueError for images —
+        images should be handled directly by the chat call instead of being
+        converted to text via a separate Gemini call.
+        
+        Call is_image(filename) first to decide which path to take.
+        """
         if len(file_bytes) > self.MAX_FILE_SIZE:
             raise ValueError(f"File exceeds 10MB limit ({len(file_bytes) / 1024 / 1024:.1f}MB)")
 
@@ -23,6 +51,12 @@ class FileExtractor:
 
         if ext not in self.SUPPORTED_EXTENSIONS:
             raise ValueError(f"Unsupported file type: .{ext}")
+
+        if ext in self.IMAGE_EXTENSIONS:
+            raise ValueError(
+                "Image files should be passed directly to the chat call, "
+                "not extracted to text. Use is_image() to detect images first."
+            )
 
         if ext == "pdf":
             return self._extract_pdf(file_bytes)
@@ -34,8 +68,6 @@ class FileExtractor:
             return self._extract_csv(file_bytes)
         elif ext == "pptx":
             return self._extract_pptx(file_bytes)
-        elif ext in ("png", "jpg", "jpeg", "webp"):
-            return await self.ai.extract_image_text(file_bytes, ext)
 
     def _extract_pdf(self, file_bytes: bytes) -> str:
         doc = fitz.open(stream=file_bytes, filetype="pdf")

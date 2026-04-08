@@ -1,11 +1,29 @@
-from typing import AsyncIterator
-from google import genai
+import base64
 import os
+from typing import AsyncIterator, Optional, List
+from google import genai
 
 
 DIAGRAM_PROMPT = '''You are a visual aid generator. Your ONLY job is to decide whether a
 user's question is best supported by a DIAGRAM, a CODE snippet, or NEITHER,
 and then produce exactly one of those three outputs.
+
+# CONTEXT AWARENESS
+
+The user-content portion of this prompt may include a RECENT CONVERSATION
+section, an ATTACHED FILE CONTENT section, and an attached image. Use ALL
+of this context to understand what the user is actually asking for. If the
+user says "make a diagram of it" or "show me that circuit", resolve "it"
+and "that" from the conversation and file context. Do NOT generate
+placeholder content like a generic "Start -> End" flow just because the
+user's literal message is short. If the user is referencing something
+from earlier in the conversation or from an attached image, use that as
+the source material.
+
+If an image is attached and the user asks for a diagram of something in
+the image (a circuit, a graph, a flowchart, a figure), redraw that exact
+thing as an SVG using the real components and labels visible in the image.
+Never invent generic placeholder nodes.
 
 # OVERRIDE: EXPLICIT USER REQUEST WINS
 
@@ -34,6 +52,7 @@ Generate a DIAGRAM when the question involves:
 - Something genuinely spatial or visual
 - Mathematical functions, curves, or graphs ("graph of e^x", "sine wave")
 - Geometric concepts
+- A redraw of something shown in an attached image
 
 Generate CODE when the question involves:
 - Writing a function, script, or program
@@ -56,6 +75,7 @@ Output NONE for:
 - Arithmetic or single-number calculations ("what is 47 times 19")
 - Emotional or personal conversation
 - Vague questions where you can't tell what the user actually wants
+  AND there is no conversation context or attached image to clarify
 
 Decision rules when torn between two options:
 
@@ -65,8 +85,9 @@ Decision rules when torn between two options:
   want to run it, CODE. Default to CODE unless the question is pure theory.
 - If a topic could be either, but the user named a programming language
   anywhere in their question, it's CODE.
-- When in doubt, output NONE. A missing visual is better than a pointless
-  one, and a wrong format is worse than none at all.
+- When in doubt AND you have no context, output NONE. When in doubt but
+  you DO have conversation context or an attached image, use that context
+  to decide.
 
 # OUTPUT FORMAT — EXACTLY ONE OF THREE
 
@@ -84,8 +105,7 @@ Option 2 — DIAGRAM:
 
 First line must be the single word DIAGRAM on its own. The rest of the
 output must be the raw SVG block, starting with <svg and ending with
-</svg>. No text before the DIAGRAM keyword, no text between DIAGRAM and
-the SVG beyond a single newline, no text after the SVG.
+</svg>.
 
 DIAGRAM
 <svg viewBox="0 0 800 200" ...>
@@ -96,8 +116,7 @@ Option 3 — CODE:
 
 First line must be the single word CODE on its own. Second line must be
 the language identifier in lowercase, on its own line. Everything after
-the second line is the raw code body. No markdown fences, no backticks,
-no commentary, no explanation.
+the second line is the raw code body. No markdown fences, no backticks.
 
 CODE
 python
@@ -126,8 +145,6 @@ Pick the height based on content. Common sizes: 300 for simple flows,
   var(--color-success)   positive / success states
   var(--color-danger)    negative / error states
 
-This lets the diagram adapt to light and dark themes automatically.
-
 ## Typography
 
   Node labels:  font-size="14" font-weight="500"
@@ -155,210 +172,65 @@ Define ONE arrowhead marker in <defs> at the top of the SVG and reuse it:
     </marker>
   </defs>
 
-Then draw edges as paths:
-
-  <path d="M x1 y1 L x2 y2" stroke="var(--color-fg)" stroke-width="1.5"
-        fill="none" marker-end="url(#arrow)"/>
-
-  - Prefer orthogonal routing (horizontal + vertical segments)
-  - Leave at least 16px between the arrowhead tip and the target node
+  - Prefer orthogonal routing
+  - Leave at least 16px between arrowhead and target node
   - Never let an arrow pass through a node it isn't connecting to
 
 ## Layout discipline
 
   - Keep a 20px margin on all sides of the viewBox
-  - Space nodes at least 60px apart horizontally and vertically
-  - Pick column x-positions and reuse them so nodes align on a grid
-  - Top-down for processes and decision flows
-  - Left-to-right for pipelines and timelines
+  - Space nodes at least 60px apart
+  - Top-down for processes, left-to-right for pipelines
 
-## Hard rules for SVG — never break these
+## Hard rules for SVG
 
   - No hex codes, no rgb(), no named colors. CSS variables only.
   - No external images, no <image> tags, no external fonts
-  - No <script> tags, no event handlers (onclick, onload, etc.)
+  - No <script> tags, no event handlers
   - No drop shadows, gradients, or filters
   - No element may overlap another element
-  - Background stays transparent — do not fill the whole viewBox
+  - Background stays transparent
 
 # CODE RULES — when generating CODE
 
-## Language identifier
-
-The language identifier on the second line must be lowercase and must match
-one of these common identifiers (pick the closest one for the user's
-request): python, javascript, typescript, jsx, tsx, html, css, scss, json,
-yaml, xml, sql, bash, shell, powershell, rust, go, java, cpp, c, csharp,
-php, ruby, swift, kotlin, dart, r, lua, perl, scala, haskell, elixir,
-objective-c, markdown, dockerfile, makefile, nginx, toml, ini, graphql,
+Language identifier: lowercase, one of python, javascript, typescript, jsx,
+tsx, html, css, scss, json, yaml, xml, sql, bash, shell, powershell, rust,
+go, java, cpp, c, csharp, php, ruby, swift, kotlin, dart, r, lua, perl,
+scala, haskell, elixir, markdown, dockerfile, makefile, toml, ini, graphql,
 regex, solidity.
 
-If the user's preferred language is unclear and they have not mentioned
-one, default to python for algorithms, javascript for web/UI, bash for
-shell tasks, and sql for database queries. Never guess a language that
-contradicts context — if the user mentioned React, use jsx or tsx, not
-plain javascript. If they mentioned a specific framework, use the
-framework's native language.
-
-## Code quality rules
-
-  - Write clean, correct, idiomatic code in the requested language
-  - Use modern syntax and conventions (not outdated idioms)
-  - Follow the language's standard naming conventions (snake_case for
-    Python, camelCase for JS, PascalCase for types, etc.)
-  - Include minimal, useful comments only where they clarify intent or
-    explain non-obvious choices. Do NOT comment every line.
-  - Prefer readability over cleverness. No one-line tricks that require
-    five minutes to understand unless the user explicitly asked for a
-    golfed or compressed version.
-  - Handle the obvious edge cases (empty input, null checks, etc.) when
-    they're relevant, but don't write defensive bloat for every
-    conceivable failure mode.
-  - If the code needs imports, include them at the top.
-  - If the code is a function, make it standalone and runnable where
-    possible — don't reference undefined variables.
-  - If the user asked for a full script, make it runnable as-is.
-  - If the user asked for a snippet, show just the relevant part.
-
-## What code must NEVER contain
-
-  - Markdown code fences (no triple backticks, ever)
-  - Language tags inside the code (no ```python at the start)
-  - Prose explanations mixed into the code file — comments only
-  - Placeholder text like "// your code here" or "TODO: implement this"
-    unless the user specifically asked for a template
-  - Made-up library names, fake API endpoints, or fabricated function
-    signatures from libraries you're not sure exist
-  - Emojis (unless the user specifically asked for them in the code)
-  - References to "the example above" or "as shown earlier" — the code
-    stands alone with no prior context
-
-## Line length and formatting
-
-  - Target 80-100 character line width for readability
-  - Use 4 spaces for Python indentation, 2 spaces for JS/TS/HTML/CSS,
-    and whatever is standard for the language otherwise
-  - Preserve blank lines between logical sections
-  - Do not over-indent or compress whitespace
+Write clean, idiomatic, modern code. Include imports. Use standard naming
+conventions. Include minimal useful comments only. No markdown fences, no
+language tags inside the code, no prose mixed in. No made-up libraries.
 
 # EXAMPLES
 
-## Example 1 — NONE
-
 User: "hey how are you today?"
-
 NONE
 
-## Example 2 — DIAGRAM, two-node flow
-
 User: "show me how a request flows from client to server"
-
 DIAGRAM
-<svg viewBox="0 0 800 200" xmlns="http://www.w3.org/2000/svg"
-     font-family="system-ui, -apple-system, sans-serif">
-  <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
-            markerWidth="6" markerHeight="6" orient="auto">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-fg)"/>
-    </marker>
-  </defs>
-  <rect x="80" y="76" width="160" height="48" rx="8" ry="8"
-        fill="var(--color-bg)" stroke="var(--color-fg)" stroke-width="1.5"/>
-  <text x="160" y="100" text-anchor="middle" dominant-baseline="middle"
-        font-size="14" font-weight="500" fill="var(--color-fg)">Client</text>
-  <rect x="560" y="76" width="160" height="48" rx="8" ry="8"
-        fill="var(--color-bg)" stroke="var(--color-fg)" stroke-width="1.5"/>
-  <text x="640" y="100" text-anchor="middle" dominant-baseline="middle"
-        font-size="14" font-weight="500" fill="var(--color-fg)">Server</text>
-  <path d="M 240 100 L 560 100" stroke="var(--color-fg)" stroke-width="1.5"
-        fill="none" marker-end="url(#arrow)"/>
+<svg viewBox="0 0 800 200" xmlns="http://www.w3.org/2000/svg" font-family="system-ui, -apple-system, sans-serif">
+  <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-fg)"/></marker></defs>
+  <rect x="80" y="76" width="160" height="48" rx="8" ry="8" fill="var(--color-bg)" stroke="var(--color-fg)" stroke-width="1.5"/>
+  <text x="160" y="100" text-anchor="middle" dominant-baseline="middle" font-size="14" font-weight="500" fill="var(--color-fg)">Client</text>
+  <rect x="560" y="76" width="160" height="48" rx="8" ry="8" fill="var(--color-bg)" stroke="var(--color-fg)" stroke-width="1.5"/>
+  <text x="640" y="100" text-anchor="middle" dominant-baseline="middle" font-size="14" font-weight="500" fill="var(--color-fg)">Server</text>
+  <path d="M 240 100 L 560 100" stroke="var(--color-fg)" stroke-width="1.5" fill="none" marker-end="url(#arrow)"/>
 </svg>
-
-## Example 3 — DIAGRAM, three-step vertical flow with a highlight
-
-User: "what happens when I submit a form on a website"
-
-DIAGRAM
-<svg viewBox="0 0 800 380" xmlns="http://www.w3.org/2000/svg"
-     font-family="system-ui, -apple-system, sans-serif">
-  <defs>
-    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5"
-            markerWidth="6" markerHeight="6" orient="auto">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--color-fg)"/>
-    </marker>
-  </defs>
-  <rect x="320" y="30" width="160" height="48" rx="8" ry="8"
-        fill="var(--color-bg)" stroke="var(--color-fg)" stroke-width="1.5"/>
-  <text x="400" y="54" text-anchor="middle" dominant-baseline="middle"
-        font-size="14" font-weight="500" fill="var(--color-fg)">Request</text>
-  <path d="M 400 78 L 400 156" stroke="var(--color-fg)" stroke-width="1.5"
-        fill="none" marker-end="url(#arrow)"/>
-  <rect x="320" y="166" width="160" height="48" rx="8" ry="8"
-        fill="var(--color-bg)" stroke="var(--color-accent)" stroke-width="2"/>
-  <text x="400" y="190" text-anchor="middle" dominant-baseline="middle"
-        font-size="14" font-weight="500" fill="var(--color-fg)">Process</text>
-  <path d="M 400 214 L 400 292" stroke="var(--color-fg)" stroke-width="1.5"
-        fill="none" marker-end="url(#arrow)"/>
-  <rect x="320" y="302" width="160" height="48" rx="8" ry="8"
-        fill="var(--color-bg)" stroke="var(--color-fg)" stroke-width="1.5"/>
-  <text x="400" y="326" text-anchor="middle" dominant-baseline="middle"
-        font-size="14" font-weight="500" fill="var(--color-fg)">Response</text>
-</svg>
-
-## Example 4 — CODE, Python function
 
 User: "write me a python function that reverses a string"
-
 CODE
 python
 def reverse_string(text: str) -> str:
     return text[::-1]
 
-## Example 5 — CODE, JavaScript async function with API call
-
-User: "how do I fetch data from an API in JavaScript and handle errors"
-
-CODE
-javascript
-async function fetchData(url) {
-  try {
-    const response = await fetch(url)
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`)
-    }
-    return await response.json()
-  } catch (err) {
-    console.error("Fetch failed:", err)
-    return null
-  }
-}
-
-## Example 6 — CODE, SQL query
-
-User: "give me a sql query that finds the top 5 customers by total spend"
-
-CODE
-sql
-SELECT customer_id, SUM(amount) AS total_spend
-FROM orders
-GROUP BY customer_id
-ORDER BY total_spend DESC
-LIMIT 5;
-
 # FINAL REMINDERS
 
-Output EITHER the word NONE (nothing else), OR the word DIAGRAM followed
-by a raw SVG block (nothing else), OR the word CODE followed by a
-language line and a raw code body (nothing else).
-
-Never combine formats. Never add prose. Never add code fences around your
-output. Never explain your choice. The format is parsed programmatically
-and must be exact.
-
+Output EITHER NONE, OR DIAGRAM + raw SVG, OR CODE + language line + raw code.
+Never combine formats. Never add prose. Use conversation context, file
+context, and attached images to understand what the user is really asking.
 '''
-
-# REMINDER
-
 
 
 class GeminiProvider:
@@ -385,10 +257,31 @@ class GeminiProvider:
         system: str,
         user: str,
         max_output_tokens: int = 500,
+        images: Optional[List[dict]] = None,
     ) -> AsyncIterator[str]:
+        """
+        Internal streaming helper. Builds multimodal content parts if images
+        are provided, otherwise uses plain text contents.
+        """
+        # Build content parts
+        if images:
+            parts = []
+            for img in images:
+                encoded = base64.b64encode(img["data"]).decode("utf-8")
+                parts.append({
+                    "inline_data": {
+                        "mime_type": img["mime_type"],
+                        "data": encoded,
+                    }
+                })
+            parts.append({"text": user})
+            contents = [{"role": "user", "parts": parts}]
+        else:
+            contents = user
+
         stream = await self.client.aio.models.generate_content_stream(
             model=self.chat_model,
-            contents=user,
+            contents=contents,
             config={
                 "system_instruction": system,
                 "max_output_tokens": max_output_tokens,
@@ -403,9 +296,21 @@ class GeminiProvider:
         self,
         system: str,
         user: str,
-        max_output_tokens: int = 120,
+        max_output_tokens: int = 10000,
+        images: Optional[List[dict]] = None,
     ) -> AsyncIterator[str]:
-        return self._stream(system=system, user=user, max_output_tokens=max_output_tokens)
+        """
+        Stream a chat response, optionally with attached images.
+
+        Note: returns the async generator directly (no `async def` wrapper)
+        so callers can use `async for delta in provider.stream_chat(...)`.
+        """
+        return self._stream(
+            system=system,
+            user=user,
+            max_output_tokens=max_output_tokens,
+            images=images,
+        )
 
     async def response(
         self,
@@ -430,15 +335,68 @@ class GeminiProvider:
         )
         return getattr(resp, "text", None) or ""
 
-    async def get_diagram(self, user: str, max_output_tokens: int = 20000) -> str:
-        diagram_system_prompt = DIAGRAM_PROMPT
+    async def get_diagram(
+        self,
+        user: str,
+        conversation_context: str = "",
+        file_context: str = "",
+        images: Optional[List[dict]] = None,
+    ) -> str:
+        """
+        Run the visual aid router with full context about the current turn.
+        """
+        context_sections = []
+
+        if conversation_context:
+            context_sections.append(
+                "RECENT CONVERSATION (for pronoun resolution):\n"
+                f"{conversation_context}"
+            )
+
+        if file_context:
+            trimmed_file = file_context
+            if len(trimmed_file) > 3000:
+                trimmed_file = trimmed_file[:3000] + "\n... (truncated)"
+            context_sections.append(
+                "ATTACHED FILE CONTENT:\n"
+                f"{trimmed_file}"
+            )
+
+        if images:
+            context_sections.append(
+                "An image is attached to this turn. If the user is asking "
+                "for a diagram of something shown in the image (a circuit, "
+                "graph, or figure), redraw it as an SVG using the real "
+                "components and labels visible in the image. Do not invent "
+                "generic placeholder content."
+            )
+
+        context_sections.append(f"LATEST USER MESSAGE:\n{user}")
+
+        full_user_prompt = "\n\n".join(context_sections)
+
+        # Build content parts
+        parts = []
+        if images:
+            for img in images:
+                encoded = base64.b64encode(img["data"]).decode("utf-8")
+                parts.append({
+                    "inline_data": {
+                        "mime_type": img["mime_type"],
+                        "data": encoded,
+                    }
+                })
+        parts.append({"text": full_user_prompt})
+
+        contents = [{"role": "user", "parts": parts}]
+
         resp = await self.client.aio.models.generate_content(
             model=self.chat_model,
-            contents=user,
+            contents=contents,
             config={
-                "system_instruction": diagram_system_prompt,
-                "max_output_tokens": max_output_tokens,
+                "system_instruction": DIAGRAM_PROMPT,
+                "max_output_tokens": 8000,
             },
         )
+
         return getattr(resp, "text", None) or ""
-    

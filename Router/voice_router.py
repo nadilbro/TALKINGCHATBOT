@@ -194,13 +194,13 @@ async def chat_diagram_init(init_details: DiagramInit, user=Depends(verify_token
 @router.websocket("/audio_chat_ws")
 async def audio_chat_ws(ws: WebSocket):
     print("HIT audio_chat_ws")
-    
+ 
     await ws.accept()
     try:
         user = await verify_ws_token(ws)
     except ValueError:
         return
-    
+ 
     try:
         while True:
             try:
@@ -215,7 +215,7 @@ async def audio_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "done"})
                 await ws.close()
                 return
-
+ 
             user_id = _as_str(payload.get("user_id") or payload.get("site_id"))
             chat_id = _as_str(payload.get("chat_id"))
             user_text = _as_str(payload.get("message"))
@@ -230,7 +230,7 @@ async def audio_chat_ws(ws: WebSocket):
             if raw_audio and "," in raw_audio:
                 raw_audio = raw_audio.split(",", 1)[1]
             audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
-
+ 
             # ----------------------------------------------------------
             # CREDIT CHECK
             # ----------------------------------------------------------
@@ -294,23 +294,41 @@ async def audio_chat_ws(ws: WebSocket):
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"Failed to save user message: {str(e)}"})
                 continue
+ 
             # ----------------------------------------------------------
             # CHECK FILE INPUT
+            # Images -> attached directly to chat & router calls as vision
+            # Text files (PDF, DOCX, etc.) -> extracted to text
             # ----------------------------------------------------------
             file_context = ""
+            image_attachments = []  # list of {"mime_type": str, "data": bytes}
+ 
             if raw_file and file_name:
                 if "," in raw_file:
                     raw_file = raw_file.split(",", 1)[1]
-                file_bytes_decoded = base64.b64decode(raw_file)
                 try:
-                    file_context = await fileE.extract_text(file_bytes_decoded, file_name)
-                    print(f"==> File extracted: {file_name}, length={len(file_context)}")
+                    file_bytes_decoded = base64.b64decode(raw_file)
+ 
+                    if fileE.is_image(file_name):
+                        # Image — attach directly, skip separate OCR call
+                        image_attachments.append({
+                            "mime_type": fileE.get_image_mime(file_name),
+                            "data": file_bytes_decoded,
+                        })
+                        file_context = f"[Image attached: {file_name}]"
+                        print(f"==> Image attached directly: {file_name} ({len(file_bytes_decoded)} bytes)")
+                    else:
+                        # Document — extract text
+                        file_context = await fileE.extract_text(file_bytes_decoded, file_name)
+                        print(f"==> File extracted: {file_name}, length={len(file_context)}")
+ 
                 except Exception as e:
-                    print(f"==> File extraction failed: {e}")
+                    print(f"==> File processing failed: {e}")
                     traceback.print_exc()
                     await ws.send_json({"type": "error", "message": f"File read failed: {e}"})
             else:
                 print(f"==> No file received. raw_file={bool(raw_file)}, file_name={file_name}")
+ 
             # ----------------------------------------------------------
             # BUILD BASE PROMPT
             # ----------------------------------------------------------
@@ -324,7 +342,7 @@ async def audio_chat_ws(ws: WebSocket):
                 tavily_instance = get_web_search()
                 web_response = tavily_instance.web_search(user_text, 3)
                 system_prompt = f"{system_prompt}\n\n{web_response}"
-
+ 
             history_lines = []
             for m in recent_history:
                 role = (m.get("role") or "").lower()
@@ -346,31 +364,47 @@ async def audio_chat_ws(ws: WebSocket):
  
             # ----------------------------------------------------------
             # CHECK IF VISUAL AIDS ARE ENABLED
+            # Skip visual aid generation ONLY for text-based files.
+            # For images, let the router see the image and decide — it can
+            # now redraw the actual content instead of inventing placeholders.
             # ----------------------------------------------------------
             try:
                 diagrams_enabled = rag.get_diagram_usage(user_id)
             except Exception:
                 diagrams_enabled = False
-                
-            if file_context:
-                print("==> File attached, skipping visual aid generation for speed")
+ 
+            if file_context and not image_attachments:
+                # Text-only file attached — skip visual aid for speed
+                print("==> Text file attached, skipping visual aid generation for speed")
                 diagrams_enabled = False
+ 
             # ----------------------------------------------------------
-            # VISUAL AID GENERATION (diagram OR code, runs FIRST)
+            # VISUAL AID GENERATION
+            # Router now gets conversation context, file context, and
+            # any attached images so it can make informed decisions.
             # ----------------------------------------------------------
             async def _generate_visual_aid():
-                """Decide whether to generate a diagram, code, or nothing.
-                Returns one of:
-                    {"type": "diagram", "svg": "<svg>...</svg>"}
-                    {"type": "code", "language": "python", "code": "..."}
-                    None
-                """
+                """Decide whether to generate a diagram, code, or nothing."""
                 if not diagrams_enabled:
                     print("Visual aids disabled for this user")
                     return None
                 try:
                     print("Generating visual aid (pre-chat)...")
-                    raw = await ai.get_diagram(site_id=user_id, user=user_text)
+ 
+                    # Give the router the last few turns so pronouns resolve
+                    router_conversation_context = "\n".join(history_lines[-6:]) if history_lines else ""
+ 
+                    # Give it the file context and images if any
+                    router_file_context = file_context or ""
+                    router_images = image_attachments if image_attachments else None
+ 
+                    raw = await ai.get_diagram(
+                        site_id=user_id,
+                        user=user_text,
+                        conversation_context=router_conversation_context,
+                        file_context=router_file_context,
+                        images=router_images,
+                    )
                     print(f"==> Raw visual aid response: {raw[:500]!r}")
  
                     if not raw:
@@ -382,12 +416,10 @@ async def audio_chat_ws(ws: WebSocket):
  
                     first_word = stripped.split(None, 1)[0].upper()
  
-                    # NONE — nothing useful to generate
                     if first_word == "NONE":
                         print("Visual aid model returned NONE")
                         return None
  
-                    # DIAGRAM — extract the SVG block
                     if first_word == "DIAGRAM":
                         match = re.search(r'<svg.*?</svg>', raw, re.DOTALL | re.IGNORECASE)
                         if match:
@@ -398,7 +430,6 @@ async def audio_chat_ws(ws: WebSocket):
                         print("DIAGRAM marker found but no <svg> block in response")
                         return None
  
-                    # CODE — parse language and body
                     if first_word == "CODE":
                         lines = stripped.split("\n", 2)
                         if len(lines) < 3:
@@ -412,7 +443,6 @@ async def audio_chat_ws(ws: WebSocket):
                             print(f"==> CODE response had invalid language: {language!r}")
                             return None
  
-                        # Strip any accidental markdown fences
                         code_body = re.sub(r'^```[\w]*\n?', '', code_body)
                         code_body = re.sub(r'\n?```$', '', code_body)
                         code_body = code_body.strip("\n")
@@ -445,8 +475,7 @@ async def audio_chat_ws(ws: WebSocket):
  
             visual_aid = await _generate_visual_aid()
  
-            # Send the visual aid immediately so the frontend can render it
-            # while the chat response is still streaming
+            # Send the visual aid immediately
             if visual_aid is None:
                 try:
                     await ws.send_json({"type": "visual_aid_none"})
@@ -460,7 +489,7 @@ async def audio_chat_ws(ws: WebSocket):
                     "language": visual_aid["language"],
                     "code": visual_aid["code"],
                 })
-
+ 
             if visual_aid:
                 try:
                     rag.save_visual(
@@ -509,24 +538,15 @@ async def audio_chat_ws(ws: WebSocket):
                 )
  
             if visual_aid_summary:
-                # Visual aid was generated — character grounds their response in it
                 system_prompt = f"{system_prompt}\n\n{visual_aid_summary}"
-            
             elif visual_aid is None and diagrams_enabled:
-                # Visual aids ARE enabled, but the router decided nothing was needed
-                # for this specific question. Character just responds normally.
                 system_prompt = (
                     f"{system_prompt}\n\n"
                     "No visual aid was generated for this question because a diagram or "
                     "code snippet would not meaningfully help. Respond conversationally "
                     "as you normally would."
                 )
-            
             else:
-                # Visual aids are DISABLED by the user. The character should still answer
-                # helpfully, and if the question would have benefited from code or a
-                # diagram, should mention that enabling visual aids would let them show
-                # it properly.
                 system_prompt = (
                     f"{system_prompt}\n\n"
                     "IMPORTANT: The user has visual aids turned OFF. This means no "
@@ -550,23 +570,28 @@ async def audio_chat_ws(ws: WebSocket):
                     "answer normally without mentioning visual aids — do not bring it "
                     "up for every response, only when it would genuinely have helped."
                 )
-
-            #ADDING FILE CONTEXT
+ 
+            # ADDING FILE CONTEXT
             if file_context:
                 print("File attached")
-                print(file_context)
                 system_prompt = f"{system_prompt}\n\nUser has attached a file as follows: ({file_name}):\n{file_context}"
             else:
                 print("File Not attached")
                 system_prompt = f"{system_prompt}\n\nUSER HAS NOT UPLOADED ANY EXTRA FILES"
-
+ 
             # ----------------------------------------------------------
             # GENERATE CHAT RESPONSE
+            # Passes image attachments directly to Gemini as vision input
             # ----------------------------------------------------------
             async def _generate_chat():
                 sentences = []
                 sentence_buffer = ""
-                async for delta in ai.stream(site_id=user_id, system=system_prompt, user=user_prompt):
+                async for delta in ai.stream(
+                    site_id=user_id,
+                    system=system_prompt,
+                    user=user_prompt,
+                    images=image_attachments if image_attachments else None,
+                ):
                     sentence_buffer += delta
                     while re.search(r'[.?!,]\s', sentence_buffer):
                         match = re.search(r'[.?!,]\s', sentence_buffer)
@@ -646,35 +671,23 @@ async def audio_chat_ws(ws: WebSocket):
                     traceback.print_exc()
                     await ws.send_json({"type": "error", "message": f"TTS failed: {str(e)}"})
  
-            # Replace your existing COST TRACKING block in audio_chat_ws with this.
-            # It fixes the missing comma, folds file text into billing, and handles
-            # image uploads separately from text file uploads.
-            
- 
             # ----------------------------------------------------------
             # COST TRACKING
             # ----------------------------------------------------------
             try:
-                # Build the "diagram text" billable string from whichever
-                # visual aid (if any) was generated
                 billable_visual_text = ""
                 if visual_aid and visual_aid["type"] == "diagram":
                     billable_visual_text = visual_aid["svg"]
                 elif visual_aid and visual_aid["type"] == "code":
                     billable_visual_text = visual_aid["code"]
  
-                # Figure out whether the uploaded file was an image or a text doc.
                 file_text_chars = 0
-                image_count = 0
+                image_count = len(image_attachments)
  
-                if raw_file and file_name:
-                    lower_name = file_name.lower()
-                    image_extensions = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".heif")
-                    
-                    if lower_name.endswith(image_extensions):
-                        image_count = 1
-                    else:
-                        file_text_chars = len(file_context) if file_context else 0
+                if raw_file and file_name and not image_attachments:
+                    # Only count text chars for NON-image files since images
+                    # are billed via image_count instead
+                    file_text_chars = len(file_context) if file_context else 0
  
                 print(f"==> bot_text length={len(bot_text)}, preview={bot_text[:200]!r}")
                 print(f"==> visual_aid length={len(billable_visual_text)}")
@@ -700,8 +713,7 @@ async def audio_chat_ws(ws: WebSocket):
                 print(f"==> Cost tracking failed: {e}", flush=True)
  
             # ----------------------------------------------------------
-            # SIGNAL TURN COMPLETE — this is what was missing
-            # Without this, the frontend hangs forever waiting for `done`
+            # SIGNAL TURN COMPLETE
             # ----------------------------------------------------------
             try:
                 await ws.send_json({"type": "done"})
@@ -722,7 +734,7 @@ async def audio_chat_ws(ws: WebSocket):
             await ws.close()
         except Exception:
             pass
-
+ 
 @router.websocket("/embed_chat_ws")
 async def embed_chat_ws(ws: WebSocket):
     """
@@ -1031,3 +1043,53 @@ async def embed_chat_ws(ws: WebSocket):
             await ws.close()
         except Exception:
             pass
+
+#  In your embed_chat_ws handler, near the bottom, you have this broken code:
+# #
+# #             # Cost tracking — ALWAYS runs, regardless of audio_on
+# #             try:
+# #                 cost_aud = account_manager.processUsedCost(...)
+# #                 rag.addApiKeyCost(api_key, cost_aud)
+# #                 print(f"==> Embed cost: ${cost_aud:.4f} AUD for api_key={api_key}", flush=True)
+# #             except Exception as e:
+# #                 print(f"==> Embed cost tracking failed: {e}", flush=True)
+# #
+# #             except Exception as e:                                <-- BROKEN: orphan except
+# #                 print(f"==> Cost tracking failed: {e}", flush=True)
+# #
+# #             # SIGNAL TURN COMPLETE
+# #             try:
+# #                 await ws.send_json({"type": "done"})
+# #                 ...
+# #
+# # Two back-to-back `except` clauses without a `try` in between = SyntaxError.
+# # This will prevent your entire module from loading, which means your whole
+# # server probably isn't starting right now.
+# #
+# # Delete the orphan second `except` block. Replace the broken section with
+# # this clean version:
+ 
+#             # Cost tracking — ALWAYS runs, regardless of audio_on
+#             try:
+#                 cost_aud = account_manager.processUsedCost(
+#                     outputText=bot_text,
+#                     outputDiagramText="",
+#                     inputText=user_prompt,
+#                     SST_Length_seconds=len(audio_bytes) / 16000 if audio_bytes else 0,
+#                     webSearch=False,
+#                     voice_on=bool(audio_on),
+#                     diagram_on=False,
+#                 )
+#                 rag.addApiKeyCost(api_key, cost_aud)
+#                 print(f"==> Embed cost: ${cost_aud:.4f} AUD for api_key={api_key}", flush=True)
+#             except Exception as e:
+#                 print(f"==> Embed cost tracking failed: {e}", flush=True)
+ 
+#             # ----------------------------------------------------------
+#             # SIGNAL TURN COMPLETE
+#             # ----------------------------------------------------------
+#             try:
+#                 await ws.send_json({"type": "done"})
+#                 print("==> Embed DONE sent, turn complete", flush=True)
+#             except Exception as e:
+#                 print(f"==> Embed failed to send done: {e}", flush=True)
