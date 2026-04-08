@@ -630,7 +630,7 @@ async def audio_chat_ws(ws: WebSocket):
                     billable_visual_text = visual_aid["svg"]
                 elif visual_aid and visual_aid["type"] == "code":
                     billable_visual_text = visual_aid["code"]
-
+                
                 print(f"==> bot_text length={len(bot_text)}, preview={bot_text[:200]!r}")
                 print(f"==> visual_aid length={len(billable_visual_text)}")
                 print(f"For testing sake: input text: {user_prompt}")
