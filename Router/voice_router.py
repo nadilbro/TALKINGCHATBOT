@@ -282,11 +282,16 @@ async def audio_chat_ws(ws: WebSocket):
             if raw_file and file_name:
                 if "," in raw_file:
                     raw_file = raw_file.split(",", 1)[1]
-                file_bytes = base64.b64decode(raw_file)
+                file_bytes_decoded = base64.b64decode(raw_file)
                 try:
-                    file_context = await fileE.extract_text(file_bytes, file_name)
+                    file_context = await fileE.extract_text(file_bytes_decoded, file_name)
+                    print(f"==> File extracted: {file_name}, length={len(file_context)}")
                 except Exception as e:
+                    print(f"==> File extraction failed: {e}")
+                    traceback.print_exc()
                     await ws.send_json({"type": "error", "message": f"File read failed: {e}"})
+            else:
+                print(f"==> No file received. raw_file={bool(raw_file)}, file_name={file_name}")
             # ----------------------------------------------------------
             # BUILD BASE PROMPT
             # ----------------------------------------------------------
