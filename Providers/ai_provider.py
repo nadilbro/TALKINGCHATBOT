@@ -23,7 +23,7 @@ class AIProvider:
                 embed_model="gemini-embedding-001", 
             ),
             "gemini_pro": GeminiProvider(
-                chat_model=" gemini-2.5-pro", #gemini_pro gemini-2.5-pro
+                chat_model="gemini-2.5-pro", #gemini_pro gemini-2.5-pro
                 embed_model="gemini-embedding-001",
             ),
             "gemini_image": GeminiProvider(
