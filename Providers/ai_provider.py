@@ -19,8 +19,8 @@ class AIProvider:
                 embed_model="gemini-embedding-001",
             ),
             "gemini_diagram": GeminiProvider(
-                chat_model="gemini-3-flash-preview", #gemini_pro gemini-2.5-pro
-                embed_model="gemini-embedding-001",
+                chat_model="gemini-2.5-flash", # input $2 per million tokens output #gemini_pro gemini-2.5-pro
+                embed_model="gemini-embedding-001", 
             ),
             "gemini_pro": GeminiProvider(
                 chat_model=" gemini-2.5-pro", #gemini_pro gemini-2.5-pro
