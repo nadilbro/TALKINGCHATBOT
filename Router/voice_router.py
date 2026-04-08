@@ -995,7 +995,17 @@ async def embed_chat_ws(ws: WebSocket):
             except Exception as e:
                 print(f"==> Embed cost tracking failed: {e}", flush=True)
 
-            await ws.send_json({"type": "done"})
+            except Exception as e:
+                print(f"==> Cost tracking failed: {e}", flush=True)
+
+            # ----------------------------------------------------------
+            # SIGNAL TURN COMPLETE
+            # ----------------------------------------------------------
+            try:
+                await ws.send_json({"type": "done"})
+                print("==> DONE sent, turn complete", flush=True)
+            except Exception as e:
+                print(f"==> Failed to send done: {e}", flush=True)
 
     except WebSocketDisconnect:
         return
