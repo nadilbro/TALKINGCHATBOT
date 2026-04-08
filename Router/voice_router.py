@@ -174,7 +174,7 @@ async def chat_diagram_init(init_details: SessionInit, user=Depends(verify_token
     chatID = init_details.chat_id
 
     raw_visuals = rag.get_visuals(chatID)
-
+    
     visuals = []
     for v in raw_visuals:
         visuals.append({
@@ -183,7 +183,7 @@ async def chat_diagram_init(init_details: SessionInit, user=Depends(verify_token
             "language": v.get("language"),
             "created_at": str(v.get("created_at", "")),
         })
-    print(f"=> VISUALS {visuals}")
+    print(f"=> VISUALS {visuals} {raw_visuals}")
     return {"visuals": visuals}
 # -----------------------------------------------------------------------
 # MAIN CHAT WEBSOCKET
