@@ -457,7 +457,7 @@ async def audio_chat_ws(ws: WebSocket):
                     return None
                 try:
                     print("Generating visual aid (pre-chat)...")
-
+                    
                     router_conversation_context = "\n".join(history_lines[-6:]) if history_lines else ""
                     router_file_context = file_context or ""
                     router_images = image_attachments if image_attachments else None
@@ -483,8 +483,14 @@ async def audio_chat_ws(ws: WebSocket):
                     if first_word == "NONE":
                         print("Visual aid model returned NONE")
                         return None
-
-                    if first_word == "DIAGRAM":
+                    if first_word == "MATH":
+                        # Everything after the literal "MATH" keyword is the content
+                        math_body = stripped[len("MATH"):].strip()
+                        if not math_body:
+                            print("==> MATH response had empty body")
+                            return None
+                        return {"type": "math", "content": math_body}
+                    elif first_word == "DIAGRAM":
                         match = re.search(r'<svg.*?</svg>', raw, re.DOTALL | re.IGNORECASE)
                         if match:
                             return {"type": "diagram", "svg": match.group(0)}
@@ -538,6 +544,7 @@ async def audio_chat_ws(ws: WebSocket):
 
             visual_aid = await _generate_visual_aid()
 
+ 
             if visual_aid is None:
                 try:
                     await ws.send_json({"type": "visual_aid_none"})
@@ -551,13 +558,28 @@ async def audio_chat_ws(ws: WebSocket):
                     "language": visual_aid["language"],
                     "code": visual_aid["code"],
                 })
+            elif visual_aid["type"] == "math":
+                await ws.send_json({
+                    "type": "math",
+                    "content": visual_aid["content"],
+                })
+ 
 
             if visual_aid:
                 try:
+                    if visual_aid["type"] == "diagram":
+                        content_to_save = visual_aid["svg"]
+                    elif visual_aid["type"] == "code":
+                        content_to_save = visual_aid["code"]
+                    elif visual_aid["type"] == "math":
+                        content_to_save = visual_aid["content"]
+                    else:
+                        content_to_save = ""
+
                     rag.save_visual(
                         session_id=chat_id,
                         visual_type=visual_aid["type"],
-                        content=visual_aid["svg"] if visual_aid["type"] == "diagram" else visual_aid["code"],
+                        content=content_to_save,
                         language=visual_aid.get("language"),
                     )
                 except Exception as e:
@@ -567,7 +589,7 @@ async def audio_chat_ws(ws: WebSocket):
             # BUILD GROUNDING CONTEXT FOR THE CHARACTER
             # ----------------------------------------------------------
             visual_aid_summary = ""
-
+ 
             if visual_aid and visual_aid["type"] == "diagram":
                 svg_text = visual_aid["svg"]
                 labels = re.findall(r'<text[^>]*>(.*?)</text>', svg_text, re.DOTALL | re.IGNORECASE)
@@ -595,43 +617,29 @@ async def audio_chat_ws(ws: WebSocket):
                     "you were explaining it to a friend out loud. Do not read the code "
                     "line by line. Do not announce that code has been shown. Do not say "
                     "'here is the code' or 'as you can see'. Just walk them through the "
-                    "approach conversationally. Keep it concise — the user can read the "
-                    "code themselves, your job is to give them the intuition behind it."
+                    "approach conversationally."
                 )
 
-            if visual_aid_summary:
-                system_prompt = f"{system_prompt}\n\n{visual_aid_summary}"
-            elif visual_aid is None and diagrams_enabled:
-                system_prompt = (
-                    f"{system_prompt}\n\n"
-                    "No visual aid was generated for this question because a diagram or "
-                    "code snippet would not meaningfully help. Respond conversationally "
-                    "as you normally would."
+            elif visual_aid and visual_aid["type"] == "math":
+                math_preview = visual_aid["content"]
+                if len(math_preview) > 1500:
+                    math_preview = math_preview[:1500] + "\n... (truncated)"
+                visual_aid_summary = (
+                    f"A mathematical derivation has been shown to the user alongside "
+                    f"your response. The derivation is:\n\n{math_preview}\n\n"
+                    "Speak naturally about the approach and the intuition behind the "
+                    "derivation. Walk the user through it conceptually, saying things "
+                    "like 'first we express the position in terms of the angle' or "
+                    "'then we take the derivative with respect to theta'. Do NOT read "
+                    "the equations literally — do not say 'l over 2 times cosine of "
+                    "theta 1 over 2' because the user can see the equation on screen. "
+                    "Instead, describe WHAT each step is doing and WHY, in plain "
+                    "conversational language. Do not announce that math has been "
+                    "shown. Do not say 'as you can see in the equations'. Just talk "
+                    "about the approach as if you were a patient tutor walking a "
+                    "student through the reasoning."
                 )
-            else:
-                system_prompt = (
-                    f"{system_prompt}\n\n"
-                    "IMPORTANT: The user has visual aids turned OFF. This means no "
-                    "diagrams and no code blocks can be shown to them right now. You "
-                    "must still answer their question fully and helpfully in your "
-                    "spoken voice. Do not refuse to answer just because you cannot show "
-                    "a visual.\n\n"
-                    "If the question is about code or programming, explain the concept "
-                    "and the approach in plain conversational words. Walk through what "
-                    "the code would do step by step as if you were describing it out "
-                    "loud to a friend. Do not output code blocks, markdown, or syntax — "
-                    "just explain the logic and approach verbally. At the end of your "
-                    "answer, briefly mention that if they want to see the actual code "
-                    "formatted nicely, they can enable the visual aids button in the "
-                    "chat interface.\n\n"
-                    "If the question is about a concept that would normally be easier "
-                    "with a diagram, explain it clearly in words and mention at the end "
-                    "that enabling the visual aids button would let you show them a "
-                    "diagram too.\n\n"
-                    "If the question is casual or doesn't need a visual at all, just "
-                    "answer normally without mentioning visual aids — do not bring it "
-                    "up for every response, only when it would genuinely have helped."
-                )
+
 
             # ----------------------------------------------------------
             # ADDING FILE CONTEXT TO SYSTEM PROMPT
@@ -750,6 +758,8 @@ async def audio_chat_ws(ws: WebSocket):
                     billable_visual_text = visual_aid["svg"]
                 elif visual_aid and visual_aid["type"] == "code":
                     billable_visual_text = visual_aid["code"]
+                elif visual_aid and visual_aid["type"] == "math":
+                    billable_visual_text = visual_aid["content"]
 
                 # Count all attached images for vision billing
                 image_count = len(image_attachments)
