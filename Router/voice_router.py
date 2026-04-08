@@ -643,6 +643,7 @@ async def audio_chat_ws(ws: WebSocket):
             # It fixes the missing comma, folds file text into billing, and handles
             # image uploads separately from text file uploads.
             
+ 
             # ----------------------------------------------------------
             # COST TRACKING
             # ----------------------------------------------------------
@@ -654,32 +655,25 @@ async def audio_chat_ws(ws: WebSocket):
                     billable_visual_text = visual_aid["svg"]
                 elif visual_aid and visual_aid["type"] == "code":
                     billable_visual_text = visual_aid["code"]
-            
-                # Figure out whether the uploaded file was an image or a text-based doc.
-                # Images go through Gemini's vision pricing; text files just add input tokens.
+ 
+                # Figure out whether the uploaded file was an image or a text doc.
                 file_text_chars = 0
                 image_count = 0
-            
+ 
                 if raw_file and file_name:
                     lower_name = file_name.lower()
                     image_extensions = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".heif")
                     
                     if lower_name.endswith(image_extensions):
-                        # Image file — billed as vision input, not extracted text
-                        # (assumes your FileExtractor passes image bytes through to Gemini
-                        # rather than OCR'ing them. If it OCRs, use file_text_chars instead.)
                         image_count = 1
                     else:
-                        # Text-based file (PDF, DOCX, TXT, MD, CSV, etc.)
-                        # The extracted text was appended to system_prompt, so we need to
-                        # bill for those characters as extra input tokens
                         file_text_chars = len(file_context) if file_context else 0
-            
+ 
                 print(f"==> bot_text length={len(bot_text)}, preview={bot_text[:200]!r}")
                 print(f"==> visual_aid length={len(billable_visual_text)}")
                 print(f"==> file_text_chars={file_text_chars}, image_count={image_count}")
                 print(f"For testing sake: input text: {user_prompt}")
-            
+ 
                 cost = account_manager.processUsedCost(
                     outputText=bot_text,
                     outputDiagramText=billable_visual_text,
@@ -697,6 +691,16 @@ async def audio_chat_ws(ws: WebSocket):
                 print(f"==> Cost: ${cost:.4f} | Deducted {credits_used:.4f} credits. Remaining: {remaining}", flush=True)
             except Exception as e:
                 print(f"==> Cost tracking failed: {e}", flush=True)
+ 
+            # ----------------------------------------------------------
+            # SIGNAL TURN COMPLETE — this is what was missing
+            # Without this, the frontend hangs forever waiting for `done`
+            # ----------------------------------------------------------
+            try:
+                await ws.send_json({"type": "done"})
+                print("==> DONE sent, turn complete", flush=True)
+            except Exception as e:
+                print(f"==> Failed to send done: {e}", flush=True)
  
     except WebSocketDisconnect:
         return
