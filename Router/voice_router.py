@@ -15,6 +15,7 @@ from Providers.firebase_auth import verify_ws_token
 from Providers.web_search import TavilyProvider
 from Providers.summary_generator import RollingSummaryManager
 from Providers.STT import DeepgramProvider
+import time
 from Providers.Account_Manager import AccountManager
 router = APIRouter(prefix="/system", tags=["chat"])
 from Providers.file_extractor import FileExtractor
@@ -27,6 +28,7 @@ tts = None
 tav = None
 stt = None
 MINUTES_PER_CREDIT = 7
+
 
 def html_to_plain_text(html_text: str) -> str:
     text = re.sub(r"<br\s*/?>", "\n", html_text, flags=re.IGNORECASE)
@@ -192,12 +194,13 @@ async def chat_diagram_init(init_details: DiagramInit, user=Depends(verify_token
 @router.websocket("/audio_chat_ws")
 async def audio_chat_ws(ws: WebSocket):
     print("HIT audio_chat_ws")
+    
     await ws.accept()
     try:
         user = await verify_ws_token(ws)
     except ValueError:
         return
- 
+    
     try:
         while True:
             try:
@@ -321,7 +324,7 @@ async def audio_chat_ws(ws: WebSocket):
                 tavily_instance = get_web_search()
                 web_response = tavily_instance.web_search(user_text, 3)
                 system_prompt = f"{system_prompt}\n\n{web_response}"
- 
+
             history_lines = []
             for m in recent_history:
                 role = (m.get("role") or "").lower()
@@ -347,6 +350,10 @@ async def audio_chat_ws(ws: WebSocket):
             try:
                 diagrams_enabled = rag.get_diagram_usage(user_id)
             except Exception:
+                diagrams_enabled = False
+                
+            if file_context:
+                print("==> File attached, skipping visual aid generation for speed")
                 diagrams_enabled = False
             # ----------------------------------------------------------
             # VISUAL AID GENERATION (diagram OR code, runs FIRST)
