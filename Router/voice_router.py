@@ -460,13 +460,46 @@ async def audio_chat_ws(ws: WebSocket):
                 )
  
             if visual_aid_summary:
+                # Visual aid was generated — character grounds their response in it
                 system_prompt = f"{system_prompt}\n\n{visual_aid_summary}"
-            else:
+            
+            elif visual_aid is None and diagrams_enabled:
+                # Visual aids ARE enabled, but the router decided nothing was needed
+                # for this specific question. Character just responds normally.
                 system_prompt = (
                     f"{system_prompt}\n\n"
-                    "No diagram or code was generated for this question — either it was "
-                    "deemed unnecessary, or the user has not enabled visual aids. "
-                    "Respond conversationally."
+                    "No visual aid was generated for this question because a diagram or "
+                    "code snippet would not meaningfully help. Respond conversationally "
+                    "as you normally would."
+                )
+            
+            else:
+                # Visual aids are DISABLED by the user. The character should still answer
+                # helpfully, and if the question would have benefited from code or a
+                # diagram, should mention that enabling visual aids would let them show
+                # it properly.
+                system_prompt = (
+                    f"{system_prompt}\n\n"
+                    "IMPORTANT: The user has visual aids turned OFF. This means no "
+                    "diagrams and no code blocks can be shown to them right now. You "
+                    "must still answer their question fully and helpfully in your "
+                    "spoken voice. Do not refuse to answer just because you cannot show "
+                    "a visual.\n\n"
+                    "If the question is about code or programming, explain the concept "
+                    "and the approach in plain conversational words. Walk through what "
+                    "the code would do step by step as if you were describing it out "
+                    "loud to a friend. Do not output code blocks, markdown, or syntax — "
+                    "just explain the logic and approach verbally. At the end of your "
+                    "answer, briefly mention that if they want to see the actual code "
+                    "formatted nicely, they can enable the visual aids button in the "
+                    "chat interface.\n\n"
+                    "If the question is about a concept that would normally be easier "
+                    "with a diagram, explain it clearly in words and mention at the end "
+                    "that enabling the visual aids button would let you show them a "
+                    "diagram too.\n\n"
+                    "If the question is casual or doesn't need a visual at all, just "
+                    "answer normally without mentioning visual aids — do not bring it "
+                    "up for every response, only when it would genuinely have helped."
                 )
  
             # ----------------------------------------------------------
@@ -601,6 +634,7 @@ async def audio_chat_ws(ws: WebSocket):
             await ws.close()
         except Exception:
             pass
+
 @router.websocket("/embed_chat_ws")
 async def embed_chat_ws(ws: WebSocket):
     """
