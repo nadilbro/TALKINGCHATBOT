@@ -169,7 +169,22 @@ async def chat_init(init_details: SessionInit, user=Depends(verify_token)):
         "prompt": prompt
     }
 
+@router.post("/chat_diagram_init")
+async def chat_diagram_init(init_details: SessionInit, user=Depends(verify_token)):
+    chatID = init_details.chat_id
 
+    raw_visuals = rag.get_visuals(chatID)
+
+    visuals = []
+    for v in raw_visuals:
+        visuals.append({
+            "visual_type": v.get("visual_type"),
+            "content": v.get("content"),
+            "language": v.get("language"),
+            "created_at": str(v.get("created_at", "")),
+        })
+
+    return {"visuals": visuals}
 # -----------------------------------------------------------------------
 # MAIN CHAT WEBSOCKET
 # -----------------------------------------------------------------------
