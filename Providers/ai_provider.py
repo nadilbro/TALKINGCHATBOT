@@ -23,7 +23,7 @@ class AIProvider:
                 embed_model="gemini-embedding-001",
             ),
             "gemini_image": GeminiProvider(
-                chat_model="gemini-1.5-flash",  # vision-capable
+                chat_model="gemini-2.5-flash",  # vision-capable
                 embed_model="gemini-embedding-001",
             ),
         }
