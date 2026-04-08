@@ -14,20 +14,26 @@ class AIProvider:
                 chat_model="gpt-5-nano",
                 embed_model="text-embedding-3-small",
             ),
+            # Default chat model — fast, cheap, multimodal
             "gemini_flash": GeminiProvider(
                 chat_model="gemini-2.5-flash",
                 embed_model="gemini-embedding-001",
             ),
+            # Diagram / code generation — same as flash for now.
+            # If you want better diagrams at higher cost, swap to "gemini-2.5-pro"
+            # or "gemini-3-flash" when you're ready to test it.
             "gemini_diagram": GeminiProvider(
-                chat_model="gemini-2.5-flash", # input $2 per million tokens output #gemini_pro gemini-2.5-pro
-                embed_model="gemini-embedding-001", 
-            ),
-            "gemini_pro": GeminiProvider(
-                chat_model="gemini-2.5-pro", #gemini_pro gemini-2.5-pro
+                chat_model="gemini-2.5-flash",
                 embed_model="gemini-embedding-001",
             ),
+            # Pro mode — stronger reasoning, costs more
+            "gemini_pro": GeminiProvider(
+                chat_model="gemini-2.5-pro",
+                embed_model="gemini-embedding-001",
+            ),
+            # Image understanding (vision input) — uses flash since it's multimodal
             "gemini_image": GeminiProvider(
-                chat_model="gemini-2.5-flash",  # vision-capable
+                chat_model="gemini-2.5-flash",
                 embed_model="gemini-embedding-001",
             ),
         }
@@ -36,15 +42,13 @@ class AIProvider:
         pro_bool = self.rag.get_pro_usage(site_id)
         if pro_bool:
             return "gemini_pro"
-        else: 
-            return "gemini_flash"
-        
+        return "gemini_flash"
+
     async def _tenant_diagram_provider_name(self, site_id: str) -> str:
         pro_bool = self.rag.get_pro_usage(site_id)
         if pro_bool:
             return "gemini_pro"
-        else: 
-            return "gemini_diagram"
+        return "gemini_diagram"
 
     async def stream(self, site_id: str, system: str, user: str) -> AsyncIterator[str]:
         provider_name = await self._tenant_chat_provider_name(site_id)
