@@ -433,6 +433,17 @@ async def audio_chat_ws(ws: WebSocket):
                     "language": visual_aid["language"],
                     "code": visual_aid["code"],
                 })
+
+            if visual_aid:
+                try:
+                    rag.save_visual(
+                        session_id=chat_id,
+                        visual_type=visual_aid["type"],
+                        content=visual_aid["svg"] if visual_aid["type"] == "diagram" else visual_aid["code"],
+                        language=visual_aid.get("language"),
+                    )
+                except Exception as e:
+                    print(f"==> Failed to save visual: {e}")
  
             # ----------------------------------------------------------
             # BUILD GROUNDING CONTEXT FOR THE CHARACTER

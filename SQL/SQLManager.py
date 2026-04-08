@@ -889,7 +889,7 @@ class VectorRAGService:
         except Exception:
             self.conn.rollback()
             raise
-        
+
 
 
     #Check Diagram toggle
@@ -899,3 +899,33 @@ class VectorRAGService:
             cur.execute("SELECT diagram_use FROM accounts WHERE user_id = %s", (user_id,))
             row = cur.fetchone()
             return bool(row["diagram_use"]) if row else True
+        
+
+    # -----------------------------------------------------------------------
+    # Diagram/code history
+    # -----------------------------------------------------------------------
+
+    def save_visual(self, session_id: str, visual_type: str, content: str, language: str = None):
+        self._get_conn()
+        try:
+            with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    INSERT INTO message_visuals (session_id, visual_type, content, language)
+                    VALUES (%s, %s, %s, %s)
+                """, (session_id, visual_type, content, language))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def get_visuals(self, session_id: str, limit: int = 20):
+        self._get_conn()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT visual_type, content, language, created_at
+                FROM message_visuals
+                WHERE session_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+            """, (session_id, limit))
+            return cur.fetchall()
