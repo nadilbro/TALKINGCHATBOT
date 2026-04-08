@@ -10,7 +10,7 @@ from fastapi import Depends
 from Providers.ai_provider import AIProvider
 from Providers.voice_chat import VoiceChatSystem
 from SQL.SQLManager import VectorRAGService
-from Providers.APIContracts import SessionInit
+from Providers.APIContracts import SessionInit, DiagramInit
 from Providers.firebase_auth import verify_ws_token
 from Providers.web_search import TavilyProvider
 from Providers.summary_generator import RollingSummaryManager
@@ -170,7 +170,7 @@ async def chat_init(init_details: SessionInit, user=Depends(verify_token)):
     }
 
 @router.post("/chat_diagram_init")
-async def chat_diagram_init(init_details: SessionInit, user=Depends(verify_token)):
+async def chat_diagram_init(init_details: DiagramInit, user=Depends(verify_token)):
     chatID = init_details.chat_id
 
     raw_visuals = rag.get_visuals(chatID)

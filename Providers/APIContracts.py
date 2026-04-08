@@ -87,7 +87,9 @@ class VoiceChat(BaseModel):
     audio_bytes: Optional[str] = None   # base64 wav
     visemes: Optional[List[Dict]] = None
 
-    
+class DiagramInit(BaseModel):
+    chat_id: str
+
 class ClientListSetUp(BaseModel):
     name: Optional[str] = None
     email: Optional[str] = None
@@ -104,6 +106,6 @@ class UserID(BaseModel):
     user_id: str
 
 
-    
+
 class toggleDiagram(BaseModel):
     toggle: bool
