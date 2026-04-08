@@ -107,5 +107,5 @@ class UserID(BaseModel):
 
 
 
-class toggleDiagram(BaseModel):
+class toggleDiagramPro(BaseModel):
     toggle: bool

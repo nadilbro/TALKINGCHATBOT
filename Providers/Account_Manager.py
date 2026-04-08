@@ -41,6 +41,7 @@ class AccountManager:
         webSearch: bool = False,
         voice_on: bool = False,
         diagram_on: bool = False,
+        pro_mode: bool = False,
     ) -> float:
         """
         Returns the total cost of this turn in AUD.
