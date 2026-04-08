@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query
 
-from Providers.APIContracts import SessionBase, SessionCreate, SessionDelete, AccountCreate, toggleDiagram
+from Providers.APIContracts import SessionBase, SessionCreate, SessionDelete, AccountCreate, toggleDiagramPro
 from SQL.SQLManager import VectorRAGService
 from Providers.ai_provider import AIProvider
 from Providers.startup_provider import StartUp
@@ -92,7 +92,7 @@ async def get_account(user_id: str = Query(...), user=Depends(verify_token)):
 # Diagram Enable
 # -----------------------------------------------------------------------
 @router.post("/toggle_diagram")
-async def toggle_diagram(data: toggleDiagram, user=Depends(verify_token)):
+async def toggle_diagram(data: toggleDiagramPro, user=Depends(verify_token)):
     try:
         rag.toggle_diagram_usage(user["uid"], data.toggle)
         return {"ok": True, "diagram_use": data.toggle}
@@ -103,5 +103,23 @@ async def toggle_diagram(data: toggleDiagram, user=Depends(verify_token)):
 async def check_diagram_use(user=Depends(verify_token)):
     try:
         return {"diagram_use": rag.get_diagram_usage(user["uid"])}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch setting: {e}")
+    
+# -----------------------------------------------------------------------
+# Diagram Enable
+# -----------------------------------------------------------------------
+@router.post("/toggle_pro_mode")
+async def toggle_pro_mode(data: toggleDiagramPro, user=Depends(verify_token)):
+    try:
+        rag.toggle_pro_usage(user["uid"], data.toggle)
+        return {"ok": True, "pro_use": data.toggle}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update setting: {e}")
+
+@router.get("/check_pro_use")
+async def check_diagram_use(user=Depends(verify_token)):
+    try:
+        return {"pro_use": rag.get_pro_usage(user["uid"])}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch setting: {e}")

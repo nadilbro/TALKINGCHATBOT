@@ -929,3 +929,28 @@ class VectorRAGService:
                 LIMIT %s
             """, (session_id, limit))
             return cur.fetchall()
+        
+    #Check Diagram toggle
+    def toggle_pro_usage(self, user_id: str, value: bool):
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE accounts
+                    SET pro_use = %s
+                    WHERE user_id = %s
+                """, (value, user_id))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+
+
+    #Check Diagram toggle
+    def get_pro_usage(self, user_id: str) -> bool:
+        self._get_conn()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT pro_use FROM accounts WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            return bool(row["pro_use"]) if row else True

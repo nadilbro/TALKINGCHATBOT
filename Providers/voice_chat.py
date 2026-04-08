@@ -47,7 +47,11 @@ class VoiceChatSystem:
         return await loop.run_in_executor(
             None, self._call_elevenlabs, text, voice_id
         )
+    
 
+    #######################
+    #ELEVEN LABS #
+    ###################
     def _call_elevenlabs(
         self, text: str, voice_id: str
     ) -> Tuple[bytes, List[Dict[str, Any]], float]:
@@ -84,7 +88,11 @@ class VoiceChatSystem:
         duration = end_times[-1] if end_times else 0.0
 
         return audio_bytes, visemes, duration
-
+    
+    
+    #######################
+    #ELEVEN LABS #
+    ###################
     def _build_visemes(
         self,
         characters: List[str],

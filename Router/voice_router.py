@@ -347,7 +347,6 @@ async def audio_chat_ws(ws: WebSocket):
                 diagrams_enabled = rag.get_diagram_usage(user_id)
             except Exception:
                 diagrams_enabled = False
- 
             # ----------------------------------------------------------
             # VISUAL AID GENERATION (diagram OR code, runs FIRST)
             # ----------------------------------------------------------

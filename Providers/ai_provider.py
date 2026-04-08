@@ -18,8 +18,12 @@ class AIProvider:
                 chat_model="gemini-2.5-flash",
                 embed_model="gemini-embedding-001",
             ),
+            "gemini_diagram": GeminiProvider(
+                chat_model="gemini-3-flash-preview", #gemini_pro gemini-2.5-pro
+                embed_model="gemini-embedding-001",
+            ),
             "gemini_pro": GeminiProvider(
-                chat_model="gemini-3-flash-preview",
+                chat_model=" gemini-2.5-pro", #gemini_pro gemini-2.5-pro
                 embed_model="gemini-embedding-001",
             ),
             "gemini_image": GeminiProvider(
@@ -29,10 +33,18 @@ class AIProvider:
         }
 
     async def _tenant_chat_provider_name(self, site_id: str) -> str:
-        return "gemini_flash"
-
+        pro_bool = self.rag.get_pro_usage(site_id)
+        if pro_bool:
+            return "gemini_pro"
+        else: 
+            return "gemini_flash"
+        
     async def _tenant_diagram_provider_name(self, site_id: str) -> str:
-        return "gemini_pro"
+        pro_bool = self.rag.get_pro_usage(site_id)
+        if pro_bool:
+            return "gemini_pro"
+        else: 
+            return "gemini_diagram"
 
     async def stream(self, site_id: str, system: str, user: str) -> AsyncIterator[str]:
         provider_name = await self._tenant_chat_provider_name(site_id)
