@@ -17,15 +17,15 @@ from Providers.summary_generator import RollingSummaryManager
 from Providers.STT import DeepgramProvider
 from Providers.Account_Manager import AccountManager
 router = APIRouter(prefix="/system", tags=["chat"])
-
+from Providers.file_extractor import FileExtractor
 summary_mgr = None
 rag = VectorRAGService()
 ai = AIProvider(rag)
 account_manager = AccountManager(rag)
+fileE = FileExtractor(ai)
 tts = None
 tav = None
 stt = None
-
 MINUTES_PER_CREDIT = 7
 
 def html_to_plain_text(html_text: str) -> str:
@@ -45,7 +45,6 @@ def get_stt():
     if stt is None:
         stt = DeepgramProvider()
     return stt
-
 def get_web_search():
     global tav
     if tav is None:
@@ -198,7 +197,7 @@ async def audio_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "done"})
                 await ws.close()
                 return
- 
+
             user_id = _as_str(payload.get("user_id") or payload.get("site_id"))
             chat_id = _as_str(payload.get("chat_id"))
             user_text = _as_str(payload.get("message"))
@@ -207,11 +206,12 @@ async def audio_chat_ws(ws: WebSocket):
             web_search = _as_str(payload.get("web_search"))
             audio_on = payload.get("voice_on", True)
             raw_audio = payload.get("audio_bytes")
- 
+            raw_file = payload.get("file_bytes")
+            file_name = payload.get("file_name")
             if raw_audio and "," in raw_audio:
                 raw_audio = raw_audio.split(",", 1)[1]
             audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
- 
+
             # ----------------------------------------------------------
             # CREDIT CHECK
             # ----------------------------------------------------------
@@ -275,7 +275,18 @@ async def audio_chat_ws(ws: WebSocket):
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"Failed to save user message: {str(e)}"})
                 continue
- 
+            # ----------------------------------------------------------
+            # CHECK FILE INPUT
+            # ----------------------------------------------------------
+            file_context = ""
+            if raw_file and file_name:
+                if "," in raw_file:
+                    raw_file = raw_file.split(",", 1)[1]
+                file_bytes = base64.b64decode(raw_file)
+                try:
+                    file_context = await fileE.extract_text(file_bytes, file_name)
+                except Exception as e:
+                    await ws.send_json({"type": "error", "message": f"File read failed: {e}"})
             # ----------------------------------------------------------
             # BUILD BASE PROMPT
             # ----------------------------------------------------------
@@ -501,7 +512,16 @@ async def audio_chat_ws(ws: WebSocket):
                     "answer normally without mentioning visual aids — do not bring it "
                     "up for every response, only when it would genuinely have helped."
                 )
- 
+
+            #ADDING FILE CONTEXT
+            if file_context:
+                print("File attached")
+                print(file_context)
+                system_prompt = f"{system_prompt}\n\nUser has attached a file as follows: ({file_name}):\n{file_context}"
+            else:
+                print("File Not attached")
+                system_prompt = f"{system_prompt}\n\nUSER HAS NOT UPLOADED ANY EXTRA FILES"
+
             # ----------------------------------------------------------
             # GENERATE CHAT RESPONSE
             # ----------------------------------------------------------
@@ -599,7 +619,7 @@ async def audio_chat_ws(ws: WebSocket):
                     billable_visual_text = visual_aid["svg"]
                 elif visual_aid and visual_aid["type"] == "code":
                     billable_visual_text = visual_aid["code"]
- 
+
                 print(f"==> bot_text length={len(bot_text)}, preview={bot_text[:200]!r}")
                 print(f"==> visual_aid length={len(billable_visual_text)}")
                 print(f"For testing sake: input text: {user_prompt}")
