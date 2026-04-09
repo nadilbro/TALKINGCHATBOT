@@ -29,6 +29,22 @@ tav = None
 stt = None
 MINUTES_PER_CREDIT = 7
 
+def strip_markdown(text):
+    # Remove bold
+    text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+    # Remove italics
+    text = re.sub(r'\*(.*?)\*', r'\1', text)
+    # Remove headers
+    text = re.sub(r'^#+\s+', '', text, flags=re.MULTILINE)
+    # Remove code blocks
+    text = re.sub(r'```[\w]*\n?(.*?)\n?```', r'\1', text, flags=re.DOTALL)
+    # Remove inline code
+    text = re.sub(r'`(.*?)`', r'\1', text)
+    # Remove lists
+    text = re.sub(r'^\s*[\*\-\+]\s+', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)
+    return text
+
 
 def html_to_plain_text(html_text: str) -> str:
     text = re.sub(r"<br\s*/?>", "\n", html_text, flags=re.IGNORECASE)
@@ -566,7 +582,7 @@ async def audio_chat_ws(ws: WebSocket):
                     continue
 
                 # Check if response exceeds TTS length limit
-                MAX_BOT_TEXT_LENGTH = 1000  # Define maximum character length for TTS
+                MAX_BOT_TEXT_LENGTH = 2500  # Define maximum character length for TTS
                 text_too_long_for_tts = len(bot_text) > MAX_BOT_TEXT_LENGTH
                 
                 if text_too_long_for_tts:
@@ -599,7 +615,8 @@ async def audio_chat_ws(ws: WebSocket):
             # ----------------------------------------------------------
             if audio_on:
                 try:
-                    all_audio, all_visemes, _ = await _run_tts(sentences, voice_id)
+                    cleaned_sentences = [strip_markdown(s) for s in sentences]
+                    all_audio, all_visemes, _ = await _run_tts(cleaned_sentences, voice_id)
                     if not all_audio:
                         await ws.send_json({"type": "error", "message": "TTS produced no audio"})
                     else:
