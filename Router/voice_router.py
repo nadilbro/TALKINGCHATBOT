@@ -171,26 +171,6 @@ async def chat_init(init_details: SessionInit, user=Depends(verify_token)):
         "prompt": prompt
     }
 
-@router.post("/chat_diagram_init")
-async def chat_diagram_init(init_details: DiagramInit, user=Depends(verify_token)):
-    chatID = init_details.chat_id
-
-    raw_visuals = rag.get_visuals(chatID)
-    
-    visuals = []
-    for v in raw_visuals:
-        visuals.append({
-            "visual_type": v.get("visual_type"),
-            "content": v.get("content"),
-            "language": v.get("language"),
-            "created_at": str(v.get("created_at", "")),
-        })
-    print(f"=> VISUALS {visuals} {raw_visuals}")
-    return {"visuals": visuals}
-# -----------------------------------------------------------------------
-# MAIN CHAT WEBSOCKET
-# -----------------------------------------------------------------------
- 
 @router.websocket("/audio_chat_ws")
 async def audio_chat_ws(ws: WebSocket):
     print("HIT audio_chat_ws")
@@ -585,18 +565,19 @@ async def audio_chat_ws(ws: WebSocket):
                     await ws.send_json({"type": "done"})
                     continue
 
-                # Add a safeguard for excessively long responses
-                MAX_BOT_TEXT_LENGTH = 1000  # Define maximum character length for the spoken response
-                if len(bot_text) > MAX_BOT_TEXT_LENGTH:
-                    print(f"==> Bot response too long: {len(bot_text)} characters (max {MAX_BOT_TEXT_LENGTH})")
-                    await ws.send_json({"type": "error", "message": f"My response was a bit too verbose for me to say out loud. Could you try asking in a more focused way?"})
-                    await ws.send_json({"type": "done"})
-                    continue
+                # Check if response exceeds TTS length limit
+                MAX_BOT_TEXT_LENGTH = 1000  # Define maximum character length for TTS
+                text_too_long_for_tts = len(bot_text) > MAX_BOT_TEXT_LENGTH
+                
+                if text_too_long_for_tts:
+                    print(f"==> Bot response too long for TTS: {len(bot_text)} characters (max {MAX_BOT_TEXT_LENGTH}). Sending text only.")
+                    audio_on = False  # Disable TTS for this response only
 
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"AI failed: {str(e)}"})
                 continue
 
+            # Send text to frontend regardless of length
             await ws.send_json({"type": "text", "text": bot_text})
 
             try:
@@ -614,7 +595,7 @@ async def audio_chat_ws(ws: WebSocket):
                 print(f"Summary update error: {e}")
 
             # ----------------------------------------------------------
-            # TTS
+            # TTS (only if audio_on AND text is not too long)
             # ----------------------------------------------------------
             if audio_on:
                 try:
@@ -626,6 +607,9 @@ async def audio_chat_ws(ws: WebSocket):
                 except Exception as e:
                     traceback.print_exc()
                     await ws.send_json({"type": "error", "message": f"TTS failed: {str(e)}"})
+            else:
+                if text_too_long_for_tts:
+                    await ws.send_json({"type": "info", "message": "Response is too long to speak out loud, but you can read it above."})
 
             # ----------------------------------------------------------
             # COST TRACKING
@@ -664,7 +648,6 @@ async def audio_chat_ws(ws: WebSocket):
             await ws.close()
         except Exception:
             pass
-
         
 @router.websocket("/embed_chat_ws")
 async def embed_chat_ws(ws: WebSocket):
