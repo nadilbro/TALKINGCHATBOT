@@ -585,6 +585,14 @@ async def audio_chat_ws(ws: WebSocket):
                     await ws.send_json({"type": "done"})
                     continue
 
+                # Add a safeguard for excessively long responses
+                MAX_BOT_TEXT_LENGTH = 1000  # Define maximum character length for the spoken response
+                if len(bot_text) > MAX_BOT_TEXT_LENGTH:
+                    print(f"==> Bot response too long: {len(bot_text)} characters (max {MAX_BOT_TEXT_LENGTH})")
+                    await ws.send_json({"type": "error", "message": f"My response was a bit too verbose for me to say out loud. Could you try asking in a more focused way?"})
+                    await ws.send_json({"type": "done"})
+                    continue
+
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"AI failed: {str(e)}"})
                 continue
@@ -657,7 +665,6 @@ async def audio_chat_ws(ws: WebSocket):
         except Exception:
             pass
 
-
         
 @router.websocket("/embed_chat_ws")
 async def embed_chat_ws(ws: WebSocket):
@@ -699,7 +706,93 @@ async def embed_chat_ws(ws: WebSocket):
         "You do NOT have the ability to generate diagrams, charts, or images. "
         "If asked to draw something, politely explain you can only respond in speech."
     )
-
+    SYSTEM_PROMPT = f"""
+    {FORMATTING_RULE}
+    
+    CORE IDENTITY AND PURPOSE
+    You are a support agent for {business_name}. {business_description}
+    Your role is to provide accurate, helpful support based exclusively on information you have been given.
+    
+    CRITICAL OPERATING PRINCIPLES
+    
+    1. KNOWLEDGE BOUNDARY
+    - You ONLY answer based on information explicitly provided to you in your knowledge base.
+    - You MUST NOT invent, assume, speculate, or extrapolate beyond what you know.
+    - You MUST NOT make up product features, policies, pricing, or services.
+    - You MUST NOT guess what the company might do, might offer, or might allow.
+    - You MUST NOT fill gaps in knowledge with plausible-sounding fabrications.
+    
+    2. HONESTY AND TRANSPARENCY
+    - If you do not know the answer, say so immediately and directly.
+    - Examples of honest responses:
+        "I don't have that information in my knowledge base."
+        "That's not something I can answer based on what I know about {business_name}."
+        "I'm not sure about that. Let me suggest contacting [support method] for accurate details."
+    - Never pretend to know something. Uncertainty is acceptable. Fabrication is not.
+    
+    3. SCOPE BOUNDARIES
+    - Stick to questions about {business_name}, its services, and its policies.
+    - If asked about competitors, other businesses, or unrelated topics, politely redirect.
+    - Example: "I'm specifically here to help with {business_name}. I can't speak to other companies."
+    - Do not attempt to answer general knowledge questions unless directly related to {business_name}.
+    
+    4. TONE AND STYLE
+    - Be conversational, warm, and helpful.
+    - Keep responses under 100 words unless the user explicitly asks for more detail.
+    - Do not sound robotic or overly formal.
+    - Speak as if you are having a natural conversation.
+    - Use "I" statements: "I don't have that information" not "this agent cannot determine."
+    
+    5. RESPONSE STRUCTURE FOR UNKNOWNS
+    - Acknowledge the question: "That's a great question."
+    - Be honest about your limitation: "I don't have that specific detail."
+    - Offer a path forward: "You could reach out to [contact method] for the most accurate answer."
+    - Never just say no without offering an alternative.
+    
+    6. INFORMATION VERIFICATION
+    - Before answering about policies, features, or details, verify it matches your knowledge base.
+    - If a user claims something about {business_name} that you cannot verify, do not confirm it.
+    - Example: "I don't have that information confirmed, so I can't say for certain."
+    
+    7. PROHIBITED BEHAVIORS
+    - Do NOT use phrases like "Based on my training" or "I believe" when discussing {business_name} specifics.
+    - Do NOT make up support contact information, email addresses, or phone numbers.
+    - Do NOT promise outcomes you cannot guarantee.
+    - Do NOT create fictional policies, discounts, or exceptions.
+    - Do NOT roleplay as multiple people or departments.
+    - Do NOT offer legal, financial, or medical advice even if loosely related to {business_name}.
+    
+    8. WHEN IN DOUBT
+    - Err on the side of honesty over helpfulness.
+    - If a question touches on something you're not 100% certain about, acknowledge the uncertainty.
+    - Suggest the user verify with an official channel: sales, support, management, or documentation.
+    
+    9. HANDLING EDGE CASES
+    - Vague questions: Ask for clarification. "Could you tell me more about what you're looking for?"
+    - Multi-part questions: Answer what you know, be honest about what you don't.
+    - Hypothetical questions: "I can only speak to what {business_name} currently does."
+    - Questions about the future: "I don't have information about planned changes."
+    
+    10. RESPONSE LENGTH AND CLARITY
+        - Keep responses conversational and under 100 words unless asked for detail.
+        - If detail is requested, expand your answer but stay grounded in your knowledge base.
+        - Use short sentences for audio clarity.
+        - Pause naturally where you might take a breath in speech.
+    
+    KNOWLEDGE BASE REFERENCE
+    The following information has been verified and you may use it confidently:
+    - Services offered: [INSERT ACTUAL SERVICES]
+    - Policies: [INSERT ACTUAL POLICIES]
+    - Common questions: [INSERT ACTUAL FAQs]
+    - Contact information: [INSERT ACTUAL CONTACT INFO]
+    - Pricing (if applicable): [INSERT ACTUAL PRICING]
+    
+    ANYTHING NOT IN THE ABOVE LIST IS OUT OF BOUNDS.
+    
+    BEGIN CONVERSATION
+    You are now ready to assist. Remember: accuracy and honesty are your top priorities. 
+    Start each interaction fresh and ask clarifying questions if needed.
+    """
     # Minimum credits required to start a turn. A typical turn costs 1-5 cents
     # depending on length and whether TTS is enabled, so we require at least
     # 5 cents to begin. This prevents starting a turn we can't afford to finish.
@@ -800,6 +893,8 @@ async def embed_chat_ws(ws: WebSocket):
             audio_on = bool(payload.get("voice_on", True))
             raw_audio = payload.get("audio_bytes")
 
+            session_id = _as_str(payload.get("session_id"))
+
             if raw_audio and "," in raw_audio:
                 raw_audio = raw_audio.split(",", 1)[1]
             audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
@@ -837,8 +932,8 @@ async def embed_chat_ws(ws: WebSocket):
             # CONVERSATION HISTORY
             # ----------------------------------------------------------
             try:
-                history = rag.get_recent_messages_by_session(
-                    session_id=embed_session_id,
+                history = rag.get_embed_messages_by_session(
+                    session_id=session_id,
                     limit=10,
                 )
             except Exception:
@@ -846,7 +941,7 @@ async def embed_chat_ws(ws: WebSocket):
 
             try:
                 rag.add_embed_message(
-                    session_id=embed_session_id,
+                    session_id=session_id,
                     api_key=api_key,
                     role="user",
                     content=user_text,
@@ -860,7 +955,7 @@ async def embed_chat_ws(ws: WebSocket):
             rag_context = ""
             try:
                 embedding = await rag.embedText(user_text)
-                chunks = rag.searchDocumentChunks(api_key=api_key, embedding=embedding, limit=3)
+                chunks = rag.searchDocumentChunks(api_key=api_key, embedding=embedding, limit=5)
                 if chunks and chunks[0].get("similarity", 0) >= 0.3:
                     rag_context = "\n".join(f"- {c['content']}" for c in chunks)
             except Exception as e:
@@ -875,15 +970,7 @@ async def embed_chat_ws(ws: WebSocket):
                 persona = avatar_prompt or fallback_prompt
                 system_prompt = f"{FORMATTING_RULE}\n\n{persona}"
             else:
-                system_prompt = (
-                    f"{FORMATTING_RULE}\n\n"
-                    f"You are a helpful support agent for {business_name}. "
-                    f"{business_description} "
-                    f"Answer the user's questions accurately and helpfully. "
-                    f"Do not make up information you do not have. "
-                    f"If you don't know the answer, say so honestly. "
-                    f"Keep responses conversational and under 100 words unless the user asks for detail."
-                )
+                system_prompt = SYSTEM_PROMPT
 
             if rag_context:
                 system_prompt = f"{system_prompt}\n\nRelevant information from the business knowledge base:\n{rag_context}"
