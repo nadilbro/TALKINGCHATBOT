@@ -645,9 +645,6 @@ async def audio_chat_ws(ws: WebSocket):
                 print(f"==> Cost tracking failed: {e}")
 
             await ws.send_json({"type": "done"})
-
-    except WebSocketDisconnect:
-        return
     except Exception as e:
         print("❌ WS error:", repr(e))
         traceback.print_exc()
@@ -666,7 +663,7 @@ async def audio_chat_ws(ws: WebSocket):
 async def embed_chat_ws(ws: WebSocket):
     """
     WebSocket endpoint for embedded widget.
-    Auth via API key in query param. Billing per API key.
+    Auth via API key in query param. Billing per API key and per owner's business credits.
     No diagram generation — embed flow is voice + text only.
     """
     print("HIT embed_chat_ws")
@@ -683,9 +680,14 @@ async def embed_chat_ws(ws: WebSocket):
         await ws.close(code=4001, reason="Invalid or inactive API key")
         return
 
-    # Give each websocket session a conversation_id so we can thread history.
-    # If your rag layer doesn't support per-session embed conversations yet,
-    # you'll need to add a simple `embed_sessions` table: (session_id, api_key, created_at).
+    # The business credits live on the developer's account (owner_user_id),
+    # NOT on the API key itself. We need the owner's UID for every credit check.
+    owner_user_id = initial_key_data.get("owner_user_id")
+    if not owner_user_id:
+        await ws.close(code=4001, reason="API key has no owner")
+        return
+
+    # Session ID for conversation threading
     import uuid
     embed_session_id = f"embed_{api_key}_{uuid.uuid4().hex[:12]}"
 
@@ -698,7 +700,12 @@ async def embed_chat_ws(ws: WebSocket):
         "If asked to draw something, politely explain you can only respond in speech."
     )
 
-    print(f"==> embed WS opened for api_key={api_key}, session={embed_session_id}")
+    # Minimum credits required to start a turn. A typical turn costs 1-5 cents
+    # depending on length and whether TTS is enabled, so we require at least
+    # 5 cents to begin. This prevents starting a turn we can't afford to finish.
+    MIN_CREDITS_PER_TURN = 0.05  # 5 cents AUD
+
+    print(f"==> embed WS opened for api_key={api_key}, owner={owner_user_id}, session={embed_session_id}")
 
     try:
         while True:
@@ -715,19 +722,57 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.close()
                 return
 
-            # Re-fetch key_data every message so dashboard toggles apply mid-session
+            # ----------------------------------------------------------
+            # RE-VALIDATE API KEY (catches dashboard toggles mid-session)
+            # ----------------------------------------------------------
             key_data = rag.getApiKey(api_key)
             if not key_data or not key_data.get("is_active"):
                 await ws.send_json({"type": "error", "message": "API key deactivated", "code": "INVALID_KEY"})
                 await ws.close()
                 return
 
+            # ----------------------------------------------------------
+            # CONVERSATION LIMIT CHECK (monthly cap per API key)
+            # ----------------------------------------------------------
             if key_data.get("conversations_used", 0) >= key_data.get("monthly_limit", 500):
-                await ws.send_json({"type": "error", "message": "Monthly conversation limit reached", "code": "LIMIT_REACHED"})
-                await ws.close()
-                return
+                await ws.send_json({
+                    "type": "error",
+                    "message": "Monthly conversation limit reached",
+                    "code": "LIMIT_REACHED"
+                })
+                await ws.send_json({"type": "done"})
+                continue
 
-            # Per-API-key daily cost cap (implement rag.getApiKeyDailyCost / rag.getApiKeyDailyCap)
+            # ----------------------------------------------------------
+            # BUSINESS CREDIT CHECK (owner's wallet balance)
+            # ----------------------------------------------------------
+            # Before running the turn, make sure the owner has enough credits
+            # to plausibly pay for it. This prevents giving away free turns to
+            # accounts that have run dry.
+            try:
+                current_credits = rag.getBusinessCredits(owner_user_id)
+                if current_credits < MIN_CREDITS_PER_TURN:
+                    await ws.send_json({
+                        "type": "error",
+                        "message": "This business has run out of credits. Please contact them to continue the conversation.",
+                        "code": "NO_CREDITS"
+                    })
+                    await ws.send_json({"type": "done"})
+                    continue
+            except Exception as e:
+                print(f"==> Credit check failed: {e}")
+                # If the check itself fails (DB issue), fail closed to protect the owner's wallet
+                await ws.send_json({
+                    "type": "error",
+                    "message": "Temporary billing error. Please try again shortly.",
+                    "code": "BILLING_ERROR"
+                })
+                await ws.send_json({"type": "done"})
+                continue
+
+            # ----------------------------------------------------------
+            # DAILY COST CAP (per API key, optional belt and suspenders)
+            # ----------------------------------------------------------
             try:
                 daily_cost = rag.getApiKeyDailyCost(api_key)
                 daily_cap = key_data.get("daily_cost_cap", 10.00)  # $10 default
@@ -737,10 +782,14 @@ async def embed_chat_ws(ws: WebSocket):
                         "message": "Daily usage cap reached. Try again tomorrow.",
                         "code": "DAILY_CAP"
                     })
+                    await ws.send_json({"type": "done"})
                     continue
             except Exception:
-                pass  # if cap check fails, fail open (log it)
+                pass  # Fail open if daily cap check errors — main credit check already protects us
 
+            # ----------------------------------------------------------
+            # EXTRACT PAYLOAD
+            # ----------------------------------------------------------
             business_name = key_data.get("business_name") or ""
             business_description = key_data.get("business_description") or ""
             avatar_name = key_data.get("avatar_name") or "Mia Sterling"
@@ -755,31 +804,38 @@ async def embed_chat_ws(ws: WebSocket):
                 raw_audio = raw_audio.split(",", 1)[1]
             audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
 
-            # STT
+            # ----------------------------------------------------------
+            # STT (if audio was sent)
+            # ----------------------------------------------------------
             if audio_bytes:
                 try:
                     stt_instance = get_stt()
                     user_text = stt_instance.get_transcript(audio_bytes)
                     if not user_text:
                         await ws.send_json({"type": "error", "message": "Could not understand audio."})
+                        await ws.send_json({"type": "done"})
                         continue
                     await ws.send_json({"type": "transcript", "text": user_text})
                 except Exception as e:
                     await ws.send_json({"type": "error", "message": f"Transcription failed: {e}"})
+                    await ws.send_json({"type": "done"})
                     continue
 
             if not user_text:
                 await ws.send_json({"type": "error", "message": "Missing message"})
+                await ws.send_json({"type": "done"})
                 continue
 
-            # Look up avatar once
+            # ----------------------------------------------------------
+            # LOAD AVATAR + VOICE
+            # ----------------------------------------------------------
             avatar = rag.getAvatarByName(avatar_name) or {}
-
-            # Resolve voice
             if not voice_id:
                 voice_id = avatar.get("voice") or "UgBBYS2sOqTuMpoF3BR0"
 
-            # Load conversation history for this embed session
+            # ----------------------------------------------------------
+            # CONVERSATION HISTORY
+            # ----------------------------------------------------------
             try:
                 history = rag.get_recent_messages_by_session(
                     session_id=embed_session_id,
@@ -788,7 +844,6 @@ async def embed_chat_ws(ws: WebSocket):
             except Exception:
                 history = []
 
-            # Save the incoming user message
             try:
                 rag.add_embed_message(
                     session_id=embed_session_id,
@@ -799,7 +854,9 @@ async def embed_chat_ws(ws: WebSocket):
             except Exception as e:
                 print(f"==> Failed to save user message: {e}")
 
-            # RAG lookup (business knowledge base)
+            # ----------------------------------------------------------
+            # RAG LOOKUP (business knowledge base)
+            # ----------------------------------------------------------
             rag_context = ""
             try:
                 embedding = await rag.embedText(user_text)
@@ -809,7 +866,9 @@ async def embed_chat_ws(ws: WebSocket):
             except Exception as e:
                 print(f"==> RAG failed: {e}")
 
-            # Build system prompt — always prepend formatting rule
+            # ----------------------------------------------------------
+            # BUILD SYSTEM PROMPT
+            # ----------------------------------------------------------
             if personality_on:
                 avatar_prompt = avatar.get("prompt") or ""
                 fallback_prompt = key_data.get("system_prompt") or ""
@@ -829,7 +888,9 @@ async def embed_chat_ws(ws: WebSocket):
             if rag_context:
                 system_prompt = f"{system_prompt}\n\nRelevant information from the business knowledge base:\n{rag_context}"
 
-            # Build user prompt with history
+            # ----------------------------------------------------------
+            # BUILD USER PROMPT WITH HISTORY
+            # ----------------------------------------------------------
             history_lines = []
             for m in history[-6:]:
                 role = (m.get("role") or "").lower()
@@ -850,14 +911,15 @@ async def embed_chat_ws(ws: WebSocket):
             else:
                 user_prompt = user_text
 
-            # Stream Gemini
+            # ----------------------------------------------------------
+            # STREAM GEMINI
+            # ----------------------------------------------------------
             try:
                 sentences = []
                 sentence_buffer = ""
                 async for delta in ai.stream(site_id=api_key, system=system_prompt, user=user_prompt):
                     sentence_buffer += delta
-                    while re.search(r'[.?!,]\s', sentence_buffer):
-                        match = re.search(r'[.?!,]\s', sentence_buffer)
+                    while (match := re.search(r'[.?!]\s', sentence_buffer)):
                         cut = match.end()
                         sentence = sentence_buffer[:cut].strip()
                         sentence_buffer = sentence_buffer[cut:]
@@ -889,12 +951,17 @@ async def embed_chat_ws(ws: WebSocket):
             except Exception as e:
                 await ws.send_json({"type": "error", "message": "The assistant is unavailable right now. Please try again shortly."})
                 print(f"==> AI failed: {e}")
+                await ws.send_json({"type": "done"})
                 continue
 
-            # Send text to client
+            # ----------------------------------------------------------
+            # SEND TEXT TO CLIENT
+            # ----------------------------------------------------------
             await ws.send_json({"type": "text", "text": bot_text})
 
-            # Save assistant response
+            # ----------------------------------------------------------
+            # SAVE ASSISTANT RESPONSE
+            # ----------------------------------------------------------
             try:
                 rag.add_embed_message(
                     session_id=embed_session_id,
@@ -905,13 +972,17 @@ async def embed_chat_ws(ws: WebSocket):
             except Exception as e:
                 print(f"==> Failed to save assistant message: {e}")
 
-            # Increment conversation count
+            # ----------------------------------------------------------
+            # INCREMENT CONVERSATION COUNT
+            # ----------------------------------------------------------
             try:
                 rag.incrementConversationCount(api_key)
             except Exception as e:
                 print(f"==> Failed to increment conversation count: {e}")
 
-            # TTS
+            # ----------------------------------------------------------
+            # TTS (if audio enabled)
+            # ----------------------------------------------------------
             if audio_on:
                 try:
                     print(f"==> Embed firing {len(sentences)} ElevenLabs tasks in parallel", flush=True)
@@ -929,24 +1000,50 @@ async def embed_chat_ws(ws: WebSocket):
                     traceback.print_exc()
                     await ws.send_json({"type": "error", "message": "Voice playback failed."})
 
-            # Cost tracking — ALWAYS runs, regardless of audio_on
+            # ----------------------------------------------------------
+            # COST TRACKING + CREDIT DEDUCTION
+            # This is the part that was broken before. Single try/except,
+            # and it now actually deducts from the owner's business credits.
+            # ----------------------------------------------------------
             try:
                 cost_aud = account_manager.processUsedCost(
                     outputText=bot_text,
                     outputDiagramText="",
                     inputText=user_prompt,
-                    SST_Length_seconds=len(audio_bytes) / 16000 if audio_bytes else 0,
+                    SST_Length_seconds=len(audio_bytes) / 32000 if audio_bytes else 0,  # 16kHz 16-bit = 32000 bytes/sec
                     webSearch=False,
                     voice_on=bool(audio_on),
                     diagram_on=False,
                 )
-                rag.addApiKeyCost(api_key, cost_aud)
-                print(f"==> Embed cost: ${cost_aud:.4f} AUD for api_key={api_key}", flush=True)
-            except Exception as e:
-                print(f"==> Embed cost tracking failed: {e}", flush=True)
+
+                # Track per-API-key cost (for daily cap and analytics)
+                try:
+                    rag.addApiKeyCost(api_key, cost_aud)
+                except Exception as e:
+                    print(f"==> Failed to add api_key cost: {e}")
+
+                # Deduct from the owner's business credits wallet
+                try:
+                    new_balance = rag.deductBusinessCredits(owner_user_id, cost_aud)
+                    print(
+                        f"==> Embed cost: ${cost_aud:.4f} AUD deducted from owner={owner_user_id}, "
+                        f"new balance: ${new_balance:.4f}",
+                        flush=True,
+                    )
+
+                    # Warn the client if the owner is running low (below 50 cents)
+                    # so they can show a "running low" UI or notify the business
+                    if new_balance < 0.50:
+                        await ws.send_json({
+                            "type": "credits_low",
+                            "balance": new_balance,
+                            "message": "Credits running low"
+                        })
+                except Exception as e:
+                    print(f"==> Failed to deduct business credits: {e}")
 
             except Exception as e:
-                print(f"==> Cost tracking failed: {e}", flush=True)
+                print(f"==> Embed cost tracking failed: {e}", flush=True)
 
             # ----------------------------------------------------------
             # SIGNAL TURN COMPLETE
@@ -970,53 +1067,3 @@ async def embed_chat_ws(ws: WebSocket):
             await ws.close()
         except Exception:
             pass
-
-#  In your embed_chat_ws handler, near the bottom, you have this broken code:
-# #
-# #             # Cost tracking — ALWAYS runs, regardless of audio_on
-# #             try:
-# #                 cost_aud = account_manager.processUsedCost(...)
-# #                 rag.addApiKeyCost(api_key, cost_aud)
-# #                 print(f"==> Embed cost: ${cost_aud:.4f} AUD for api_key={api_key}", flush=True)
-# #             except Exception as e:
-# #                 print(f"==> Embed cost tracking failed: {e}", flush=True)
-# #
-# #             except Exception as e:                                <-- BROKEN: orphan except
-# #                 print(f"==> Cost tracking failed: {e}", flush=True)
-# #
-# #             # SIGNAL TURN COMPLETE
-# #             try:
-# #                 await ws.send_json({"type": "done"})
-# #                 ...
-# #
-# # Two back-to-back `except` clauses without a `try` in between = SyntaxError.
-# # This will prevent your entire module from loading, which means your whole
-# # server probably isn't starting right now.
-# #
-# # Delete the orphan second `except` block. Replace the broken section with
-# # this clean version:
- 
-#             # Cost tracking — ALWAYS runs, regardless of audio_on
-#             try:
-#                 cost_aud = account_manager.processUsedCost(
-#                     outputText=bot_text,
-#                     outputDiagramText="",
-#                     inputText=user_prompt,
-#                     SST_Length_seconds=len(audio_bytes) / 16000 if audio_bytes else 0,
-#                     webSearch=False,
-#                     voice_on=bool(audio_on),
-#                     diagram_on=False,
-#                 )
-#                 rag.addApiKeyCost(api_key, cost_aud)
-#                 print(f"==> Embed cost: ${cost_aud:.4f} AUD for api_key={api_key}", flush=True)
-#             except Exception as e:
-#                 print(f"==> Embed cost tracking failed: {e}", flush=True)
- 
-#             # ----------------------------------------------------------
-#             # SIGNAL TURN COMPLETE
-#             # ----------------------------------------------------------
-#             try:
-#                 await ws.send_json({"type": "done"})
-#                 print("==> Embed DONE sent, turn complete", flush=True)
-#             except Exception as e:
-#                 print(f"==> Embed failed to send done: {e}", flush=True)
