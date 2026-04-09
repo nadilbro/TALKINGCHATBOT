@@ -361,6 +361,7 @@ async def ingest_text(
             api_key=key,
             chunk_index=i,
             content=chunk,
+            embedding=embedding,
             filename=req.title,
         )
 
