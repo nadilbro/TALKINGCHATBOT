@@ -13,8 +13,13 @@ from Providers.APIContracts import TextIngestionRequest
 router = APIRouter(prefix="/embed", tags=["embed"])
 rag = VectorRAGService()
 _bearer = HTTPBearer()
+from fastapi import HTTPException, BackgroundTasks
+from pydantic import BaseModel
+from Providers.web_scraper import scrape_and_ingest_website
 
-
+class ScrapeWebsiteRequest(BaseModel):
+    website_url: str
+    replace_existing: bool = True
 # ---------------------------------------------------------------------------
 # Auth — API key verification for embedded widget requests
 # ---------------------------------------------------------------------------
@@ -363,4 +368,74 @@ async def ingest_text(
         "doc_id": doc_id,
         "title": req.title,
         "chunks": len(chunks),
+    }
+
+
+
+
+
+@router.post("/keys/{key}/scrape")
+async def scrape_website(
+    key: str,
+    req: ScrapeWebsiteRequest,
+    background_tasks: BackgroundTasks,
+    user=Depends(verify_token),
+):
+    """
+    Triggers a website scrape for the given API key. The scrape runs in the
+    background so the API response is immediate. The customer can check the
+    status via /keys/{key}/documents to see the chunks being populated.
+    """
+    user_id = user["uid"]
+    key_data = rag.getApiKey(key)
+    if not key_data or key_data.get("owner_user_id") != user_id:
+        raise HTTPException(status_code=404, detail="API key not found")
+    
+    if not req.website_url.strip():
+        raise HTTPException(status_code=400, detail="website_url is required")
+    
+    # Kick off the scrape in the background
+    background_tasks.add_task(
+        scrape_and_ingest_website,
+        api_key=key,
+        website_url=req.website_url,
+        rag=rag,
+        replace_existing=req.replace_existing,
+    )
+    
+    # Save the website URL on the api_key so we know where it was scraped from
+    try:
+        rag.updateApiKey(key=key, website_url=req.website_url)
+    except Exception as e:
+        print(f"==> Could not save website_url on api_key: {e}")
+    
+    return {
+        "success": True,
+        "message": "Website scrape started. Chunks will appear shortly.",
+        "website_url": req.website_url,
+    }
+
+
+@router.get("/keys/{key}/scrape/status")
+async def get_scrape_status(
+    key: str,
+    user=Depends(verify_token),
+):
+    """
+    Returns the current scrape status for an API key — how many website chunks
+    have been ingested and what the last scraped URL was.
+    """
+    user_id = user["uid"]
+    key_data = rag.getApiKey(key)
+    if not key_data or key_data.get("owner_user_id") != user_id:
+        raise HTTPException(status_code=404, detail="API key not found")
+    
+    # Count the documents tagged as website scrapes
+    docs = rag.listDocuments(key)
+    website_docs = [d for d in docs if (d.get("filename") or "").startswith("website:")]
+    
+    return {
+        "website_url": key_data.get("website_url"),
+        "scraped_documents": len(website_docs),
+        "last_scrape_at": key_data.get("last_scrape_at"),
     }

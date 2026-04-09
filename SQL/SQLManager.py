@@ -620,27 +620,32 @@ class VectorRAGService:
             """, (owner_user_id,))
             return [dict(r) for r in cur.fetchall()]
     def updateApiKey(self, key, business_name=None, avatar_name=None,
-                    system_prompt=None, monthly_limit=None, is_active=None,
-                    business_description=None, personality_on=None):
-        self._get_conn()
-        try:
-            with self.conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE api_keys SET
-                        business_name = COALESCE(%s, business_name),
-                        avatar_name = COALESCE(%s, avatar_name),
-                        system_prompt = COALESCE(%s, system_prompt),
-                        monthly_limit = COALESCE(%s, monthly_limit),
-                        is_active = COALESCE(%s, is_active),
-                        business_description = COALESCE(%s, business_description),
-                        personality_on = COALESCE(%s, personality_on),
-                        updated_at = NOW()
-                    WHERE key = %s
-                """, (business_name, avatar_name, system_prompt, monthly_limit, is_active, business_description, personality_on, key))
-            self.conn.commit()
-        except Exception:
-            self.conn.rollback()
-            raise
+                        system_prompt=None, monthly_limit=None, is_active=None,
+                        business_description=None, personality_on=None,
+                        website_url=None, last_scrape_at=None):
+            self._get_conn()
+            try:
+                with self.conn.cursor() as cur:
+                    cur.execute("""
+                        UPDATE api_keys SET
+                            business_name = COALESCE(%s, business_name),
+                            avatar_name = COALESCE(%s, avatar_name),
+                            system_prompt = COALESCE(%s, system_prompt),
+                            monthly_limit = COALESCE(%s, monthly_limit),
+                            is_active = COALESCE(%s, is_active),
+                            business_description = COALESCE(%s, business_description),
+                            personality_on = COALESCE(%s, personality_on),
+                            website_url = COALESCE(%s, website_url),
+                            last_scrape_at = COALESCE(%s, last_scrape_at),
+                            updated_at = NOW()
+                        WHERE key = %s
+                    """, (business_name, avatar_name, system_prompt, monthly_limit,
+                        is_active, business_description, personality_on,
+                        website_url, last_scrape_at, key))
+                self.conn.commit()
+            except Exception:
+                self.conn.rollback()
+                raise
 
     def deleteApiKey(self, key: str):
         self._get_conn()
@@ -954,3 +959,31 @@ class VectorRAGService:
             cur.execute("SELECT pro_use FROM accounts WHERE user_id = %s", (user_id,))
             row = cur.fetchone()
             return bool(row["pro_use"]) if row else True
+        
+    def deleteScrapedDocuments(self, api_key: str) -> int:
+        """
+        Deletes all document chunks that came from a website scrape for this
+        api_key. Used before re-scraping to avoid accumulating stale content.
+        
+        Website-scraped chunks are identified by filename starting with "website:"
+        """
+        try:
+            with self.get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        DELETE FROM document_chunks
+                        WHERE api_key = %s AND filename LIKE 'website:%%'
+                        """,
+                        (api_key,)
+                    )
+                    deleted = cur.rowcount
+                    conn.commit()
+                    return deleted
+        except Exception as e:
+            print(f"==> deleteScrapedDocuments failed: {e}")
+            return 0
+ 
+
+ 
+ 
