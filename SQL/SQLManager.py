@@ -608,6 +608,17 @@ class VectorRAGService:
             row = cur.fetchone()
             return dict(row) if row else None
 
+    def listApiKeys(self, owner_user_id: str) -> list:
+        self._get_conn()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT key, business_name, avatar_name, monthly_limit,
+                    conversations_used, is_active, created_at
+                FROM api_keys
+                WHERE owner_user_id = %s
+                ORDER BY created_at DESC
+            """, (owner_user_id,))
+            return [dict(r) for r in cur.fetchall()]
     def updateApiKey(self, key, business_name=None, avatar_name=None,
                         system_prompt=None, monthly_limit=None, is_active=None,
                         business_description=None, website_url=None,
