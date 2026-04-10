@@ -616,7 +616,7 @@ async def audio_chat_ws(ws: WebSocket):
                     "\n\nLENGTH RULE: Audio is off. You have room to be thorough. "
                     "Use headers, lists, and examples freely."
                 )
-# ----------------------------------------------------------
+            # ----------------------------------------------------------
             # GENERATE RESPONSE (streaming to client + per-sentence TTS)
             # ----------------------------------------------------------
             try:
@@ -664,10 +664,13 @@ async def audio_chat_ws(ws: WebSocket):
                                 await tts_queue.put(sentence)
  
                 # Handle remaining buffer
-                if sentence_buffer.strip() and len(sentence_buffer.strip()) > 2:
-                    sentences_for_tts.append(sentence_buffer.strip())
+                remaining = sentence_buffer.strip()
+                # Strip routing tag before sending to TTS
+                remaining = re.sub(r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH)\]?\s*$', '', remaining, flags=re.IGNORECASE).strip()
+                if remaining and len(remaining) > 2:
+                    sentences_for_tts.append(remaining)
                     if tts_queue:
-                        await tts_queue.put(sentence_buffer.strip())
+                        await tts_queue.put(remaining)
  
                 # Signal TTS pipeline that no more sentences are coming
                 if tts_done_event:
