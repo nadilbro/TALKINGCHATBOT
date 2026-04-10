@@ -694,36 +694,41 @@ async def audio_chat_ws(ws: WebSocket):
                 system_prompt = f"{system_prompt}\n\nNo files attached."
 
             # ----------------------------------------------------------
-            # GENERATE RESPONSE
+            # GENERATE RESPONSE (streaming to client)
             # ----------------------------------------------------------
-            async def _generate_chat():
-                sentences      = []
+            try:
+                full_text_parts = []
                 sentence_buffer = ""
+                sentences = []
+
                 async for delta in ai.stream(
                     site_id=user_id,
                     system=system_prompt,
                     user=user_prompt,
                     images=image_attachments or None,
                 ):
+                    full_text_parts.append(delta)
+                    await ws.send_json({"type": "text_delta", "text": delta})
+
                     sentence_buffer += delta
                     while re.search(r'[.?!,]\s', sentence_buffer):
                         match = re.search(r'[.?!,]\s', sentence_buffer)
-                        cut   = match.end()
+                        cut = match.end()
                         sentence = sentence_buffer[:cut].strip()
                         sentence_buffer = sentence_buffer[cut:]
                         if sentence and len(sentence) > 2:
                             sentences.append(sentence)
+
                 if sentence_buffer.strip() and len(sentence_buffer.strip()) > 2:
                     sentences.append(sentence_buffer.strip())
-                return sentences, " ".join(sentences)
 
-            try:
-                _, bot_text = await _generate_chat()
+                bot_text = "".join(full_text_parts)
                 bot_text = fix_markdown_formatting(bot_text)
                 bot_text = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
                 bot_text = re.sub(r'\n\s*\n', '\n\n', bot_text)
 
-                # Split on sentence endings AND extract headers separately
+                await ws.send_json({"type": "text_done", "text": bot_text})
+
                 parts = re.split(r'(#{1,6}\s+[^\n]+)', bot_text)
                 sentences = []
                 for part in parts:
@@ -740,18 +745,14 @@ async def audio_chat_ws(ws: WebSocket):
 
                 MAX_BOT_TEXT_LENGTH = 2500
                 text_too_long_for_tts = len(bot_text) > MAX_BOT_TEXT_LENGTH
-                
                 if text_too_long_for_tts:
-                    print(f"==> Bot response too long for TTS: {len(bot_text)} characters (max {MAX_BOT_TEXT_LENGTH}). Sending text only.")
+                    print(f"==> Bot response too long for TTS: {len(bot_text)} chars. Sending text only.")
                     audio_on = False
 
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"AI failed: {str(e)}"})
                 continue
-
-            # Send text to frontend regardless of length
-            await ws.send_json({"type": "text", "text": bot_text})
-
+            
             try:
                 rag.add_message(chat_id=chat_id, role="assistant", content=bot_text)
                 rag.update_last_message(chat_id=chat_id, last_message=bot_text)
