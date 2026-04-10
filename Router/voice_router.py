@@ -890,6 +890,7 @@ async def embed_chat_ws(ws: WebSocket):
     Auth via API key. Per-sentence TTS pipeline. No visual aids.
     """
     print("HIT embed_chat_ws")
+    t0 = time.time()
     await ws.accept()
  
     api_key = ws.query_params.get("api_key")
@@ -1128,12 +1129,17 @@ async def embed_chat_ws(ws: WebSocket):
                     tts_task = asyncio.create_task(
                         _tts_pipeline(ws, tts_queue, voice_id, tts_done_event)
                     )
- 
+                print(f"==> Stream starting at {time.time() - t0:.2f}s", flush=True)
+                first_delta = True
                 async for delta in ai.stream(
                     site_id=api_key,
                     system=system_prompt,
                     user=user_prompt,
                 ):
+                    if first_delta:
+                        print(f"==> First token at {time.time() - t0:.2f}s", flush=True)
+                    first_delta = False
+                    
                     full_text_parts.append(delta)
                     await ws.send_json({"type": "text_delta", "text": delta})
  
@@ -1163,9 +1169,9 @@ async def embed_chat_ws(ws: WebSocket):
                 # Strip stray code fences
                 bot_text = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
                 bot_text = re.sub(r'\n\s*\n', '\n\n', bot_text)
- 
+
                 await ws.send_json({"type": "text_done", "text": bot_text})
- 
+                print(f"==> Stream done at {time.time() - t0:.2f}s", flush=True)
                 if not sentences_for_tts:
                     await ws.send_json({"type": "error", "message": "No response generated"})
                     await ws.send_json({"type": "done"})
