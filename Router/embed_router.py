@@ -67,6 +67,7 @@ class UpdateApiKeyRequest(BaseModel):
     business_description: Optional[str] = None
     assistant_name: Optional[str] = None
     website_url: Optional[str] = None
+    last_scrape_at: Optional[str] = None
     assistant_version: Optional[str] = None
     inner_color: Optional[str] = None
     outer_color: Optional[str] = None
