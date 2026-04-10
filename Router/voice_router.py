@@ -481,34 +481,42 @@ async def audio_chat_ws(ws: WebSocket):
                     if not raw:
                         return None
 
-                    stripped   = raw.strip()
-                    first_word = stripped.split(None, 1)[0].upper()
+                    stripped = raw.strip()
+                    # Strip leading code fences if model wrapped output
+                    stripped = re.sub(r'^```\w*\n?', '', stripped)
+                    stripped = re.sub(r'\n?```$', '', stripped)
 
-                    if first_word == "NONE":
+                    upper = stripped.upper()
+
+                    if upper.startswith("NONE"):
                         return None
 
-                    if first_word == "MATH":
-                        math_body = stripped[len("MATH"):].strip()
+                    if upper.startswith("INLINE"):
+                        return None  # INLINE means no separate visual — handled in main chat
+
+                    if upper.startswith("MATH"):
+                        math_body = stripped[4:].strip().lstrip(":").strip()
                         return {"type": "math", "content": math_body} if math_body else None
 
-                    if first_word == "DIAGRAM":
-                        match = re.search(r'<svg.*?</svg>', raw, re.DOTALL | re.IGNORECASE)
+                    if upper.startswith("DIAGRAM"):
+                        match = re.search(r'<svg.*?</svg>', stripped, re.DOTALL | re.IGNORECASE)
                         return {"type": "diagram", "svg": match.group(0)} if match else None
 
-                    if first_word == "CODE":
-                        lines = stripped.split("\n", 2)
-                        if len(lines) < 3:
+                    if upper.startswith("CODE"):
+                        body = stripped[4:].strip().lstrip(":").strip()
+                        lines = body.split("\n", 1)
+                        if len(lines) < 2:
                             return None
-                        language  = lines[1].strip().lower()
-                        code_body = re.sub(r'^```[\w]*\n?', '', lines[2])
+                        language = lines[0].strip().lower().replace("`", "")
+                        code_body = lines[1]
+                        code_body = re.sub(r'^```\w*\n?', '', code_body)
                         code_body = re.sub(r'\n?```$', '', code_body).strip("\n")
                         if not language or not code_body:
                             return None
                         return {"type": "code", "language": language, "code": code_body}
-                    if first_word == "INLINE":
-                        return {"type": "code", "language": language, "code": code_body}
+
                     # Fallback SVG salvage
-                    match = re.search(r'<svg.*?</svg>', raw, re.DOTALL | re.IGNORECASE)
+                    match = re.search(r'<svg.*?</svg>', stripped, re.DOTALL | re.IGNORECASE)
                     return {"type": "diagram", "svg": match.group(0)} if match else None
 
                 except Exception as e:
