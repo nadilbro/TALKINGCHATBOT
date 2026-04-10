@@ -105,7 +105,8 @@ class ClientListSetUp(BaseModel):
 class UserID(BaseModel):
     user_id: str
 
-
+class changeModel(BaseModel):
+    model: str
 
 class toggleDiagramPro(BaseModel):
     toggle: bool

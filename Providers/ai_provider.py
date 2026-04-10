@@ -3,7 +3,7 @@ from typing import AsyncIterator, Optional, List
 from Providers.open_ai import OpenAIProvider
 from Providers.gemeni import GeminiProvider
 from SQL.SQLManager import VectorRAGService
-
+from Providers.anthropic import AnthropicProvider
 
 class AIProvider:
     def __init__(self, rag: VectorRAGService):
@@ -34,18 +34,34 @@ class AIProvider:
                 chat_model="gemini-2.5-flash",
                 embed_model="gemini-embedding-001",
             ),
+            "sonnet": AnthropicProvider(
+                chat_model="claude-sonnet-4-6",
+            ),
         }
 
     async def _tenant_chat_provider_name(self, site_id: str) -> str:
         """Chat response model — honors pro mode for higher quality answers."""
-        pro_bool = self.rag.get_pro_usage(site_id)
-        if pro_bool:
-            return "gemini_pro"
-        return "gemini_flash"
+        model = self.rag.get_model(site_id) 
+        if model == 'gemini':
+            pro_bool = self.rag.get_pro_usage(site_id)
+            if pro_bool:
+                return "gemini_pro"
+            return "gemini_flash"
+        elif model == 'anthropic':
+            return "sonnet"
+        else:
+            return 'gemini'
+
 
     async def _tenant_diagram_provider_name(self, site_id: str) -> str:
         """Diagram model — ALWAYS Flash, regardless of pro mode."""
-        return "gemini_diagram"
+        model = self.rag.get_model(site_id) 
+        if model == 'gemini':
+            return "gemini_diagram"
+        elif model == 'anthropic':
+            return "sonnet"
+        else:
+            return "gemini"
 
     async def stream(
         self,

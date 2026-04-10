@@ -608,17 +608,6 @@ class VectorRAGService:
             row = cur.fetchone()
             return dict(row) if row else None
 
-    def listApiKeys(self, owner_user_id: str) -> list:
-        self._get_conn()
-        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""
-                SELECT key, business_name, avatar_name, monthly_limit,
-                    conversations_used, is_active, created_at
-                FROM api_keys
-                WHERE owner_user_id = %s
-                ORDER BY created_at DESC
-            """, (owner_user_id,))
-            return [dict(r) for r in cur.fetchall()]
     def updateApiKey(self, key, business_name=None, avatar_name=None,
                         system_prompt=None, monthly_limit=None, is_active=None,
                         business_description=None, website_url=None,
@@ -947,7 +936,7 @@ class VectorRAGService:
             """, (session_id, limit))
             return cur.fetchall()
         
-    #Check Diagram toggle
+    #Check pro toggle
     def toggle_pro_usage(self, user_id: str, value: bool):
         self._get_conn()
         try:
@@ -995,7 +984,37 @@ class VectorRAGService:
         except Exception as e:
             print(f"==> deleteScrapedDocuments failed: {e}")
             return 0
- 
+
+    #Check account type toggle
+    def set_model(self, user_id: str, value: bool):
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE accounts
+                    SET model = %s
+                    WHERE user_id = %s
+                """, (value, user_id))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+
+
+    #Check Diagram toggle
+    def get_model(self, user_id: str) -> bool:
+        self._get_conn()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT model FROM accounts WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            return row["model"] if row else "gemini"
+
+
+
+
+
+
 
         # ----------------------------------------------------------
         # EMBED CONVERSATION HISTORY
