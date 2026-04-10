@@ -30,21 +30,23 @@ stt = None
 MINUTES_PER_CREDIT = 7
 
 def strip_markdown(text):
-    # Remove bold
     text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
-    # Remove italics
     text = re.sub(r'\*(.*?)\*', r'\1', text)
-    # Remove headers
     text = re.sub(r'^#+\s+', '', text, flags=re.MULTILINE)
-    # Remove code blocks
     text = re.sub(r'```[\w]*\n?(.*?)\n?```', r'\1', text, flags=re.DOTALL)
-    # Remove inline code
     text = re.sub(r'`(.*?)`', r'\1', text)
-    # Remove lists
     text = re.sub(r'^\s*[\*\-\+]\s+', '', text, flags=re.MULTILINE)
     text = re.sub(r'^\s*\d+\.\s+', '', text, flags=re.MULTILINE)
+    # Clean up extra whitespace left by stripping
+    text = re.sub(r'\n\s*\n', '\n', text)
+    text = re.sub(r'\s+', ' ', text)
     return text
 
+def fix_markdown_formatting(text):
+    # Add newlines around headers if they're inline
+    text = re.sub(r'([^\n])(#{1,3}\s+)', r'\1\n\n\2', text)  # Before header
+    text = re.sub(r'(#{1,3}\s+[^\n]+)([^\n])', r'\1\n\n\2', text)  # After header
+    return text
 
 def html_to_plain_text(html_text: str) -> str:
     text = re.sub(r"<br\s*/?>", "\n", html_text, flags=re.IGNORECASE)
@@ -572,6 +574,7 @@ async def audio_chat_ws(ws: WebSocket):
 
             try:
                 sentences, bot_text = await _generate_chat()
+                bot_text = fix_markdown_formatting(bot_text)
                 bot_text  = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
                 bot_text  = re.sub(r'\n\s*\n', '\n\n', bot_text)
                 sentences = [s.strip() for s in re.split(r'(?<=[.?!])\s+', bot_text) if len(s.strip()) > 2]
