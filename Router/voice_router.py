@@ -42,10 +42,11 @@ def strip_markdown(text):
     text = re.sub(r'\s+', ' ', text)
     return text
 
+
 def fix_markdown_formatting(text):
-    # Add newlines around headers if they're inline
-    text = re.sub(r'([^\n])(#{1,3}\s+)', r'\1\n\n\2', text)  # Before header
-    text = re.sub(r'(#{1,3}\s+[^\n]+)([^\n])', r'\1\n\n\2', text)  # After header
+    # Just ensure blank lines around headers
+    text = re.sub(r'\n(#{1,3}\s+)', r'\n\n\1', text)
+    text = re.sub(r'(#{1,3}\s+[^\n]+)\n(?![\n])', r'\1\n\n', text)
     return text
 
 def html_to_plain_text(html_text: str) -> str:
