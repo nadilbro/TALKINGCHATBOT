@@ -133,7 +133,122 @@ def get_summary_manager():
             rag=rag
         )
     return summary_mgr
-
+async def _tts_pipeline(ws, sentences_queue: asyncio.Queue, voice_id: str, done_event: asyncio.Event):
+    """
+    Consumes sentences from the queue, fires TTS, and sends audio chunks
+    to the client as they complete. Runs as a background task.
+    
+    Sends one audio_begin at the start, streams chunks, sends audio_end when done.
+    """
+    tts_instance = get_tts()
+    cumulative_offset_ms = 0
+    first_chunk = True
+    all_visemes = []
+    
+    while True:
+        # Wait for a sentence or the done signal
+        try:
+            sentence = await asyncio.wait_for(sentences_queue.get(), timeout=0.1)
+        except asyncio.TimeoutError:
+            if done_event.is_set() and sentences_queue.empty():
+                break
+            continue
+        
+        if sentence is None:  # Poison pill
+            break
+        
+        try:
+            cleaned = strip_markdown(sentence)
+            if not cleaned or len(cleaned.strip()) < 3:
+                continue
+                
+            result = await tts_instance.synthesize_sentence(cleaned, voice_id)
+            if isinstance(result, Exception):
+                print(f"==> TTS sentence failed: {result}", flush=True)
+                continue
+                
+            audio_bytes_chunk, visemes, duration = result
+            
+            if not audio_bytes_chunk:
+                continue
+            
+            # Offset visemes
+            chunk_visemes = []
+            for v in visemes:
+                chunk_visemes.append({
+                    "t_ms": v["t_ms"] + cumulative_offset_ms,
+                    "viseme_id": v["viseme_id"],
+                })
+            
+            if first_chunk:
+                # Send audio_begin with first batch of visemes
+                await ws.send_json({
+                    "type": "audio_begin",
+                    "format": "mp3",
+                    "sample_rate_hz": 44100,
+                    "channels": 1,
+                    "visemes": [
+                        {"t_ms": _as_int(v.get("t_ms"), 0), "viseme_id": _as_int(v.get("viseme_id"), 0)}
+                        for v in chunk_visemes
+                    ],
+                })
+                first_chunk = False
+            else:
+                # Send additional visemes for subsequent chunks
+                if chunk_visemes:
+                    await ws.send_json({
+                        "type": "viseme_update",
+                        "visemes": [
+                            {"t_ms": _as_int(v.get("t_ms"), 0), "viseme_id": _as_int(v.get("viseme_id"), 0)}
+                            for v in chunk_visemes
+                        ],
+                    })
+            
+            # Send audio bytes
+            CHUNK = 32_000
+            for i in range(0, len(audio_bytes_chunk), CHUNK):
+                await ws.send_bytes(audio_bytes_chunk[i:i + CHUNK])
+            
+            cumulative_offset_ms += int(duration * 1000)
+            all_visemes.extend(chunk_visemes)
+            
+        except Exception as e:
+            print(f"==> TTS pipeline error: {e}", flush=True)
+            traceback.print_exc()
+    
+    # Send audio_end if we sent any audio
+    if not first_chunk:
+        try:
+            await ws.send_json({"type": "audio_end"})
+        except Exception:
+            pass
+ 
+def _extract_routing_tag(text: str) -> tuple:
+    """
+    Looks for [NONE], [INLINE], [DIAGRAM], [CODE], or [MATH] at the end of the text.
+    Returns (cleaned_text, routing_tag).
+    """
+    import re
+    # Match routing tag at end of text (possibly with trailing whitespace)
+    match = re.search(r'\[(NONE|INLINE|DIAGRAM|CODE|MATH)\]\s*$', text, re.IGNORECASE)
+    if match:
+        tag = match.group(1).upper()
+        cleaned = text[:match.start()].rstrip()
+        return cleaned, tag
+    
+    # Fallback: check last line
+    lines = text.strip().rsplit('\n', 1)
+    if len(lines) == 2:
+        last_line = lines[1].strip().upper()
+        if last_line in ('NONE', 'INLINE', 'DIAGRAM', 'CODE', 'MATH',
+                         '[NONE]', '[INLINE]', '[DIAGRAM]', '[CODE]', '[MATH]'):
+            tag = last_line.strip('[]')
+            return lines[0].rstrip(), tag
+    
+    # No tag found — default to NONE
+    return text, "NONE"
+ 
+ 
 def _as_str(x: Any) -> str:
     return (str(x) if x is not None else "").strip()
 
@@ -477,103 +592,225 @@ async def audio_chat_ws(ws: WebSocket):
             else:
                 user_prompt = user_text
 
+            
+            # File context injection
+            if file_context:
+                system_prompt = (
+                    f"{system_prompt}\n\n"
+                    f"The user has attached {len(files_payload)} file(s). Here is the content:\n{file_context}\n\n"
+                    "Use this as context. Do not read it verbatim. Explain conversationally."
+                )
+            else:
+                system_prompt = f"{system_prompt}\n\nNo files attached."
+                        # ----------------------------------------------------------
+            # LENGTH RULE
             # ----------------------------------------------------------
-            # VISUAL AIDS
+            if audio_on:
+                system_prompt += (
+                    "\n\nLENGTH RULE: This response will be spoken aloud. Keep it under 120 words. "
+                    "Lead with the core answer, then the most important detail. "
+                    "If the topic needs a visual, keep your spoken response to a brief summary."
+                )
+            else:
+                system_prompt += (
+                    "\n\nLENGTH RULE: Audio is off. You have room to be thorough. "
+                    "Use headers, lists, and examples freely."
+                )
+# ----------------------------------------------------------
+            # GENERATE RESPONSE (streaming to client + per-sentence TTS)
             # ----------------------------------------------------------
             try:
-                diagrams_enabled = rag.get_diagram_usage(user_id)
-            except Exception:
-                diagrams_enabled = False
-
-            # Skip visual aid if only text files attached (speed)
-            if file_text_parts and not image_attachments:
-                diagrams_enabled = False
-
-            async def _generate_visual_aid():
-                if not diagrams_enabled:
-                    return None
-                try:
-                    raw = await ai.get_diagram(
-                        site_id=user_id,
-                        user=user_text,
-                        conversation_context="\n".join(history_lines[-6:]),
-                        file_context=file_context,
-                        images=image_attachments or None,
+                full_text_parts = []
+                sentence_buffer = ""
+                sentences_for_tts = []  # Keep track for cost/fallback
+                tts_queue = None
+                tts_task = None
+                tts_done_event = None
+                
+                # Set up TTS pipeline if audio is on
+                if audio_on:
+                    tts_queue = asyncio.Queue()
+                    tts_done_event = asyncio.Event()
+                    tts_task = asyncio.create_task(
+                        _tts_pipeline(ws, tts_queue, voice_id, tts_done_event)
                     )
-                    if not raw:
-                        return None
-
-                    stripped = raw.strip()
-                    # Strip leading code fences if model wrapped output
-                    stripped = re.sub(r'^```\w*\n?', '', stripped)
-                    stripped = re.sub(r'\n?```$', '', stripped)
-
-                    upper = stripped.upper()
-
-                    if upper.startswith("NONE"):
-                        return None
+                
+                # Track if we've hit the routing tag
+                routing_tag_found = False
+                visual_section_buffer = ""
+ 
+                async for delta in ai.stream(
+                    site_id=user_id,
+                    system=system_prompt,
+                    user=user_prompt,
+                    images=image_attachments or None,
+                ):
+                    full_text_parts.append(delta)
                     
-                    if upper.startswith("INLINE"):
-                        return {"type": "inline"}
-
-                    if upper.startswith("MATH"):
-                        math_body = stripped[4:].strip().lstrip(":").strip()
-                        return {"type": "math", "content": math_body} if math_body else None
-
-                    if upper.startswith("DIAGRAM"):
+                    # Stream to client (text appears immediately)
+                    await ws.send_json({"type": "text_delta", "text": delta})
+ 
+                    # Accumulate for sentence detection
+                    sentence_buffer += delta
+                    while re.search(r'[.?!]\s', sentence_buffer):
+                        match = re.search(r'[.?!]\s', sentence_buffer)
+                        cut = match.end()
+                        sentence = sentence_buffer[:cut].strip()
+                        sentence_buffer = sentence_buffer[cut:]
+                        if sentence and len(sentence) > 2:
+                            sentences_for_tts.append(sentence)
+                            # Fire TTS immediately for this sentence
+                            if tts_queue and not routing_tag_found:
+                                await tts_queue.put(sentence)
+ 
+                # Handle remaining buffer
+                if sentence_buffer.strip() and len(sentence_buffer.strip()) > 2:
+                    sentences_for_tts.append(sentence_buffer.strip())
+                    if tts_queue:
+                        await tts_queue.put(sentence_buffer.strip())
+ 
+                # Signal TTS pipeline that no more sentences are coming
+                if tts_done_event:
+                    tts_done_event.set()
+ 
+                # Join full text and extract routing tag
+                raw_text = "".join(full_text_parts)
+                bot_text, routing_decision = _extract_routing_tag(raw_text)
+                
+                # Clean up markdown
+                bot_text = fix_markdown_formatting(bot_text)
+                bot_text = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
+                bot_text = re.sub(r'\n\s*\n', '\n\n', bot_text)
+ 
+                # Send final cleaned version
+                await ws.send_json({"type": "text_done", "text": bot_text})
+ 
+                # Build sentences list for any remaining processing
+                parts = re.split(r'(#{1,6}\s+[^\n]+)', bot_text)
+                sentences = []
+                for part in parts:
+                    if re.match(r'^#{1,6}\s+', part):
+                        sentences.append(part.strip())
+                    else:
+                        sub_sentences = re.split(r'(?<=[.?!])\s+', part)
+                        sentences.extend([s.strip() for s in sub_sentences if len(s.strip()) > 2])
+ 
+                if not sentences and not sentences_for_tts:
+                    await ws.send_json({"type": "error", "message": "No response generated"})
+                    await ws.send_json({"type": "done"})
+                    if tts_task:
+                        tts_task.cancel()
+                    continue
+ 
+                print(f"==> Routing decision: {routing_decision}", flush=True)
+ 
+            except Exception as e:
+                await ws.send_json({"type": "error", "message": f"AI failed: {str(e)}"})
+                if tts_task:
+                    tts_task.cancel()
+                continue
+ 
+            # ----------------------------------------------------------
+            # VISUAL AID (Call 2 — fires in parallel with TTS)
+            # ----------------------------------------------------------
+            visual_aid = None
+            visual_task = None
+ 
+            if routing_decision in ("DIAGRAM", "CODE", "MATH"):
+                # Fire visual generation while TTS is still playing
+                async def _generate_visual_content():
+                    try:
+                        raw = await ai.get_diagram(
+                            site_id=user_id,
+                            user=user_text,
+                            conversation_context="\n".join(history_lines[-6:]),
+                            file_context=file_context,
+                            images=image_attachments or None,
+                        )
+                        if not raw:
+                            return None
+ 
+                        stripped = raw.strip()
+                        stripped = re.sub(r'^```\w*\n?', '', stripped)
+                        stripped = re.sub(r'\n?```$', '', stripped)
+                        upper = stripped.upper()
+ 
+                        if upper.startswith("NONE") or upper.startswith("INLINE"):
+                            return None
+ 
+                        if upper.startswith("MATH"):
+                            math_body = stripped[4:].strip().lstrip(":").strip()
+                            return {"type": "math", "content": math_body} if math_body else None
+ 
+                        if upper.startswith("DIAGRAM"):
+                            match = re.search(r'<svg.*?</svg>', stripped, re.DOTALL | re.IGNORECASE)
+                            return {"type": "diagram", "svg": match.group(0)} if match else None
+ 
+                        if upper.startswith("CODE"):
+                            body = stripped[4:].strip().lstrip(":").strip()
+                            lines = body.split("\n", 1)
+                            if len(lines) < 2:
+                                return None
+                            language = lines[0].strip().lower().replace("`", "")
+                            code_body = lines[1]
+                            code_body = re.sub(r'^```\w*\n?', '', code_body)
+                            code_body = re.sub(r'\n?```$', '', code_body).strip("\n")
+                            if not language or not code_body:
+                                return None
+                            return {"type": "code", "language": language, "code": code_body}
+ 
+                        # Fallback SVG salvage
                         match = re.search(r'<svg.*?</svg>', stripped, re.DOTALL | re.IGNORECASE)
                         return {"type": "diagram", "svg": match.group(0)} if match else None
-
-                    if upper.startswith("CODE"):
-                        body = stripped[4:].strip().lstrip(":").strip()
-                        lines = body.split("\n", 1)
-                        if len(lines) < 2:
-                            return None
-                        language = lines[0].strip().lower().replace("`", "")
-                        code_body = lines[1]
-                        code_body = re.sub(r'^```\w*\n?', '', code_body)
-                        code_body = re.sub(r'\n?```$', '', code_body).strip("\n")
-                        if not language or not code_body:
-                            return None
-                        return {"type": "code", "language": language, "code": code_body}
-
-                    # Fallback SVG salvage
-                    match = re.search(r'<svg.*?</svg>', stripped, re.DOTALL | re.IGNORECASE)
-                    return {"type": "diagram", "svg": match.group(0)} if match else None
-
+ 
+                    except Exception as e:
+                        print(f"==> Visual aid generation failed: {e}")
+                        return None
+ 
+                visual_task = asyncio.create_task(_generate_visual_content())
+                # Tell frontend visual is loading
+                await ws.send_json({"type": "visual_aid_pending"})
+            else:
+                # NONE or INLINE — no visual panel
+                try:
+                    await ws.send_json({"type": "visual_aid_none"})
+                except Exception:
+                    pass
+ 
+            # ----------------------------------------------------------
+            # WAIT FOR TTS TO FINISH
+            # ----------------------------------------------------------
+            if tts_task:
+                try:
+                    await tts_task
                 except Exception as e:
-                    print(f"==> Visual aid generation failed: {e}")
-                    return None
-
-            if diagrams_enabled:
+                    print(f"==> TTS pipeline task error: {e}", flush=True)
+ 
+            # ----------------------------------------------------------
+            # WAIT FOR VISUAL AID + SEND TO FRONTEND
+            # ----------------------------------------------------------
+            if visual_task:
                 try:
-                    await ws.send_json({"type": "visual_aid_pending"})
-                except Exception:
-                    pass
-
-            visual_aid = await _generate_visual_aid()
-
+                    visual_aid = await visual_task
+                except Exception as e:
+                    print(f"==> Visual task error: {e}", flush=True)
+                    visual_aid = None
+ 
             # Send visual aid to frontend
-            if visual_aid is None:
+            if visual_aid is None and routing_decision in ("DIAGRAM", "CODE", "MATH"):
                 try:
                     await ws.send_json({"type": "visual_aid_none"})
                 except Exception:
                     pass
-            elif visual_aid["type"] == "inline":
-                # Inline means main chat handles it — no separate panel
-                try:
-                    await ws.send_json({"type": "visual_aid_none"})
-                except Exception:
-                    pass
-            elif visual_aid["type"] == "diagram":
+            elif visual_aid and visual_aid["type"] == "diagram":
                 await ws.send_json({"type": "diagram", "svg": visual_aid["svg"]})
-            elif visual_aid["type"] == "code":
+            elif visual_aid and visual_aid["type"] == "code":
                 await ws.send_json({"type": "code", "language": visual_aid["language"], "code": visual_aid["code"]})
-            elif visual_aid["type"] == "math":
+            elif visual_aid and visual_aid["type"] == "math":
                 await ws.send_json({"type": "math", "content": visual_aid["content"]})
-
+ 
             # Save visual to DB
-            if visual_aid and visual_aid["type"] != "inline":
+            if visual_aid and visual_aid.get("type") not in (None, "inline"):
                 try:
                     content_to_save = visual_aid.get("svg") or visual_aid.get("code") or visual_aid.get("content", "")
                     rag.save_visual(
@@ -584,181 +821,16 @@ async def audio_chat_ws(ws: WebSocket):
                     )
                 except Exception as e:
                     print(f"==> Failed to save visual: {e}")
-
+ 
             # ----------------------------------------------------------
-            # BUILD GROUNDING CONTEXT
+            # SAVE TO DB + SUMMARY
             # ----------------------------------------------------------
-            visual_aid_summary = ""
-
-            if visual_aid and visual_aid["type"] == "diagram":
-                labels = re.findall(r'<text[^>]*>(.*?)</text>', visual_aid["svg"], re.DOTALL | re.IGNORECASE)
-                labels = [re.sub(r'\s+', ' ', l).strip() for l in labels if l.strip()]
-                if labels:
-                    visual_aid_summary = (
-                        "A diagram has been shown to the user. It contains: " + ", ".join(labels) + ". "
-                        "Speak naturally about the topic consistent with these elements. "
-                        "Do not announce the diagram or say 'as you can see'."
-                    )
-
-            elif visual_aid and visual_aid["type"] == "code":
-                code_preview = visual_aid["code"][:1500]
-                visual_aid_summary = (
-                    f"A {visual_aid['language']} code snippet has been shown to the user:\n\n{code_preview}\n\n"
-                    "Explain what it does conversationally. Don't read it line by line. "
-                    "Don't announce that code was shown."
-                )
-
-            elif visual_aid and visual_aid["type"] == "math":
-                math_preview = visual_aid["content"][:1500]
-                visual_aid_summary = (
-                    f"A mathematical derivation has been shown to the user:\n\n{math_preview}\n\n"
-                    "Give a brief 2-3 sentence spoken summary of what the derivation shows. "
-                    "Do not walk through every step. The user can read the working themselves. "
-                    "Just tell them the key idea and the result. Keep it under 50 words."
-                )
-
-            if audio_on:
-                length_rule = (
-                    "LENGTH RULE: This response will be spoken aloud. Keep it under 120 words. "
-                    "Lead with the core answer in 1-2 sentences, then add the most important "
-                    "supporting detail. End by offering to go deeper: 'Want me to break that down "
-                    "further?' or 'I can expand on any part if you want.' Do not try to cover "
-                    "everything — pick the highest-value points and stop."
-                )
-            else:
-                length_rule = (
-                    "LENGTH RULE: Audio is off, so this is read on screen. You have room to be "
-                    "thorough. Use headers, lists, and examples freely. Aim for depth and clarity "
-                    "over brevity. Still don't pad — every sentence should earn its place — but "
-                    "don't artificially cut things short either."
-                )
-
-
-            if visual_aid_summary:
-                system_prompt = f"{system_prompt}\n\n{visual_aid_summary}"
-            elif visual_aid and visual_aid["type"] == "inline":
-                system_prompt = (
-                    f"{system_prompt}\n\n"
-                    "INLINE RESPONSE MODE\n\n"
-                    f"{length_rule}\n\n"
-                    "The user's question is best answered directly in this chat, not as a "
-                    "separate visual panel. You have full markdown available — use it to "
-                    "make your answer clear and easy to read.\n\n"
-                    "FORMATTING TOOLS YOU CAN USE:\n"
-                    "- Markdown headers (## Section) for multi-part answers\n"
-                    "- Bullet lists and numbered lists for sequences and comparisons\n"
-                    "- Bold for key terms, italics for emphasis\n"
-                    "- Inline code with single backticks for short code references like "
-                    "`useState()`, variable names, function names, file paths, and shell commands\n"
-                    "- Inline math with single dollar signs for short equations like $E = mc^2$, "
-                    "$x^2 + y^2 = r^2$, or $\\pi \\approx 3.14$\n"
-                    "- Block math with double dollar signs on their own lines for standalone equations:\n"
-                    "  $$\n"
-                    "  \\frac{d}{dx}\\left(x^2\\right) = 2x\n"
-                    "  $$\n\n"
-                    "FORMATTING RULES:\n"
-                    "- Never use triple backticks or fenced code blocks. A separate system handles "
-                    "large code. For inline code use single backticks only.\n"
-                    "- Never output SVG, Mermaid syntax, or any diagram code.\n"
-                    "- Headers must be on their own line with blank lines around them.\n"
-                    "- Every list item starts on its own line.\n"
-                    "- Inline LaTeX should use single dollar signs, never \\(...\\) or backticks.\n\n"
-                    "HOW TO ANSWER:\n"
-                    "Lead with the answer. Use short, clear examples where they help. If the user "
-                    "asked to be walked through something, take your time and explain step by step "
-                    "in conversational prose with inline examples. If they asked a short question, "
-                    "give a short answer with a tight example. Keep code snippets under 15 lines — "
-                    "if you need more than that, summarise instead and tell them you can show the "
-                    "full version on request. Match depth to the question."
-                )
-
-            elif visual_aid is None and diagrams_enabled:
-                system_prompt = f"{system_prompt}\n\nNo visual aid was needed here. Respond conversationally."
-
-            else:
-                system_prompt = (
-                    f"{system_prompt}\n\n"
-                    "Visual aids are OFF. Answer fully in spoken words. "
-                    "For code questions, explain the logic verbally. "
-                    "Mention enabling visual aids only if it would genuinely help."
-                )
-
-            # File context injection
-            if file_context:
-                system_prompt = (
-                    f"{system_prompt}\n\n"
-                    f"The user has attached {len(files_payload)} file(s). Here is the content:\n{file_context}\n\n"
-                    "Use this as context. Do not read it verbatim. Explain conversationally."
-                )
-            else:
-                system_prompt = f"{system_prompt}\n\nNo files attached."
-
-            # ----------------------------------------------------------
-            # GENERATE RESPONSE (streaming to client)
-            # ----------------------------------------------------------
-            try:
-                full_text_parts = []
-                sentence_buffer = ""
-                sentences = []
-
-                async for delta in ai.stream(
-                    site_id=user_id,
-                    system=system_prompt,
-                    user=user_prompt,
-                    images=image_attachments or None,
-                ):
-                    full_text_parts.append(delta)
-                    await ws.send_json({"type": "text_delta", "text": delta})
-
-                    sentence_buffer += delta
-                    while re.search(r'[.?!,]\s', sentence_buffer):
-                        match = re.search(r'[.?!,]\s', sentence_buffer)
-                        cut = match.end()
-                        sentence = sentence_buffer[:cut].strip()
-                        sentence_buffer = sentence_buffer[cut:]
-                        if sentence and len(sentence) > 2:
-                            sentences.append(sentence)
-
-                if sentence_buffer.strip() and len(sentence_buffer.strip()) > 2:
-                    sentences.append(sentence_buffer.strip())
-
-                bot_text = "".join(full_text_parts)
-                bot_text = fix_markdown_formatting(bot_text)
-                bot_text = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
-                bot_text = re.sub(r'\n\s*\n', '\n\n', bot_text)
-
-                await ws.send_json({"type": "text_done", "text": bot_text})
-
-                parts = re.split(r'(#{1,6}\s+[^\n]+)', bot_text)
-                sentences = []
-                for part in parts:
-                    if re.match(r'^#{1,6}\s+', part):
-                        sentences.append(part.strip())
-                    else:
-                        sub_sentences = re.split(r'(?<=[.?!])\s+', part)
-                        sentences.extend([s.strip() for s in sub_sentences if len(s.strip()) > 2])
-
-                if not sentences:
-                    await ws.send_json({"type": "error", "message": "No response generated"})
-                    await ws.send_json({"type": "done"})
-                    continue
-
-                MAX_BOT_TEXT_LENGTH = 2500
-                text_too_long_for_tts = len(bot_text) > MAX_BOT_TEXT_LENGTH
-                if text_too_long_for_tts:
-                    print(f"==> Bot response too long for TTS: {len(bot_text)} chars. Sending text only.")
-                    audio_on = False
-
-            except Exception as e:
-                await ws.send_json({"type": "error", "message": f"AI failed: {str(e)}"})
-                continue
-            
             try:
                 rag.add_message(chat_id=chat_id, role="assistant", content=bot_text)
                 rag.update_last_message(chat_id=chat_id, last_message=bot_text)
             except Exception:
                 pass
-
+ 
             try:
                 recent_for_summary = history[-6:] if len(history) > 6 else list(history)
                 recent_for_summary.append({"role": "user", "content": user_text})
@@ -766,35 +838,16 @@ async def audio_chat_ws(ws: WebSocket):
                 await smgr.on_new_message(chat_id, recent_for_summary[-6:])
             except Exception as e:
                 print(f"Summary update error: {e}")
-
-            # ----------------------------------------------------------
-            # TTS (only if audio_on AND text is not too long)
-            # ----------------------------------------------------------
-            print(f"MARKDOWN TEXT {bot_text}")
-            
-            if audio_on:
-                try:
-                    cleaned_sentences = [strip_markdown(s) for s in sentences]
-                    print(f"CLEANED TEXT {cleaned_sentences}")
-                    all_audio, all_visemes, _ = await _run_tts(cleaned_sentences, voice_id)
-                    if not all_audio:
-                        await ws.send_json({"type": "error", "message": "TTS produced no audio"})
-                    else:
-                        await _send_audio(ws, all_audio, all_visemes)
-                except Exception as e:
-                    traceback.print_exc()
-                    await ws.send_json({"type": "error", "message": f"TTS failed: {str(e)}"})
-            else:
-                if text_too_long_for_tts:
-                    await ws.send_json({"type": "info", "message": "Response is too long to speak out loud, but you can read it above."})
-
+ 
             # ----------------------------------------------------------
             # COST TRACKING
             # ----------------------------------------------------------
             try:
-                billable_visual_text = visual_aid.get("svg") or visual_aid.get("code") or visual_aid.get("content", "") if visual_aid else ""
+                billable_visual_text = ""
+                if visual_aid:
+                    billable_visual_text = visual_aid.get("svg") or visual_aid.get("code") or visual_aid.get("content", "")
                 file_text_chars = sum(len(p) for p in file_text_parts if not p.startswith("[Image"))
-
+ 
                 cost = account_manager.processUsedCost(
                     outputText=bot_text,
                     outputDiagramText=billable_visual_text,
@@ -808,12 +861,13 @@ async def audio_chat_ws(ws: WebSocket):
                     image_count=len(image_attachments),
                 )
                 credits_used = cost / 0.15
-                remaining    = rag.deductCredits(user_id, credits_used)
+                remaining = rag.deductCredits(user_id, credits_used)
                 print(f"==> Cost: ${cost:.4f} | Credits deducted: {credits_used:.4f} | Remaining: {remaining}")
             except Exception as e:
                 print(f"==> Cost tracking failed: {e}")
-
+ 
             await ws.send_json({"type": "done"})
+ 
     except Exception as e:
         print("❌ WS error:", repr(e))
         traceback.print_exc()
