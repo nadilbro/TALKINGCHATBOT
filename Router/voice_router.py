@@ -617,13 +617,30 @@ async def audio_chat_ws(ws: WebSocket):
                     "Just tell them the key idea and the result. Keep it under 50 words."
                 )
 
+            if audio_on:
+                length_rule = (
+                    "LENGTH RULE: This response will be spoken aloud. Keep it under 120 words. "
+                    "Lead with the core answer in 1-2 sentences, then add the most important "
+                    "supporting detail. End by offering to go deeper: 'Want me to break that down "
+                    "further?' or 'I can expand on any part if you want.' Do not try to cover "
+                    "everything — pick the highest-value points and stop."
+                )
+            else:
+                length_rule = (
+                    "LENGTH RULE: Audio is off, so this is read on screen. You have room to be "
+                    "thorough. Use headers, lists, and examples freely. Aim for depth and clarity "
+                    "over brevity. Still don't pad — every sentence should earn its place — but "
+                    "don't artificially cut things short either."
+                )
+
+
             if visual_aid_summary:
                 system_prompt = f"{system_prompt}\n\n{visual_aid_summary}"
-
             elif visual_aid and visual_aid["type"] == "inline":
                 system_prompt = (
                     f"{system_prompt}\n\n"
                     "INLINE RESPONSE MODE\n\n"
+                    f"{length_rule}\n\n"
                     "The user's question is best answered directly in this chat, not as a "
                     "separate visual panel. You have full markdown available — use it to "
                     "make your answer clear and easy to read.\n\n"
