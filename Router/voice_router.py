@@ -242,6 +242,28 @@ async def chat_init(init_details: SessionInit, user=Depends(verify_token)):
         "chat_history": chat_history,
         "prompt": prompt
     }
+# -----------------------------------------------------------------------
+# CHAT DIAGRAM INIT
+# -----------------------------------------------------------------------
+
+@router.post("/chat_diagram_init")
+async def chat_diagram_init(init_details: DiagramInit, user=Depends(verify_token)):
+    chatID = init_details.chat_id
+
+    raw_visuals = rag.get_visuals(chatID)
+    
+    visuals = []
+    for v in raw_visuals:
+        visuals.append({
+            "visual_type": v.get("visual_type"),
+            "content": v.get("content"),
+            "language": v.get("language"),
+            "created_at": str(v.get("created_at", "")),
+        })
+    print(f"=> VISUALS {visuals} {raw_visuals}")
+    return {"visuals": visuals}
+
+
 
 @router.websocket("/audio_chat_ws")
 async def audio_chat_ws(ws: WebSocket):
@@ -490,9 +512,9 @@ async def audio_chat_ws(ws: WebSocket):
 
                     if upper.startswith("NONE"):
                         return None
-
+                    
                     if upper.startswith("INLINE"):
-                        return None  # INLINE means no separate visual — handled in main chat
+                        return {"type": "inline"}
 
                     if upper.startswith("MATH"):
                         math_body = stripped[4:].strip().lstrip(":").strip()
@@ -537,6 +559,12 @@ async def audio_chat_ws(ws: WebSocket):
                     await ws.send_json({"type": "visual_aid_none"})
                 except Exception:
                     pass
+            elif visual_aid["type"] == "inline":
+                # Inline means main chat handles it — no separate panel
+                try:
+                    await ws.send_json({"type": "visual_aid_none"})
+                except Exception:
+                    pass
             elif visual_aid["type"] == "diagram":
                 await ws.send_json({"type": "diagram", "svg": visual_aid["svg"]})
             elif visual_aid["type"] == "code":
@@ -545,7 +573,7 @@ async def audio_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "math", "content": visual_aid["content"]})
 
             # Save visual to DB
-            if visual_aid:
+            if visual_aid and visual_aid["type"] != "inline":
                 try:
                     content_to_save = visual_aid.get("svg") or visual_aid.get("code") or visual_aid.get("content", "")
                     rag.save_visual(
@@ -591,8 +619,45 @@ async def audio_chat_ws(ws: WebSocket):
 
             if visual_aid_summary:
                 system_prompt = f"{system_prompt}\n\n{visual_aid_summary}"
+
+            elif visual_aid and visual_aid["type"] == "inline":
+                system_prompt = (
+                    f"{system_prompt}\n\n"
+                    "INLINE RESPONSE MODE\n\n"
+                    "The user's question is best answered directly in this chat, not as a "
+                    "separate visual panel. You have full markdown available — use it to "
+                    "make your answer clear and easy to read.\n\n"
+                    "FORMATTING TOOLS YOU CAN USE:\n"
+                    "- Markdown headers (## Section) for multi-part answers\n"
+                    "- Bullet lists and numbered lists for sequences and comparisons\n"
+                    "- Bold for key terms, italics for emphasis\n"
+                    "- Inline code with single backticks for short code references like "
+                    "`useState()`, variable names, function names, file paths, and shell commands\n"
+                    "- Inline math with single dollar signs for short equations like $E = mc^2$, "
+                    "$x^2 + y^2 = r^2$, or $\\pi \\approx 3.14$\n"
+                    "- Block math with double dollar signs on their own lines for standalone equations:\n"
+                    "  $$\n"
+                    "  \\frac{d}{dx}\\left(x^2\\right) = 2x\n"
+                    "  $$\n\n"
+                    "FORMATTING RULES:\n"
+                    "- Never use triple backticks or fenced code blocks. A separate system handles "
+                    "large code. For inline code use single backticks only.\n"
+                    "- Never output SVG, Mermaid syntax, or any diagram code.\n"
+                    "- Headers must be on their own line with blank lines around them.\n"
+                    "- Every list item starts on its own line.\n"
+                    "- Inline LaTeX should use single dollar signs, never \\(...\\) or backticks.\n\n"
+                    "HOW TO ANSWER:\n"
+                    "Lead with the answer. Use short, clear examples where they help. If the user "
+                    "asked to be walked through something, take your time and explain step by step "
+                    "in conversational prose with inline examples. If they asked a short question, "
+                    "give a short answer with a tight example. Keep code snippets under 15 lines — "
+                    "if you need more than that, summarise instead and tell them you can show the "
+                    "full version on request. Match depth to the question."
+                )
+
             elif visual_aid is None and diagrams_enabled:
                 system_prompt = f"{system_prompt}\n\nNo visual aid was needed here. Respond conversationally."
+
             else:
                 system_prompt = (
                     f"{system_prompt}\n\n"

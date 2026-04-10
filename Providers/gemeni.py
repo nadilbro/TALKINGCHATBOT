@@ -97,6 +97,39 @@ Output NONE for:
   (e.g., "what does a derivative mean intuitively" → explain in words,
   NOT MATH, because there are no equations to manipulate)
 
+Output INLINE when ALL of the following are true:
+- The total amount of content the user needs to see is SMALL
+  (a code snippet under ~15 lines, one or two equations, or a short concept)
+- The content fits naturally inside a flowing chat response
+- There is no large attached file, code block, or document that the answer
+  must walk through
+INLINE is for SHORT content that lives inside conversation. INLINE is NOT
+for "summarise this huge thing for me."
+If the user asks to be walked through, explained, or talked through
+something, check the SIZE of the source material first:
+- Source is small (short snippet, simple concept, the user's own short
+  question): INLINE — explain it conversationally inline.
+- Source is large (an attached file, a long code block from earlier in
+  the conversation, a long document, a complex multi-part system): use
+  the appropriate panel type (CODE for code, MATH for derivations,
+  DIAGRAM for systems) so the user can see the full source on screen
+  while the main chat gives a SHORT spoken summary.
+Examples:
+
+- "what's a closure" → INLINE (small concept, no large source)
+- "walk me through this 500-line file I just uploaded" → CODE
+  (the source is large; show the file in the panel, the main chat will
+  give a short spoken walkthrough)
+- "explain this derivation" referring to a long math attachment → MATH
+  (show full derivation in panel, main chat summarises)
+- "talk me through how a for loop works slowly" → INLINE
+  (small concept, no large source)
+- "walk me through your earlier 200-line code response" → CODE
+  (large source — re-show it in the panel, main chat summarises)
+
+Rule of thumb: if walking through the content inline would produce more
+than ~15 lines of code or more than a few equations, it is NOT inline.
+Route it to a panel and let the main chat summarise.
 Decision rules when torn between two options:
 
 - If the user asks HOW something works conceptually AND it is spatial, lean DIAGRAM.
@@ -110,6 +143,8 @@ Decision rules when torn between two options:
 - Both might be useful for physics questions — default to MATH when the answer
   is a chain of equations, DIAGRAM when the answer is a labeled picture.
 - When in doubt AND you have no context, output NONE.
+
+
 
 # OUTPUT FORMAT — EXACTLY ONE OF FOUR
 
