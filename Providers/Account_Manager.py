@@ -21,6 +21,10 @@ COST_PER_GEMINI_2FLASH_OUTPUT_1M = 2.50
 COST_PER_GEMINI_3FLASH_INPUT_1M = 0.75
 COST_PER_GEMINI_3FLASH_OUTPUT_1M = 4.50
  
+
+#Claude Sonnet 4.6
+COST_PER_CLAUDE_SONNET_46_INPUT_1M = 3 
+COST_PER_CLAUDE_SONNET_46_OUTPUT_1M = 15
 # Gemini image input pricing
 # Flash charges images at the same $0.30/1M text rate, tokenized per tile.
 # A typical uploaded image is 1-8 tiles at 258 tokens each.
@@ -57,6 +61,7 @@ class AccountManager:
         pro_mode: bool = False,
         file_text_chars: int = 0,
         image_count: int = 0,
+        model: str = 'gemini',
     ) -> float:
         """
         Returns the total cost of this turn in AUD.
@@ -91,13 +96,17 @@ class AccountManager:
         # ----------------------------------------------------------
         # CHAT CALL — Gemini 2.5 Flash or Pro depending on pro_mode
         # ----------------------------------------------------------
-        if pro_mode:
-            input_rate = COST_PER_GEMINI_2PRO_INPUT_1M
-            output_rate = COST_PER_GEMINI_2PRO_OUTPUT_1M
-        else:
-            input_rate = COST_PER_GEMINI_2FLASH_INPUT_1M
-            output_rate = COST_PER_GEMINI_2FLASH_OUTPUT_1M
- 
+        if model == 'gemeni':
+            if pro_mode:
+                input_rate = COST_PER_GEMINI_2PRO_INPUT_1M
+                output_rate = COST_PER_GEMINI_2PRO_OUTPUT_1M
+            else:
+                input_rate = COST_PER_GEMINI_2FLASH_INPUT_1M
+                output_rate = COST_PER_GEMINI_2FLASH_OUTPUT_1M
+        elif model == 'anthropic':
+            input_rate = COST_PER_CLAUDE_SONNET_46_INPUT_1M
+            output_rate = COST_PER_CLAUDE_SONNET_46_OUTPUT_1M
+
         cost_usd += chat_input_tokens * input_rate / 1_000_000
         cost_usd += chat_output_tokens * output_rate / 1_000_000
  
@@ -120,13 +129,23 @@ class AccountManager:
  
             diagram_input_tokens = diagram_input_chars / CHARS_PER_TOKEN
             diagram_output_tokens = diagram_output_chars / CHARS_PER_TOKEN
- 
+            if model == 'gemeni':
+                if pro_mode:
+                    diagram_input_rate = COST_PER_GEMINI_2PRO_INPUT_1M
+                    diagram_output_rate = COST_PER_GEMINI_2PRO_OUTPUT_1M
+                else:
+                    diagram_input_rate = COST_PER_GEMINI_2FLASH_INPUT_1M
+                    diagram_output_rate = COST_PER_GEMINI_2FLASH_OUTPUT_1M
+            elif model == 'anthropic':
+                diagram_input_rate = COST_PER_CLAUDE_SONNET_46_INPUT_1M
+                diagram_output_rate = COST_PER_CLAUDE_SONNET_46_OUTPUT_1M
+                
             if pro_mode:
-                cost_usd += diagram_input_tokens * COST_PER_GEMINI_2PRO_INPUT_1M / 1_000_000
-                cost_usd += diagram_output_tokens * COST_PER_GEMINI_2PRO_OUTPUT_1M / 1_000_000
+                cost_usd += diagram_input_tokens * diagram_input_rate / 1_000_000
+                cost_usd += diagram_output_tokens * diagram_output_rate / 1_000_000
             else:
-                cost_usd += diagram_input_tokens * COST_PER_GEMINI_3FLASH_INPUT_1M / 1_000_000
-                cost_usd += diagram_output_tokens * COST_PER_GEMINI_3FLASH_OUTPUT_1M / 1_000_000
+                cost_usd += diagram_input_tokens * diagram_input_rate / 1_000_000
+                cost_usd += diagram_output_tokens * diagram_output_rate / 1_000_000
  
         # ----------------------------------------------------------
         # ELEVENLABS TTS — billed per 1000 characters of output text

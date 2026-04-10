@@ -138,6 +138,6 @@ async def change_model(data=changeModel, user=Depends(verify_token)):
 @router.get("/get_model")
 async def get_model(user=Depends(verify_token)):
     try:
-        return {"diagram_use": rag.get_model(user["uid"])}
+        return {"model_use": rag.get_model(user["uid"])}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch setting: {e}")
