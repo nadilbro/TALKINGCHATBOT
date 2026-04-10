@@ -452,7 +452,8 @@ async def audio_chat_ws(ws: WebSocket):
                         if not language or not code_body:
                             return None
                         return {"type": "code", "language": language, "code": code_body}
-
+                    if first_word == "INLINE":
+                        return {"type": "code", "language": language, "code": code_body}
                     # Fallback SVG salvage
                     match = re.search(r'<svg.*?</svg>', raw, re.DOTALL | re.IGNORECASE)
                     return {"type": "diagram", "svg": match.group(0)} if match else None
@@ -575,7 +576,6 @@ async def audio_chat_ws(ws: WebSocket):
 
             try:
                 sentences, bot_text = await _generate_chat()
-                bot_text = fix_markdown_formatting(bot_text)
                 bot_text  = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
                 bot_text  = re.sub(r'\n\s*\n', '\n\n', bot_text)
                 sentences = [s.strip() for s in re.split(r'(?<=[.?!])\s+', bot_text) if len(s.strip()) > 2]
