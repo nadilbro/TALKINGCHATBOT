@@ -8,7 +8,7 @@ from anthropic import AsyncAnthropic
 # ── Re-use your existing DIAGRAM_PROMPT from gemini_provider.py ──────────
 # Import it so we don't duplicate that massive prompt string.
 # If you'd rather keep this file standalone, just paste DIAGRAM_PROMPT here.
-from gemini_provider import DIAGRAM_PROMPT
+from gemeni import DIAGRAM_PROMPT
 
 
 class AnthropicProvider:
