@@ -44,32 +44,62 @@ def strip_markdown(text):
 
 
 def fix_markdown_formatting(text):
+    # --- HEADERS ---
     # Ensure blank line BEFORE headers
     text = re.sub(r'(?<!\n)\n(#{1,6}\s)', r'\n\n\1', text)
     
-    # Force a newline AFTER the header text if it runs into a sentence
-    # This catches "## What is Code? Code is..." and splits it
+    # Split header runs into header + body when smooshed on one line
     text = re.sub(r'^(#{1,6}\s+[^\n]+?[?.!])\s+(?=[A-Z])', r'\1\n\n', text, flags=re.MULTILINE)
     
-    # Also handle headers without punctuation: "## How it Works The first step..."
-    # If a header line is suspiciously long, find the natural break
     def split_long_header(match):
-        hashes = match.group(1)
-        content = match.group(2)
-        # If header is short (< 60 chars), leave it
+        hashes, content = match.group(1), match.group(2)
         if len(content) < 60:
             return f"{hashes} {content}"
-        # Otherwise split at first sentence boundary
         parts = re.split(r'(?<=[.?!])\s+', content, maxsplit=1)
         if len(parts) == 2:
             return f"{hashes} {parts[0]}\n\n{parts[1]}"
         return f"{hashes} {content}"
     
     text = re.sub(r'^(#{1,6})\s+([^\n]+)$', split_long_header, text, flags=re.MULTILINE)
-    
-    # Ensure blank line after headers
     text = re.sub(r'(^#{1,6}\s+[^\n]+)\n(?!\n)', r'\1\n\n', text, flags=re.MULTILINE)
+
+    # --- BULLET LISTS ---
+    # Force a newline before any inline "*   " or "-   " bullet that isn't already at line start
+    # Matches: ". *   Websites:" or "content. * Automation:"
+    text = re.sub(r'(?<=[.!?:])\s+(\*\s{2,}\*\*)', r'\n\1', text)
+    text = re.sub(r'(?<=[.!?:])\s+(-\s{2,}\*\*)', r'\n\1', text)
     
+    # Also handle single-space bullets like "* **Item**"
+    text = re.sub(r'(?<=[.!?:])\s+(\*\s+\*\*[A-Z])', r'\n\1', text)
+
+    # --- NUMBERED LISTS ---
+    # The model often writes "1. **Writing:** ... **Translation:** ... **Execution:**"
+    # We need to detect bold-prefixed items that should be numbered list continuations.
+    # Heuristic: if we're inside a numbered list context and see ". **Word:**" inline, split it.
+    def fix_numbered_list_run(match):
+        full = match.group(0)
+        # Split on ". **" boundaries that look like new list items
+        parts = re.split(r'(?<=[.!?])\s+(?=\*\*[A-Z][a-zA-Z]+:?\*\*)', full)
+        if len(parts) <= 1:
+            return full
+        # Renumber sequentially
+        first_num_match = re.match(r'^(\d+)\.\s+', parts[0])
+        if not first_num_match:
+            return full
+        start_num = int(first_num_match.group(1))
+        result = [parts[0]]
+        for i, part in enumerate(parts[1:], start=1):
+            result.append(f"{start_num + i}. {part}")
+        return "\n".join(result)
+    
+    # Apply to lines that start with "N. **Something**" and contain more bold runs
+    text = re.sub(
+        r'^\d+\.\s+\*\*[^*]+\*\*[^\n]*(?:\s+\*\*[^*]+\*\*[^\n]*)+',
+        fix_numbered_list_run,
+        text,
+        flags=re.MULTILINE
+    )
+
     return text
 
 def html_to_plain_text(html_text: str) -> str:
