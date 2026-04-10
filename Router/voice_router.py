@@ -678,8 +678,9 @@ async def audio_chat_ws(ws: WebSocket):
  
                 # Join full text and extract routing tag
                 raw_text = "".join(full_text_parts)
+                print(f"==> RAW TAIL: {repr(raw_text[-80:])}", flush=True)
                 bot_text, routing_decision = _extract_routing_tag(raw_text)
-                
+                print(f"==> ROUTING: {routing_decision}", flush=True)
                 # Clean up markdown
                 bot_text = fix_markdown_formatting(bot_text)
                 bot_text = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
