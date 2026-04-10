@@ -618,10 +618,11 @@ async def audio_chat_ws(ws: WebSocket):
             # TTS (only if audio_on AND text is not too long)
             # ----------------------------------------------------------
             print(f"MARKDOWN TEXT {bot_text}")
-            print(f"CLEANED TEXT {cleaned_sentences}")
+            
             if audio_on:
                 try:
                     cleaned_sentences = [strip_markdown(s) for s in sentences]
+                    print(f"CLEANED TEXT {cleaned_sentences}")
                     all_audio, all_visemes, _ = await _run_tts(cleaned_sentences, voice_id)
                     if not all_audio:
                         await ws.send_json({"type": "error", "message": "TTS produced no audio"})
