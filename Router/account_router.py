@@ -128,7 +128,7 @@ async def check_diagram_use(user=Depends(verify_token)):
 # Diagram Enable
 # -----------------------------------------------------------------------
 @router.post("/change_model")
-async def change_model(data=changeModel, user=Depends(verify_token)):
+async def change_model(data: changeModel, user=Depends(verify_token)):
     try:
         rag.set_model(user["uid"], data.model)
         return {"ok": True, "model_use": data.model}
