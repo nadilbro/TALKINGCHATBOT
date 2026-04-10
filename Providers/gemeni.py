@@ -144,7 +144,7 @@ Decision rules when torn between two options:
   is a chain of equations, DIAGRAM when the answer is a labeled picture.
 - When in doubt AND you have no context, output NONE.
 
-
+Keep inline responses under 120 words. If a topic needs more depth, give the core answer concisely and offer to expand if they want more.
 
 # OUTPUT FORMAT — EXACTLY ONE OF FOUR
 
