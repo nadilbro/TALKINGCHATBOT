@@ -55,13 +55,7 @@ class AIProvider:
 
     async def _tenant_diagram_provider_name(self, site_id: str) -> str:
         """Diagram model — ALWAYS Flash, regardless of pro mode."""
-        model = self.rag.get_model(site_id) 
-        if model == 'gemini':
-            return "gemini_diagram"
-        elif model == 'anthropic':
-            return "sonnet"
-        else:
-            return "gemini"
+        return "gemini_diagram"
 
     async def stream(
         self,
