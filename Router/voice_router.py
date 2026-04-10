@@ -575,16 +575,18 @@ async def audio_chat_ws(ws: WebSocket):
                 return sentences, " ".join(sentences)
 
             try:
-                sentences, bot_text = await _generate_chat()
+                _, bot_text = await _generate_chat()  # Just take bot_text, ignore sentences
                 bot_text  = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
                 bot_text  = re.sub(r'\n\s*\n', '\n\n', bot_text)
-                sentences = [s.strip() for s in re.split(r'(?<=[.?!])\s+', bot_text) if len(s.strip()) > 2]
+                
+                # Split on sentence endings AND headers
+                sentences = re.split(r'(?<=[.?!])\s+|(?=#{1,6}\s+)', bot_text)
+                sentences = [s.strip() for s in sentences if len(s.strip()) > 2]
 
                 if not sentences:
                     await ws.send_json({"type": "error", "message": "No response generated"})
                     await ws.send_json({"type": "done"})
                     continue
-
                 # Check if response exceeds TTS length limit
                 MAX_BOT_TEXT_LENGTH = 2500  # Define maximum character length for TTS
                 text_too_long_for_tts = len(bot_text) > MAX_BOT_TEXT_LENGTH
