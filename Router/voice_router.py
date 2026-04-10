@@ -886,137 +886,33 @@ async def audio_chat_ws(ws: WebSocket):
 @router.websocket("/embed_chat_ws")
 async def embed_chat_ws(ws: WebSocket):
     """
-    WebSocket endpoint for embedded widget.
-    Auth via API key in query param. Billing per API key and per owner's business credits.
-    No diagram generation — embed flow is voice + text only.
+    WebSocket endpoint for embedded B2B widget.
+    Auth via API key. Per-sentence TTS pipeline. No visual aids.
     """
     print("HIT embed_chat_ws")
     await ws.accept()
-
+ 
     api_key = ws.query_params.get("api_key")
     if not api_key:
         await ws.close(code=4001, reason="Missing api_key")
         return
-
-    # Initial validation
+ 
     initial_key_data = rag.getApiKey(api_key)
     if not initial_key_data or not initial_key_data.get("is_active"):
         await ws.close(code=4001, reason="Invalid or inactive API key")
         return
-
-    # The business credits live on the developer's account (owner_user_id),
-    # NOT on the API key itself. We need the owner's UID for every credit check.
+ 
     owner_user_id = initial_key_data.get("owner_user_id")
     if not owner_user_id:
         await ws.close(code=4001, reason="API key has no owner")
         return
-
-    # Session ID for conversation threading
+ 
     import uuid
     embed_session_id = f"embed_{api_key}_{uuid.uuid4().hex[:12]}"
-
-    FORMATTING_RULE = (
-        "CRITICAL FORMATTING RULE: Never use markdown formatting of any kind. "
-        "No asterisks, no bold, no headers, no hashtags, no bullet points, no numbered lists, "
-        "no dashes, no colons, no semicolons. Write in plain conversational paragraphs only. "
-        "This is spoken aloud, not read on screen. "
-        "You do NOT have the ability to generate diagrams, charts, or images. "
-        "If asked to draw something, politely explain you can only respond in speech."
-    )
-    SYSTEM_PROMPT = f"""
-    {FORMATTING_RULE}
-    
-    CORE IDENTITY AND PURPOSE
-    You are a support agent for {business_name}. {business_description}
-    Your role is to provide accurate, helpful support based exclusively on information you have been given.
-    
-    CRITICAL OPERATING PRINCIPLES
-    
-    1. KNOWLEDGE BOUNDARY
-    - You ONLY answer based on information explicitly provided to you in your knowledge base.
-    - You MUST NOT invent, assume, speculate, or extrapolate beyond what you know.
-    - You MUST NOT make up product features, policies, pricing, or services.
-    - You MUST NOT guess what the company might do, might offer, or might allow.
-    - You MUST NOT fill gaps in knowledge with plausible-sounding fabrications.
-    
-    2. HONESTY AND TRANSPARENCY
-    - If you do not know the answer, say so immediately and directly.
-    - Examples of honest responses:
-        "I don't have that information in my knowledge base."
-        "That's not something I can answer based on what I know about {business_name}."
-        "I'm not sure about that. Let me suggest contacting [support method] for accurate details."
-    - Never pretend to know something. Uncertainty is acceptable. Fabrication is not.
-    
-    3. SCOPE BOUNDARIES
-    - Stick to questions about {business_name}, its services, and its policies.
-    - If asked about competitors, other businesses, or unrelated topics, politely redirect.
-    - Example: "I'm specifically here to help with {business_name}. I can't speak to other companies."
-    - Do not attempt to answer general knowledge questions unless directly related to {business_name}.
-    
-    4. TONE AND STYLE
-    - Be conversational, warm, and helpful.
-    - Keep responses under 100 words unless the user explicitly asks for more detail.
-    - Do not sound robotic or overly formal.
-    - Speak as if you are having a natural conversation.
-    - Use "I" statements: "I don't have that information" not "this agent cannot determine."
-    
-    5. RESPONSE STRUCTURE FOR UNKNOWNS
-    - Acknowledge the question: "That's a great question."
-    - Be honest about your limitation: "I don't have that specific detail."
-    - Offer a path forward: "You could reach out to [contact method] for the most accurate answer."
-    - Never just say no without offering an alternative.
-    
-    6. INFORMATION VERIFICATION
-    - Before answering about policies, features, or details, verify it matches your knowledge base.
-    - If a user claims something about {business_name} that you cannot verify, do not confirm it.
-    - Example: "I don't have that information confirmed, so I can't say for certain."
-    
-    7. PROHIBITED BEHAVIORS
-    - Do NOT use phrases like "Based on my training" or "I believe" when discussing {business_name} specifics.
-    - Do NOT make up support contact information, email addresses, or phone numbers.
-    - Do NOT promise outcomes you cannot guarantee.
-    - Do NOT create fictional policies, discounts, or exceptions.
-    - Do NOT roleplay as multiple people or departments.
-    - Do NOT offer legal, financial, or medical advice even if loosely related to {business_name}.
-    
-    8. WHEN IN DOUBT
-    - Err on the side of honesty over helpfulness.
-    - If a question touches on something you're not 100% certain about, acknowledge the uncertainty.
-    - Suggest the user verify with an official channel: sales, support, management, or documentation.
-    
-    9. HANDLING EDGE CASES
-    - Vague questions: Ask for clarification. "Could you tell me more about what you're looking for?"
-    - Multi-part questions: Answer what you know, be honest about what you don't.
-    - Hypothetical questions: "I can only speak to what {business_name} currently does."
-    - Questions about the future: "I don't have information about planned changes."
-    
-    10. RESPONSE LENGTH AND CLARITY
-        - Keep responses conversational and under 100 words unless asked for detail.
-        - If detail is requested, expand your answer but stay grounded in your knowledge base.
-        - Use short sentences for audio clarity.
-        - Pause naturally where you might take a breath in speech.
-    
-    KNOWLEDGE BASE REFERENCE
-    The following information has been verified and you may use it confidently:
-    - Services offered: [INSERT ACTUAL SERVICES]
-    - Policies: [INSERT ACTUAL POLICIES]
-    - Common questions: [INSERT ACTUAL FAQs]
-    - Contact information: [INSERT ACTUAL CONTACT INFO]
-    - Pricing (if applicable): [INSERT ACTUAL PRICING]
-    
-    ANYTHING NOT IN THE ABOVE LIST IS OUT OF BOUNDS.
-    
-    BEGIN CONVERSATION
-    You are now ready to assist. Remember: accuracy and honesty are your top priorities. 
-    Start each interaction fresh and ask clarifying questions if needed.
-    """
-    # Minimum credits required to start a turn. A typical turn costs 1-5 cents
-    # depending on length and whether TTS is enabled, so we require at least
-    # 5 cents to begin. This prevents starting a turn we can't afford to finish.
-    MIN_CREDITS_PER_TURN = 0.05  # 5 cents AUD
-
+    MIN_CREDITS_PER_TURN = 0.05
+ 
     print(f"==> embed WS opened for api_key={api_key}, owner={owner_user_id}, session={embed_session_id}")
-
+ 
     try:
         while True:
             try:
@@ -1026,98 +922,76 @@ async def embed_chat_ws(ws: WebSocket):
             except Exception:
                 await ws.send_json({"type": "error", "message": "Invalid JSON payload"})
                 continue
-
+ 
             if _as_str(payload.get("type")).lower() == "close":
                 await ws.send_json({"type": "done"})
                 await ws.close()
                 return
-
+ 
             # ----------------------------------------------------------
-            # RE-VALIDATE API KEY (catches dashboard toggles mid-session)
+            # RE-VALIDATE API KEY
             # ----------------------------------------------------------
             key_data = rag.getApiKey(api_key)
             if not key_data or not key_data.get("is_active"):
                 await ws.send_json({"type": "error", "message": "API key deactivated", "code": "INVALID_KEY"})
                 await ws.close()
                 return
-
+ 
             # ----------------------------------------------------------
-            # CONVERSATION LIMIT CHECK (monthly cap per API key)
+            # CONVERSATION LIMIT CHECK
             # ----------------------------------------------------------
             if key_data.get("conversations_used", 0) >= key_data.get("monthly_limit", 500):
-                await ws.send_json({
-                    "type": "error",
-                    "message": "Monthly conversation limit reached",
-                    "code": "LIMIT_REACHED"
-                })
+                await ws.send_json({"type": "error", "message": "Monthly conversation limit reached", "code": "LIMIT_REACHED"})
                 await ws.send_json({"type": "done"})
                 continue
-
+ 
             # ----------------------------------------------------------
-            # BUSINESS CREDIT CHECK (owner's wallet balance)
+            # BUSINESS CREDIT CHECK
             # ----------------------------------------------------------
-            # Before running the turn, make sure the owner has enough credits
-            # to plausibly pay for it. This prevents giving away free turns to
-            # accounts that have run dry.
             try:
                 current_credits = rag.getBusinessCredits(owner_user_id)
                 if current_credits < MIN_CREDITS_PER_TURN:
-                    await ws.send_json({
-                        "type": "error",
-                        "message": "This business has run out of credits. Please contact them to continue the conversation.",
-                        "code": "NO_CREDITS"
-                    })
+                    await ws.send_json({"type": "error", "message": "This business has run out of credits. Please contact them to continue.", "code": "NO_CREDITS"})
                     await ws.send_json({"type": "done"})
                     continue
             except Exception as e:
                 print(f"==> Credit check failed: {e}")
-                # If the check itself fails (DB issue), fail closed to protect the owner's wallet
-                await ws.send_json({
-                    "type": "error",
-                    "message": "Temporary billing error. Please try again shortly.",
-                    "code": "BILLING_ERROR"
-                })
+                await ws.send_json({"type": "error", "message": "Temporary billing error. Please try again shortly.", "code": "BILLING_ERROR"})
                 await ws.send_json({"type": "done"})
                 continue
-
+ 
             # ----------------------------------------------------------
-            # DAILY COST CAP (per API key, optional belt and suspenders)
+            # DAILY COST CAP
             # ----------------------------------------------------------
             try:
                 daily_cost = rag.getApiKeyDailyCost(api_key)
-                daily_cap = key_data.get("daily_cost_cap", 10.00)  # $10 default
+                daily_cap = key_data.get("daily_cost_cap", 10.00)
                 if daily_cost >= daily_cap:
-                    await ws.send_json({
-                        "type": "error",
-                        "message": "Daily usage cap reached. Try again tomorrow.",
-                        "code": "DAILY_CAP"
-                    })
+                    await ws.send_json({"type": "error", "message": "Daily usage cap reached. Try again tomorrow.", "code": "DAILY_CAP"})
                     await ws.send_json({"type": "done"})
                     continue
             except Exception:
-                pass  # Fail open if daily cap check errors — main credit check already protects us
-
+                pass
+ 
             # ----------------------------------------------------------
             # EXTRACT PAYLOAD
             # ----------------------------------------------------------
-            business_name = key_data.get("business_name") or ""
+            business_name = key_data.get("business_name") or "this business"
             business_description = key_data.get("business_description") or ""
-            avatar_name = key_data.get("avatar_name") or "Mia Sterling"
-            personality_on = bool(key_data.get("personality_on"))
-
+            assistant_name = key_data.get("assistant_name") or "Assistant"
+ 
             user_text = _as_str(payload.get("message"))
             voice_id = _as_str(payload.get("voice_name"))
             audio_on = bool(payload.get("voice_on", True))
             raw_audio = payload.get("audio_bytes")
-
             session_id = _as_str(payload.get("session_id"))
-
+            version = key_data.get("assistant_version", "professional")
             if raw_audio and "," in raw_audio:
                 raw_audio = raw_audio.split(",", 1)[1]
             audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
-
+ 
             # ----------------------------------------------------------
-            # STT (if audio was sent)
+            # STT
             # ----------------------------------------------------------
             if audio_bytes:
                 try:
@@ -1132,42 +1006,34 @@ async def embed_chat_ws(ws: WebSocket):
                     await ws.send_json({"type": "error", "message": f"Transcription failed: {e}"})
                     await ws.send_json({"type": "done"})
                     continue
-
+ 
             if not user_text:
                 await ws.send_json({"type": "error", "message": "Missing message"})
                 await ws.send_json({"type": "done"})
                 continue
-
+ 
             # ----------------------------------------------------------
-            # LOAD AVATAR + VOICE
+            # VOICE ID FALLBACK
             # ----------------------------------------------------------
-            avatar = rag.getAvatarByName(avatar_name) or {}
             if not voice_id:
+                avatar = rag.getAvatarByName(key_data.get("avatar_name") or "Mia Sterling") or {}
                 voice_id = avatar.get("voice") or "UgBBYS2sOqTuMpoF3BR0"
-
+ 
             # ----------------------------------------------------------
             # CONVERSATION HISTORY
             # ----------------------------------------------------------
             try:
-                history = rag.get_embed_messages_by_session(
-                    session_id=session_id,
-                    limit=10,
-                )
+                history = rag.get_embed_messages_by_session(session_id=session_id, limit=10)
             except Exception:
                 history = []
-
+ 
             try:
-                rag.add_embed_message(
-                    session_id=session_id,
-                    api_key=api_key,
-                    role="user",
-                    content=user_text,
-                )
+                rag.add_embed_message(session_id=session_id, api_key=api_key, role="user", content=user_text)
             except Exception as e:
                 print(f"==> Failed to save user message: {e}")
-
+ 
             # ----------------------------------------------------------
-            # RAG LOOKUP (business knowledge base)
+            # RAG LOOKUP
             # ----------------------------------------------------------
             rag_context = ""
             try:
@@ -1181,17 +1047,47 @@ async def embed_chat_ws(ws: WebSocket):
             # ----------------------------------------------------------
             # BUILD SYSTEM PROMPT
             # ----------------------------------------------------------
-            if personality_on:
-                avatar_prompt = avatar.get("prompt") or ""
-                fallback_prompt = key_data.get("system_prompt") or ""
-                persona = avatar_prompt or fallback_prompt
-                system_prompt = f"{FORMATTING_RULE}\n\n{persona}"
-            else:
-                system_prompt = SYSTEM_PROMPT
+            tone_map = {
+                "professional": "Be polite, professional, and clear. Sound like a well-trained support agent.",
+                "friendly": "Be warm, casual, and approachable. Sound like a helpful friend who works at the company.",
+                "concise": "Be extremely brief. One to two sentences max. No filler. Just the answer.",
+            }
+            tone = tone_map.get(version, tone_map["professional"])
 
-            if rag_context:
-                system_prompt = f"{system_prompt}\n\nRelevant information from the business knowledge base:\n{rag_context}"
-
+            # ----------------------------------------------------------
+            # BUILD SYSTEM PROMPT
+            # ----------------------------------------------------------
+            kb_section = rag_context if rag_context else "No information has been loaded yet."
+ 
+            system_prompt = (
+                f"You are {assistant_name}, a support assistant for {business_name}. "
+                f"{business_description}\n\n"
+                "RULES\n\n"
+                f"1. ONLY use information from the knowledge base below to answer questions about {business_name}. "
+                "If the answer is not there, say so directly and suggest the user contact the business.\n\n"
+                "2. Never invent, guess, or fill in gaps. No plausible-sounding guesses. "
+                "If you are not sure, say \"I don't have that information.\"\n\n"
+                "3. Never make up contact details, policies, pricing, hours, or product features.\n\n"
+                f"4. Stay on topic. You help with {business_name} only. "
+                "Politely redirect off-topic questions.\n\n"
+                "5. Keep responses under 80 words. Use short sentences. "
+                "This will be spoken aloud, not read on screen.\n\n"
+                f"6. {tone}. Use \"I\" statements. "
+                "Sound like a helpful person, not a corporate script.\n\n"
+                "7. No markdown, no formatting, no lists, no headers, no bold, no asterisks. "
+                "Plain conversational sentences only.\n\n"
+                "8. When you don't know something, always offer a next step: "
+                "\"You could reach out to them directly for that.\"\n\n"
+                "9. Never say \"based on my training\", \"as an AI\", or \"I believe\". "
+                "Just answer naturally or say you don't know.\n\n"
+                "10. If someone asks who you are, say: "
+                f"\"I'm {assistant_name}, a support assistant for {business_name}.\"\n\n"
+                f"KNOWLEDGE BASE\n"
+                f"Everything you know about {business_name} is below. "
+                "If something is not here, you do not know it.\n\n"
+                f"{kb_section}"
+            )
+ 
             # ----------------------------------------------------------
             # BUILD USER PROMPT WITH HISTORY
             # ----------------------------------------------------------
@@ -1205,7 +1101,7 @@ async def embed_chat_ws(ws: WebSocket):
                     history_lines.append(f"User: {content}")
                 elif role == "assistant":
                     history_lines.append(f"Assistant: {content}")
-
+ 
             if history_lines:
                 user_prompt = (
                     "Conversation history:\n"
@@ -1214,55 +1110,88 @@ async def embed_chat_ws(ws: WebSocket):
                 )
             else:
                 user_prompt = user_text
-
+ 
             # ----------------------------------------------------------
-            # STREAM GEMINI
+            # GENERATE RESPONSE (streaming + per-sentence TTS)
             # ----------------------------------------------------------
             try:
-                sentences = []
+                full_text_parts = []
                 sentence_buffer = ""
-                async for delta in ai.stream(site_id=api_key, system=system_prompt, user=user_prompt):
+                sentences_for_tts = []
+                tts_queue = None
+                tts_task = None
+                tts_done_event = None
+ 
+                if audio_on:
+                    tts_queue = asyncio.Queue()
+                    tts_done_event = asyncio.Event()
+                    tts_task = asyncio.create_task(
+                        _tts_pipeline(ws, tts_queue, voice_id, tts_done_event)
+                    )
+ 
+                async for delta in ai.stream(
+                    site_id=api_key,
+                    system=system_prompt,
+                    user=user_prompt,
+                ):
+                    full_text_parts.append(delta)
+                    await ws.send_json({"type": "text_delta", "text": delta})
+ 
                     sentence_buffer += delta
-                    while (match := re.search(r'[.?!]\s', sentence_buffer)):
+                    while re.search(r'[.?!]\s', sentence_buffer):
+                        match = re.search(r'[.?!]\s', sentence_buffer)
                         cut = match.end()
                         sentence = sentence_buffer[:cut].strip()
                         sentence_buffer = sentence_buffer[cut:]
                         if sentence and len(sentence) > 2:
-                            sentences.append(sentence)
-                if sentence_buffer.strip() and len(sentence_buffer.strip()) > 2:
-                    sentences.append(sentence_buffer.strip())
-
-                if not sentences:
-                    await ws.send_json({"type": "error", "message": "No response generated"})
-                    await ws.send_json({"type": "done"})
-                    continue
-
-                bot_text = " ".join(sentences)
-
-                # Strip any stray code fences the model might sneak in
+                            sentences_for_tts.append(sentence)
+                            if tts_queue:
+                                await tts_queue.put(sentence)
+ 
+                # Handle remaining buffer
+                remaining = sentence_buffer.strip()
+                if remaining and len(remaining) > 2:
+                    sentences_for_tts.append(remaining)
+                    if tts_queue:
+                        await tts_queue.put(remaining)
+ 
+                # Signal TTS done
+                if tts_done_event:
+                    tts_done_event.set()
+ 
+                bot_text = "".join(full_text_parts).strip()
+                # Strip stray code fences
                 bot_text = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
                 bot_text = re.sub(r'\n\s*\n', '\n\n', bot_text)
-
-                # Rebuild sentences from cleaned text
-                sentences = [
-                    s.strip()
-                    for s in re.split(r'(?<=[.?!])\s+', bot_text)
-                    if len(s.strip()) > 2
-                ]
-
-                print(f"==> embed {len(sentences)} sentences", flush=True)
-
+ 
+                await ws.send_json({"type": "text_done", "text": bot_text})
+ 
+                if not sentences_for_tts:
+                    await ws.send_json({"type": "error", "message": "No response generated"})
+                    await ws.send_json({"type": "done"})
+                    if tts_task:
+                        tts_task.cancel()
+                    continue
+ 
+                print(f"==> embed {len(sentences_for_tts)} sentences", flush=True)
+ 
             except Exception as e:
                 await ws.send_json({"type": "error", "message": "The assistant is unavailable right now. Please try again shortly."})
                 print(f"==> AI failed: {e}")
+                if tts_task:
+                    tts_task.cancel()
                 await ws.send_json({"type": "done"})
                 continue
-
+ 
             # ----------------------------------------------------------
-            # SEND TEXT TO CLIENT
+            # WAIT FOR TTS TO FINISH
             # ----------------------------------------------------------
-            await ws.send_json({"type": "text", "text": bot_text})
-
+            if tts_task:
+                try:
+                    await tts_task
+                except Exception as e:
+                    print(f"==> TTS pipeline task error: {e}", flush=True)
+ 
             # ----------------------------------------------------------
             # SAVE ASSISTANT RESPONSE
             # ----------------------------------------------------------
@@ -1275,7 +1204,7 @@ async def embed_chat_ws(ws: WebSocket):
                 )
             except Exception as e:
                 print(f"==> Failed to save assistant message: {e}")
-
+ 
             # ----------------------------------------------------------
             # INCREMENT CONVERSATION COUNT
             # ----------------------------------------------------------
@@ -1283,81 +1212,47 @@ async def embed_chat_ws(ws: WebSocket):
                 rag.incrementConversationCount(api_key)
             except Exception as e:
                 print(f"==> Failed to increment conversation count: {e}")
-
-            # ----------------------------------------------------------
-            # TTS (if audio enabled)
-            # ----------------------------------------------------------
-            if audio_on:
-                try:
-                    print(f"==> Embed firing {len(sentences)} ElevenLabs tasks in parallel", flush=True)
-                    all_audio, all_visemes, _ = await _run_tts(sentences, voice_id)
-
-                    if not all_audio:
-                        await ws.send_json({"type": "error", "message": "TTS produced no audio"})
-                        await ws.send_json({"type": "done"})
-                        continue
-
-                    await _send_audio(ws, all_audio, all_visemes)
-
-                except Exception as e:
-                    print(f"==> Embed TTS error: {e}")
-                    traceback.print_exc()
-                    await ws.send_json({"type": "error", "message": "Voice playback failed."})
-
+ 
             # ----------------------------------------------------------
             # COST TRACKING + CREDIT DEDUCTION
-            # This is the part that was broken before. Single try/except,
-            # and it now actually deducts from the owner's business credits.
             # ----------------------------------------------------------
             try:
                 cost_aud = account_manager.processUsedCost(
                     outputText=bot_text,
                     outputDiagramText="",
                     inputText=user_prompt,
-                    SST_Length_seconds=len(audio_bytes) / 32000 if audio_bytes else 0,  # 16kHz 16-bit = 32000 bytes/sec
+                    SST_Length_seconds=len(audio_bytes) / 32000 if audio_bytes else 0,
                     webSearch=False,
                     voice_on=bool(audio_on),
                     diagram_on=False,
                 )
-
-                # Track per-API-key cost (for daily cap and analytics)
+ 
                 try:
                     rag.addApiKeyCost(api_key, cost_aud)
                 except Exception as e:
                     print(f"==> Failed to add api_key cost: {e}")
-
-                # Deduct from the owner's business credits wallet
+ 
                 try:
                     new_balance = rag.deductBusinessCredits(owner_user_id, cost_aud)
-                    print(
-                        f"==> Embed cost: ${cost_aud:.4f} AUD deducted from owner={owner_user_id}, "
-                        f"new balance: ${new_balance:.4f}",
-                        flush=True,
-                    )
-
-                    # Warn the client if the owner is running low (below 50 cents)
-                    # so they can show a "running low" UI or notify the business
+                    print(f"==> Embed cost: ${cost_aud:.4f} AUD, balance: ${new_balance:.4f}", flush=True)
+ 
                     if new_balance < 0.50:
-                        await ws.send_json({
-                            "type": "credits_low",
-                            "balance": new_balance,
-                            "message": "Credits running low"
-                        })
+                        await ws.send_json({"type": "credits_low", "balance": new_balance, "message": "Credits running low"})
                 except Exception as e:
                     print(f"==> Failed to deduct business credits: {e}")
-
+ 
             except Exception as e:
                 print(f"==> Embed cost tracking failed: {e}", flush=True)
-
+ 
             # ----------------------------------------------------------
-            # SIGNAL TURN COMPLETE
+            # DONE
             # ----------------------------------------------------------
             try:
                 await ws.send_json({"type": "done"})
                 print("==> DONE sent, turn complete", flush=True)
             except Exception as e:
                 print(f"==> Failed to send done: {e}", flush=True)
-
+ 
     except WebSocketDisconnect:
         return
     except Exception as e:
@@ -1371,3 +1266,4 @@ async def embed_chat_ws(ws: WebSocket):
             await ws.close()
         except Exception:
             pass
+ 

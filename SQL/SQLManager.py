@@ -608,45 +608,44 @@ class VectorRAGService:
             row = cur.fetchone()
             return dict(row) if row else None
 
-    def listApiKeys(self, owner_user_id: str) -> list:
-        self._get_conn()
-        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""
-                SELECT key, business_name, avatar_name, monthly_limit,
-                    conversations_used, is_active, created_at
-                FROM api_keys
-                WHERE owner_user_id = %s
-                ORDER BY created_at DESC
-            """, (owner_user_id,))
-            return [dict(r) for r in cur.fetchall()]
     def updateApiKey(self, key, business_name=None, avatar_name=None,
                         system_prompt=None, monthly_limit=None, is_active=None,
-                        business_description=None, personality_on=None,
-                        website_url=None, last_scrape_at=None):
-            self._get_conn()
-            try:
-                with self.conn.cursor() as cur:
-                    cur.execute("""
-                        UPDATE api_keys SET
-                            business_name = COALESCE(%s, business_name),
-                            avatar_name = COALESCE(%s, avatar_name),
-                            system_prompt = COALESCE(%s, system_prompt),
-                            monthly_limit = COALESCE(%s, monthly_limit),
-                            is_active = COALESCE(%s, is_active),
-                            business_description = COALESCE(%s, business_description),
-                            personality_on = COALESCE(%s, personality_on),
-                            website_url = COALESCE(%s, website_url),
-                            last_scrape_at = COALESCE(%s, last_scrape_at),
-                            updated_at = NOW()
-                        WHERE key = %s
-                    """, (business_name, avatar_name, system_prompt, monthly_limit,
-                        is_active, business_description, personality_on,
-                        website_url, last_scrape_at, key))
-                self.conn.commit()
-            except Exception:
-                self.conn.rollback()
-                raise
-
+                        business_description=None, website_url=None,
+                        last_scrape_at=None, assistant_name=None,
+                        assistant_version=None, inner_color=None,
+                        outer_color=None, icon_size=None, font=None,
+                        font_size=None, welcome_message=None):
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE api_keys SET
+                        business_name = COALESCE(%s, business_name),
+                        avatar_name = COALESCE(%s, avatar_name),
+                        system_prompt = COALESCE(%s, system_prompt),
+                        monthly_limit = COALESCE(%s, monthly_limit),
+                        is_active = COALESCE(%s, is_active),
+                        business_description = COALESCE(%s, business_description),
+                        website_url = COALESCE(%s, website_url),
+                        last_scrape_at = COALESCE(%s, last_scrape_at),
+                        assistant_name = COALESCE(%s, assistant_name),
+                        assistant_version = COALESCE(%s, assistant_version),
+                        inner_color = COALESCE(%s, inner_color),
+                        outer_color = COALESCE(%s, outer_color),
+                        icon_size = COALESCE(%s, icon_size),
+                        font = COALESCE(%s, font),
+                        font_size = COALESCE(%s, font_size),
+                        welcome_message = COALESCE(%s, welcome_message),
+                        updated_at = NOW()
+                    WHERE key = %s
+                """, (business_name, avatar_name, system_prompt, monthly_limit,
+                    is_active, business_description, website_url, last_scrape_at,
+                    assistant_name, assistant_version, inner_color, outer_color,
+                    icon_size, font, font_size, welcome_message, key))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
     def deleteApiKey(self, key: str):
         self._get_conn()
         try:
@@ -680,6 +679,8 @@ class VectorRAGService:
         except Exception:
             self.conn.rollback()
             raise
+    
+
 
     # -----------------------------------------------------------------------
     # AVATAR LOOKUP
@@ -985,5 +986,71 @@ class VectorRAGService:
             return 0
  
 
+        # ----------------------------------------------------------
+        # EMBED CONVERSATION HISTORY
+        # ----------------------------------------------------------
+        def get_embed_messages_by_session(self, session_id: str, limit: int = 10):
+            self._get_conn()
+            with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT
+                        s.id, s.title, s.last_message, s.status,
+                        a.name AS rive_avatar, a.voice AS avatar_voice,
+                        s.welcome_message, s.summary,
+                        s.created_at, s.updated_at
+                    FROM sessions s
+                    LEFT JOIN rive_avatars a ON s.avatar_id = a.avatar_id
+                    WHERE s.user_id = %s
+                    ORDER BY s.updated_at DESC
+                """, (user_id,))
+                return cur.fetchall()
+        try:
+            history = rag.get_embed_messages_by_session(
+                session_id=session_id,
+                limit=10,
+            )
+        except Exception:
+            history = []
+
+        try:
+            rag.add_embed_message(
+                session_id=session_id,
+                api_key=api_key,
+                role="user",
+                content=user_text,
+            )
+        except Exception as e:
+            print(f"==> Failed to save user message: {e}")
  
- 
+"""
+Bubbleworks is a self-service laundromat located in Caroline Springs, Victoria, Australia, operating at https://www.bubbleworks.com.au.
+It is situated inside the Westsprings Shopping Centre at Shop A12, 1042 Western Highway, Caroline Springs VIC 3023.
+This location places the laundromat within a busy retail hub that includes supermarkets, hardware stores, electronics retailers, cafes, and other everyday services.
+The shopping centre provides ample free parking, which makes it convenient for customers transporting large or heavy laundry loads, and it allows people to shop, eat, or run errands while their laundry is being washed or dried.
+Bubbleworks is designed to cater to local residents, families, students, renters, and shift workers who may not have access to large washing machines at home or who need flexible hours.Bubbleworks operates seven days a week with extended hours, opening daily from 6:00 AM and closing at 1:00 AM.
+These long operating hours make it suitable for a wide range of schedules, including early mornings, late nights, and weekends.
+Being open every day, including most public holidays, adds to its reliability as a laundry option for people who cannot rely on standard business-hour services.
+The laundromat follows a self-service model, meaning customers are responsible for loading, operating, and unloading the machines themselves.The facility is equipped with large-capacity commercial washing machines and high-powered dryers.
+The washers are suitable for both small and very large loads, making them ideal for everyday clothing as well as bulky household items.
+Items that can generally be washed include regular clothing such as shirts, pants, underwear, socks, hoodies, and jumpers, as well as towels, bath mats, bed sheets, pillowcases, duvet covers, blankets, light jackets, and some fabric household items like curtains.
+The large machines are particularly useful for families or people washing several days’ worth of laundry at once.
+Customers are expected to check garment care labels before washing and to separate loads by colour and fabric type. The dryers at Bubbleworks are commercial-grade and designed to dry laundry efficiently and evenly.
+They are suitable for cotton clothing, synthetic fabrics, towels, linens, sheets, and duvet covers.
+Heavier items such as blankets and thick towels may require longer drying times.
+Customers are advised not to overload dryers, as this can reduce drying effectiveness and increase drying time.
+Items that should generally be avoided in the dryers include heat-sensitive fabrics, rubber-backed items, delicate garments not designed for tumble drying, leather, suede, or heavily embellished clothing. There are certain items that should not be placed in either the washers or dryers at Bubbleworks.
+These include leather or suede items, silk or wool garments unless they are clearly labelled as machine-wash safe, clothing heavily contaminated with oils, grease, paint, or chemicals, and garments with fragile decorations such as sequins or beads.
+Following these guidelines helps protect both the customer’s items and the machines themselves. Using the laundromat typically involves bringing laundry and detergent, sorting clothes by colour and fabric, selecting an appropriately sized washing machine, loading the laundry, adding detergent, paying for the cycle, and starting the wash.
+Once washing is complete, laundry is transferred to a dryer, a drying time is selected, and the dryer is started.
+Bubbleworks machines support card payment and coin payment, offering flexibility for customers who may not carry cash.The interior of Bubbleworks is designed to be clean, modern, and well-lit, creating a comfortable and safe environment for users of all ages.
+The overall setup is intended to make laundry efficient and straightforward, reducing the number of cycles needed by using large machines and allowing customers to complete their laundry in fewer visits. 
+Bubbleworks combines extended hours, a convenient shopping-centre location, and large-capacity machines to provide a practical and accessible laundry solution for the Caroline Springs community and surrounding areas.
+We have a count of 14 Dryers and 9 Washers.
+We have a televetion for our customers to watch while waiting for the their laundromat to clean.
+If any issues call us.
+For any problems related to your payments please give us a call to help you further.
+If you are not happy with our services, please give us a call on 0429 818 652.
+We only have the one location in Caroline Springs.
+ """
+
+    

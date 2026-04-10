@@ -48,7 +48,15 @@ class CreateApiKeyRequest(BaseModel):
     system_prompt: Optional[str] = None
     monthly_limit: Optional[int] = 500
     business_description: Optional[str] = None
-    personality_on: Optional[bool] = True  # ADD
+    assistant_name: Optional[str] = "Assistant"
+    website_url: Optional[str] = None
+    assistant_version: Optional[str] = "professional"
+    inner_color: Optional[str] = "#FFFFFF"
+    outer_color: Optional[str] = "#000000"
+    icon_size: Optional[str] = "medium"
+    font: Optional[str] = "system-ui"
+    font_size: Optional[str] = "medium"
+    welcome_message: Optional[str] = None
 
 class UpdateApiKeyRequest(BaseModel):
     business_name: Optional[str] = None
@@ -57,7 +65,15 @@ class UpdateApiKeyRequest(BaseModel):
     monthly_limit: Optional[int] = None
     is_active: Optional[bool] = None
     business_description: Optional[str] = None
-    personality_on: Optional[bool] = None  # ADD
+    assistant_name: Optional[str] = None
+    website_url: Optional[str] = None
+    assistant_version: Optional[str] = None
+    inner_color: Optional[str] = None
+    outer_color: Optional[str] = None
+    icon_size: Optional[str] = None
+    font: Optional[str] = None
+    font_size: Optional[str] = None
+    welcome_message: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -109,12 +125,34 @@ async def update_api_key(key: str, req: UpdateApiKeyRequest, user=Depends(verify
         monthly_limit=req.monthly_limit,
         is_active=req.is_active,
         business_description=req.business_description,
-        personality_on=req.personality_on,
+        website_url=req.website_url,
+        last_scrape_at=req.last_scrape_at,
+        assistant_name=req.assistant_name,
+        assistant_version=req.assistant_version, 
+        inner_color=req.inner_color,
+        outer_color=req.outer_color, 
+        icon_size=req.icon_size, 
+        font=req.font,
+        font_size=req.font_size,
+        welcome_message=req.welcome_message,
     )
     return {"success": True}
 
 
-@router.delete("/keys/{key}")
+# @router.delete("/keys/get_info/{key}")
+# async def get_api_key_info(key: str, user=Depends(verify_token)):
+#     user_id = user["uid"]
+#     key_data = rag.getApiKey(key)
+#     if not key_data or key_data.get("owner_user_id") != user_id:
+#         raise HTTPException(status_code=404, detail="API key not found")
+#     returnreturn {
+#         "doc_id": doc_id,
+#         "filename": filename,
+#         "chunks": len(chunks),
+#     }
+
+
+@router.get("/keys/{key}")
 async def delete_api_key(key: str, user=Depends(verify_token)):
     """Deletes an API key."""
     user_id = user["uid"]
@@ -220,20 +258,26 @@ async def delete_document(key: str, doc_id: str, user=Depends(verify_token)):
 
 @router.get("/config")
 async def get_embed_config(key_data=Depends(verify_api_key)):
-    """
-    Called by the embed widget on load to get avatar config.
-    Returns everything the widget needs to initialise.
-    """
     avatar_name = key_data.get("avatar_name", "Mia Sterling")
     avatar = rag.getAvatarByName(avatar_name)
+    assistant_name = key_data.get("assistant_name") or "Assistant"
 
     return {
+        # Identity
         "business_name": key_data.get("business_name"),
+        "assistant_name": assistant_name,
+        "assistant_version": key_data.get("assistant_version", "professional"),
         "avatar_name": avatar_name,
         "rive_url": avatar.get("url") if avatar else None,
         "voice_name": avatar.get("voice") if avatar else None,
-        "welcome_message": f"Hi, I'm {avatar_name}. How can I help you today?",
-        "system_prompt": key_data.get("system_prompt") or (avatar.get("prompt") if avatar else ""),
+        "welcome_message": key_data.get("welcome_message") or f"Hi, I'm {assistant_name}. How can I help you today?",
+
+        # Widget styling
+        "inner_color": key_data.get("inner_color", "#FFFFFF"),
+        "outer_color": key_data.get("outer_color", "#000000"),
+        "icon_size": key_data.get("icon_size", "medium"),
+        "font": key_data.get("font", "system-ui"),
+        "font_size": key_data.get("font_size", "medium"),
     }
 
 
