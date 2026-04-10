@@ -575,25 +575,31 @@ async def audio_chat_ws(ws: WebSocket):
                 return sentences, " ".join(sentences)
 
             try:
-                _, bot_text = await _generate_chat()  # Just take bot_text, ignore sentences
-                bot_text  = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
-                bot_text  = re.sub(r'\n\s*\n', '\n\n', bot_text)
-                
-                # Split on sentence endings AND headers
-                sentences = re.split(r'(?<=[.?!])\s+|(?=#{1,6}\s+)', bot_text)
-                sentences = [s.strip() for s in sentences if len(s.strip()) > 2]
+                _, bot_text = await _generate_chat()
+                bot_text = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
+                bot_text = re.sub(r'\n\s*\n', '\n\n', bot_text)
+
+                # Split on sentence endings AND extract headers separately
+                parts = re.split(r'(#{1,6}\s+[^\n]+)', bot_text)
+                sentences = []
+                for part in parts:
+                    if re.match(r'^#{1,6}\s+', part):
+                        sentences.append(part.strip())
+                    else:
+                        sub_sentences = re.split(r'(?<=[.?!])\s+', part)
+                        sentences.extend([s.strip() for s in sub_sentences if len(s.strip()) > 2])
 
                 if not sentences:
                     await ws.send_json({"type": "error", "message": "No response generated"})
                     await ws.send_json({"type": "done"})
                     continue
-                # Check if response exceeds TTS length limit
-                MAX_BOT_TEXT_LENGTH = 2500  # Define maximum character length for TTS
+
+                MAX_BOT_TEXT_LENGTH = 2500
                 text_too_long_for_tts = len(bot_text) > MAX_BOT_TEXT_LENGTH
                 
                 if text_too_long_for_tts:
                     print(f"==> Bot response too long for TTS: {len(bot_text)} characters (max {MAX_BOT_TEXT_LENGTH}). Sending text only.")
-                    audio_on = False  # Disable TTS for this response only
+                    audio_on = False
 
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"AI failed: {str(e)}"})
