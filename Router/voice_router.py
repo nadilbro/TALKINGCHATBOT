@@ -44,9 +44,32 @@ def strip_markdown(text):
 
 
 def fix_markdown_formatting(text):
-    # Just ensure blank lines around headers
-    text = re.sub(r'\n(#{1,3}\s+)', r'\n\n\1', text)
-    text = re.sub(r'(#{1,3}\s+[^\n]+)\n(?![\n])', r'\1\n\n', text)
+    # Ensure blank line BEFORE headers
+    text = re.sub(r'(?<!\n)\n(#{1,6}\s)', r'\n\n\1', text)
+    
+    # Force a newline AFTER the header text if it runs into a sentence
+    # This catches "## What is Code? Code is..." and splits it
+    text = re.sub(r'^(#{1,6}\s+[^\n]+?[?.!])\s+(?=[A-Z])', r'\1\n\n', text, flags=re.MULTILINE)
+    
+    # Also handle headers without punctuation: "## How it Works The first step..."
+    # If a header line is suspiciously long, find the natural break
+    def split_long_header(match):
+        hashes = match.group(1)
+        content = match.group(2)
+        # If header is short (< 60 chars), leave it
+        if len(content) < 60:
+            return f"{hashes} {content}"
+        # Otherwise split at first sentence boundary
+        parts = re.split(r'(?<=[.?!])\s+', content, maxsplit=1)
+        if len(parts) == 2:
+            return f"{hashes} {parts[0]}\n\n{parts[1]}"
+        return f"{hashes} {content}"
+    
+    text = re.sub(r'^(#{1,6})\s+([^\n]+)$', split_long_header, text, flags=re.MULTILINE)
+    
+    # Ensure blank line after headers
+    text = re.sub(r'(^#{1,6}\s+[^\n]+)\n(?!\n)', r'\1\n\n', text, flags=re.MULTILINE)
+    
     return text
 
 def html_to_plain_text(html_text: str) -> str:
@@ -576,6 +599,7 @@ async def audio_chat_ws(ws: WebSocket):
 
             try:
                 _, bot_text = await _generate_chat()
+                bot_text = fix_markdown_formatting(bot_text)
                 bot_text = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
                 bot_text = re.sub(r'\n\s*\n', '\n\n', bot_text)
 
