@@ -841,8 +841,10 @@ async def audio_chat_ws(ws: WebSocket):
                 await smgr.on_new_message(chat_id, recent_for_summary[-6:])
             except Exception as e:
                 print(f"Summary update error: {e}")
- 
+            # ---------------------------------------------------------
+            # MODEL 
             # ----------------------------------------------------------
+            model = rag.get_model(user_id)
             # COST TRACKING
             # ----------------------------------------------------------
             try:
@@ -862,6 +864,7 @@ async def audio_chat_ws(ws: WebSocket):
                     pro_mode=bool(pro_mode),
                     file_text_chars=file_text_chars,
                     image_count=len(image_attachments),
+                    model=model
                 )
                 credits_used = cost / 0.15
                 remaining = rag.deductCredits(user_id, credits_used)
