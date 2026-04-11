@@ -999,7 +999,17 @@ class VectorRAGService:
         except Exception:
             self.conn.rollback()
             raise
-
+    def listApiKeys(self, owner_user_id: str) -> list:
+        self._get_conn()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
+                SELECT key, business_name, avatar_name, monthly_limit,
+                    conversations_used, is_active, created_at
+                FROM api_keys
+                WHERE owner_user_id = %s
+                ORDER BY created_at DESC
+            """, (owner_user_id,))
+            return [dict(r) for r in cur.fetchall()]
 
 
     #Check Diagram toggle
