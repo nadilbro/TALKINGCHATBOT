@@ -569,11 +569,13 @@ async def audio_chat_ws(ws: WebSocket):
             summary_context = smgr.build_context(chat_id)
             system_prompt = f"{prompt}\n\n{summary_context}" if summary_context else prompt
 
-            recent_history = history[-3:] if len(history) > 3 else history
+            recent_history = history[-6:] if len(history) > 3 else history
 
             if web_search:
                 web_response = get_web_search().web_search(user_text, 3)
                 system_prompt = f"{system_prompt}\n\n{web_response}"
+
+            MAX_INPUT_CHARS = 1000
 
             history_lines = []
             for m in recent_history:
@@ -582,6 +584,8 @@ async def audio_chat_ws(ws: WebSocket):
                 if not content:
                     continue
                 if role == "user":
+                    if len(content) > MAX_INPUT_CHARS:
+                        content = content[:MAX_INPUT_CHARS]
                     history_lines.append(f"User: {content}")
                 elif role == "assistant":
                     history_lines.append(f"Assistant: {content}")
@@ -827,14 +831,16 @@ async def audio_chat_ws(ws: WebSocket):
                     print(f"==> Failed to save visual: {e}")
  
             # ----------------------------------------------------------
-            # SAVE TO DB + SUMMARY
+            # SAVE TO DB
             # ----------------------------------------------------------
             try:
                 rag.add_message(chat_id=chat_id, role="assistant", content=bot_text)
                 rag.update_last_message(chat_id=chat_id, last_message=bot_text)
             except Exception:
                 pass
- 
+            # ----------------------------------------------------------
+            # Summary Builder
+            # ----------------------------------------------------------
             try:
                 recent_for_summary = history[-6:] if len(history) > 6 else list(history)
                 recent_for_summary.append({"role": "user", "content": user_text})
