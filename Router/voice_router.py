@@ -158,10 +158,15 @@ async def _tts_pipeline(ws, sentences_queue: asyncio.Queue, voice_id: str, done_
             break
         
         try:
+            ROUTING_TAGS = {'none', 'inline', 'diagram', 'code', 'math'}
             cleaned = strip_markdown(sentence)
             if not cleaned or len(cleaned.strip()) < 3:
                 continue
-                
+            if cleaned.strip().lower() in ROUTING_TAGS:
+                continue
+            cleaned = re.sub(r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH)\]?\s*$', cleaned, flags=re.IGNORECASE).strip()
+            if not cleaned or len(cleaned) < 3:
+                continue
             result = await tts_instance.synthesize_sentence(cleaned, voice_id)
             if isinstance(result, Exception):
                 print(f"==> TTS sentence failed: {result}", flush=True)
@@ -439,7 +444,10 @@ async def audio_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "error", "message": "You have no credits remaining. Please top up to continue chatting.", "code": "NO_CREDITS"})
                 await ws.send_json({"type": "done"})
                 continue
-
+            chat_input_tokens = 0 
+            chat_output_tokens = 0
+            diagram_input_tokens = 0
+            diagram_output_tokens = 0
             # ----------------------------------------------------------
             # FILE COUNT CAP
             # ----------------------------------------------------------
@@ -569,7 +577,7 @@ async def audio_chat_ws(ws: WebSocket):
             summary_context = smgr.build_context(chat_id)
             system_prompt = f"{prompt}\n\n{summary_context}" if summary_context else prompt
 
-            recent_history = history[-6:] if len(history) > 3 else history
+            recent_history = history[-6:] if len(history) < 6 else history
 
             if web_search:
                 web_response = get_web_search().web_search(user_text, 3)
@@ -649,11 +657,19 @@ async def audio_chat_ws(ws: WebSocket):
                     user=user_prompt,
                     images=image_attachments or None,
                 ):
+                    if delta.startswith("__USAGE__"):
+                        try:
+                            parts = delta[len("__USAGE__"):].split(",")
+                            chat_input_tokens  += int(parts[0])
+                            chat_output_tokens += int(parts[1])
+                        except Exception:
+                            pass
+                        continue
                     full_text_parts.append(delta)
                     
                     # Stream to client (text appears immediately)
                     await ws.send_json({"type": "text_delta", "text": delta})
- 
+
                     # Accumulate for sentence detection
                     sentence_buffer += delta
                     while re.search(r'[.?!]\s', sentence_buffer):
@@ -666,7 +682,7 @@ async def audio_chat_ws(ws: WebSocket):
                             # Fire TTS immediately for this sentence
                             if tts_queue and not routing_tag_found:
                                 await tts_queue.put(sentence)
- 
+
                 # Handle remaining buffer
                 remaining = sentence_buffer.strip()
                 # Strip routing tag before sending to TTS
@@ -723,21 +739,24 @@ async def audio_chat_ws(ws: WebSocket):
             # ----------------------------------------------------------
             visual_aid = None
             visual_task = None
- 
+
             if routing_decision in ("DIAGRAM", "CODE", "MATH"):
                 # Fire visual generation while TTS is still playing
                 async def _generate_visual_content():
+                    nonlocal diagram_input_tokens, diagram_output_tokens
                     try:
-                        raw = await ai.get_diagram(
+                        raw, d_in, d_out = await ai.get_diagram(
                             site_id=user_id,
                             user=user_text,
                             conversation_context="\n".join(history_lines[-6:]),
                             file_context=file_context,
                             images=image_attachments or None,
                         )
+                        diagram_input_tokens = d_in
+                        diagram_output_tokens = d_out
+
                         if not raw:
                             return None
- 
                         stripped = raw.strip()
                         stripped = re.sub(r'^```\w*\n?', '', stripped)
                         stripped = re.sub(r'\n?```$', '', stripped)
@@ -790,7 +809,10 @@ async def audio_chat_ws(ws: WebSocket):
             # ----------------------------------------------------------
             if tts_task:
                 try:
-                    await tts_task
+                    await asyncio.wait_for(tts_task, timeout=30)
+                except asyncio.TimeoutError:
+                    tts_task.cancel()
+                    print("==> TTS task timed out, cancelled")
                 except Exception as e:
                     print(f"==> TTS pipeline task error: {e}", flush=True)
  
@@ -858,18 +880,22 @@ async def audio_chat_ws(ws: WebSocket):
                 billable_visual_text = ""
                 if visual_aid:
                     billable_visual_text = visual_aid.get("svg") or visual_aid.get("code") or visual_aid.get("content", "")
-                file_text_chars = sum(len(p) for p in file_text_parts if not p.startswith("[Image"))
- 
+
                 cost = account_manager.processUsedCost(
+                    # Call 1 — real tokens
+                    input_tokens=chat_input_tokens,
+                    output_tokens=chat_output_tokens,
+                    # Call 2 — estimated (need inputText for diagram prompt length)
+                    inputText=user_text,
                     outputText=bot_text,
                     outputDiagramText=billable_visual_text,
-                    inputText=user_prompt,
+                    # Everything else
                     SST_Length_seconds=len(audio_bytes) / 16000 if audio_bytes else 0,
                     webSearch=bool(web_search),
                     voice_on=bool(audio_on),
                     diagram_on=bool(visual_aid),
                     pro_mode=bool(pro_mode),
-                    file_text_chars=file_text_chars,
+                    file_text_chars=sum(len(p) for p in file_text_parts if not p.startswith("[Image")),
                     image_count=len(image_attachments),
                     model=model
                 )

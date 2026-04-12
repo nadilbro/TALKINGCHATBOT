@@ -178,22 +178,28 @@ class AnthropicProvider:
     # Streaming (async generator — same shape as GeminiProvider._stream)
     # ──────────────────────────────────────────────────────────────────────
     async def _stream(
-        self,
-        system: str,
-        user: str,
-        max_output_tokens: int = 500,
-        images: Optional[List[dict]] = None,
-    ) -> AsyncIterator[str]:
-        content = self._build_user_content(user, images)
+            self,
+            system: str,
+            user: str,
+            max_output_tokens: int = 500,
+            images: Optional[List[dict]] = None,
+        ) -> AsyncIterator[str]:
+            content = self._build_user_content(user, images)
 
-        async with self.client.messages.stream(
-            model=self.chat_model,
-            max_tokens=max_output_tokens,
-            system=system,
-            messages=[{"role": "user", "content": content}],
-        ) as stream:
-            async for text in stream.text_stream:
-                yield text
+            async with self.client.messages.stream(
+                model=self.chat_model,
+                max_tokens=max_output_tokens,
+                system=system,
+                messages=[{"role": "user", "content": content}],
+            ) as stream:
+                async for text in stream.text_stream:
+                    yield text
+
+                # After stream closes, get real token usage
+                final_msg = await stream.get_final_message()
+                usage = final_msg.usage
+                yield f"__USAGE__ {usage.input_tokens},{usage.output_tokens}"
+
 
     def stream_chat(
         self,
@@ -292,7 +298,11 @@ class AnthropicProvider:
             system=DIAGRAM_PROMPT,
             messages=[{"role": "user", "content": content}],
         )
-
-        return "".join(
+        
+        text = "".join(
             block.text for block in msg.content if hasattr(block, "text")
         )
+        input_tokens = msg.usage.input_tokens
+        output_tokens = msg.usage.output_tokens
+
+        return text, input_tokens, output_tokens

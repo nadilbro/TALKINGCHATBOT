@@ -103,17 +103,7 @@ class AIProvider:
         conversation_context: str = "",
         file_context: str = "",
         images: Optional[List[dict]] = None,
-    ) -> str:
-        """
-        Run the visual aid router with full context about the current turn.
-
-        Args:
-            site_id: User ID for provider selection
-            user: The user's latest message
-            conversation_context: Last few turns so pronouns resolve
-            file_context: Attached text file content (PDF, DOCX, etc.)
-            images: Optional list of attached images for the router to see
-        """
+    ) -> tuple[str, int, int]:
         provider_name = await self._tenant_diagram_provider_name(site_id)
         provider = self._providers[provider_name]
         return await provider.get_diagram(
