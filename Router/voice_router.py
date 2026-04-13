@@ -909,8 +909,6 @@ async def audio_chat_ws(ws: WebSocket):
                     input_tokens=chat_input_tokens,
                     output_tokens=chat_output_tokens,
                     # Call 2 — estimated (need inputText for diagram prompt length)
-                    inputText=user_text,
-                    outputText=bot_text,
                     outputDiagramText=billable_visual_text,
                     # Everything else
                     SST_Length_seconds=len(audio_bytes) / 16000 if audio_bytes else 0,
