@@ -116,7 +116,7 @@ All CSS in a <style> block. All JS in a <script> block.
 Use CSS variables for all colors — never hex, rgb(), or named colors.
 No external libraries or CDN links. Fully self-contained.
 Make it visually clean and functional. Prefer a dark-friendly design using the CSS variables.
-
+No emoji characters anywhere in the HTML. Use text labels only (e.g. "Play" not "▶ Play").
 HTML
 <style>
   .container { background: var(--color-bg); color: var(--color-fg); padding: 24px; border-radius: 12px; font-family: system-ui, sans-serif; }

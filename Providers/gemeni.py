@@ -310,6 +310,8 @@ content that will be injected into a page.
 All CSS must be inside a <style> block at the top. All JavaScript must be
 inside a <script> block at the bottom.
 
+No emoji characters anywhere in the HTML. Use text labels only (e.g. "Play" not "▶ Play").
+
 Use CSS variables for ALL colors:
   var(--color-bg)        backgrounds
   var(--color-fg)        text, borders
