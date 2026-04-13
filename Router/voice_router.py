@@ -887,7 +887,18 @@ async def audio_chat_ws(ws: WebSocket):
             # Summary Builder
             # ----------------------------------------------------------
             try:
-                recent_for_summary = history[-6:] if len(history) > 6 else list(history)
+                char_count = 0
+                cutoff = len(history)  # start assuming we use all of it
+
+                for j in range(len(history) - 1, -1, -1):
+                    char_count += len(history[j].get("content", ""))
+                    if char_count > 800_000:
+                        cutoff = j + 1  # everything from here forward is within budget
+                        break
+
+
+                trimmed_history = history[cutoff:]
+                recent_for_summary = trimmed_history.copy()
                 recent_for_summary.append({"role": "user", "content": user_text})
                 recent_for_summary.append({"role": "assistant", "content": bot_text})
                 await smgr.on_new_message(chat_id, recent_for_summary[-6:])
@@ -908,8 +919,6 @@ async def audio_chat_ws(ws: WebSocket):
                     # Call 1 — real tokens
                     input_tokens=chat_input_tokens,
                     output_tokens=chat_output_tokens,
-                    # Call 2 — estimated (need inputText for diagram prompt length)
-                    outputDiagramText=billable_visual_text,
                     # Everything else
                     SST_Length_seconds=len(audio_bytes) / 16000 if audio_bytes else 0,
                     webSearch=bool(web_search),
