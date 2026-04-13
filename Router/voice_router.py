@@ -164,7 +164,7 @@ async def _tts_pipeline(ws, sentences_queue: asyncio.Queue, voice_id: str, done_
                 continue
             if cleaned.strip().lower() in ROUTING_TAGS:
                 continue
-            cleaned = re.sub(r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH)\]?\s*$', cleaned, flags=re.IGNORECASE).strip()
+            cleaned = re.sub(r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH)\]?\s*$', '', cleaned, flags=re.IGNORECASE).strip()
             if not cleaned or len(cleaned) < 3:
                 continue
             result = await tts_instance.synthesize_sentence(cleaned, voice_id)
@@ -1304,7 +1304,7 @@ async def embed_chat_ws(ws: WebSocket):
             # SAVE ASSISTANT RESPONSE
             # ----------------------------------------------------------
             try:
-                rag.add_message(chat_id=session_id, role="assistant", content=stored_content)
+                rag.add_message(chat_id=session_id, role="assistant", content=bot_text)
                 rag.update_last_message(chat_id=session_id, last_message=bot_text)
             except Exception as e:
                 print(f"==> Failed to save assistant message: {e}")
