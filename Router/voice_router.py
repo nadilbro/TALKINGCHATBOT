@@ -917,15 +917,14 @@ async def audio_chat_ws(ws: WebSocket):
 
                 cost = account_manager.processUsedCost(
                     # Call 1 — real tokens
-                    input_tokens=chat_input_tokens,
-                    output_tokens=chat_output_tokens,
+                    input_tokens=chat_input_tokens+diagram_input_tokens,
+                    output_tokens=chat_output_tokens+diagram_output_tokens,
                     # Everything else
                     SST_Length_seconds=len(audio_bytes) / 16000 if audio_bytes else 0,
                     webSearch=bool(web_search),
                     voice_on=bool(audio_on),
                     diagram_on=bool(visual_aid),
                     pro_mode=bool(pro_mode),
-                    file_text_chars=sum(len(p) for p in file_text_parts if not p.startswith("[Image")),
                     image_count=len(image_attachments),
                     model=model
                 )
