@@ -37,7 +37,7 @@ class VoiceChatSystem:
         self.api_key = (os.getenv("ELEVENLABS_API_KEY") or "").strip()
         if not self.api_key:
             raise RuntimeError("Missing ELEVENLABS_API_KEY env var")
-
+    
     async def synthesize_sentence(
         self,
         text: str,

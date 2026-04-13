@@ -1020,47 +1020,35 @@ class VectorRAGService:
             row = cur.fetchone()
             return row["model"] if row else "gemini"
 
-
-
-
-
-
-
-        # ----------------------------------------------------------
-        # EMBED CONVERSATION HISTORY
-        # ----------------------------------------------------------
-        def get_embed_messages_by_session(self, session_id: str, limit: int = 10):
-            self._get_conn()
+    def get_or_create_embed_session(self, session_id: str, api_key: str, owner_user_id: str) -> str:
+        """
+        Gets an existing embed session or creates a new one.
+        Returns the session id.
+        """
+        self._get_conn()
+        try:
             with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
-                    SELECT
-                        s.id, s.title, s.last_message, s.status,
-                        a.name AS rive_avatar, a.voice AS avatar_voice,
-                        s.welcome_message, s.summary,
-                        s.created_at, s.updated_at
-                    FROM sessions s
-                    LEFT JOIN rive_avatars a ON s.avatar_id = a.avatar_id
-                    WHERE s.user_id = %s
-                    ORDER BY s.updated_at DESC
-                """, (user_id,))
-                return cur.fetchall()
-        try:
-            history = rag.get_embed_messages_by_session(
-                session_id=session_id,
-                limit=10,
-            )
-        except Exception:
-            history = []
+                cur.execute("SELECT id FROM sessions WHERE id = %s", (session_id,))
+                row = cur.fetchone()
+                if row:
+                    return session_id
 
-        try:
-            rag.add_embed_message(
-                session_id=session_id,
-                api_key=api_key,
-                role="user",
-                content=user_text,
-            )
-        except Exception as e:
-            print(f"==> Failed to save user message: {e}")
+                # Doesn't exist — create it
+                cur.execute("""
+                    INSERT INTO sessions (id, user_id, created_at, updated_at)
+                    VALUES (%s, %s, NOW(), NOW())
+                    ON CONFLICT (id) DO NOTHING
+                """, (session_id, owner_user_id))
+            self.conn.commit()
+            return session_id
+        except Exception:
+            self.conn.rollback()
+            raise
+
+
+
+
+
  
 """
 Bubbleworks is a self-service laundromat located in Caroline Springs, Victoria, Australia, operating at https://www.bubbleworks.com.au.

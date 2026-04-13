@@ -498,12 +498,35 @@ async def audio_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "error", "message": f"Failed to load history: {str(e)}"})
                 continue
 
+            # SAVE TO DB
             try:
-                rag.add_message(chat_id=chat_id, role="user", content=user_text)
-                rag.update_last_message(chat_id=chat_id, last_message=user_text)
+                stored_content = bot_text
+
+                if visual_aid:
+                    if visual_aid["type"] == "diagram":
+                        # Quick Flash call to summarise what the SVG showed
+                        try:
+                            svg_content = visual_aid.get("svg", "")
+                            summary = await ai.get_chat(
+                                system="You are a concise summariser. In one sentence, describe what this SVG diagram visually shows to the user. Focus on the content and structure, not the SVG syntax.",
+                                user=f"Summarise this diagram for chat history context:\n{svg_content[:3000]}",
+                            )
+                            stored_content += f"\n\n[DIAGRAM WAS SHOWN: {summary.strip()}]"
+                        except Exception:
+                            stored_content += "\n\n[DIAGRAM WAS SHOWN TO USER]"
+
+                    elif visual_aid["type"] == "code":
+                        lang = visual_aid.get("language", "")
+                        code = visual_aid.get("code", "")
+                        stored_content += f"\n\n[CODE WAS SHOWN TO USER]\n```{lang}\n{code}\n```"
+
+                    elif visual_aid["type"] == "math":
+                        stored_content += f"\n\n[MATH WAS SHOWN TO USER]\n{visual_aid.get('content', '')}"
+
+                rag.add_message(chat_id=chat_id, role="assistant", content=stored_content)
+                rag.update_last_message(chat_id=chat_id, last_message=bot_text)
             except Exception as e:
-                await ws.send_json({"type": "error", "message": f"Failed to save user message: {str(e)}"})
-                continue
+                print(f"==> Failed to save message: {e}")
 
             # ----------------------------------------------------------
             # PROCESS FILES
@@ -703,14 +726,14 @@ async def audio_chat_ws(ws: WebSocket):
                 print(f"==> ROUTING: {routing_decision}", flush=True)
                 # Clean up markdown
                 bot_text = fix_markdown_formatting(bot_text)
-                bot_text = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
-                bot_text = re.sub(r'\n\s*\n', '\n\n', bot_text)
+                tts_text  = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
+                tts_text  = re.sub(r'\n\s*\n', '\n\n', tts_text)
  
                 # Send final cleaned version
                 await ws.send_json({"type": "text_done", "text": bot_text})
  
                 # Build sentences list for any remaining processing
-                parts = re.split(r'(#{1,6}\s+[^\n]+)', bot_text)
+                parts = re.split(r'(#{1,6}\s+[^\n]+)', tts_text)
                 sentences = []
                 for part in parts:
                     if re.match(r'^#{1,6}\s+', part):
@@ -921,35 +944,31 @@ async def audio_chat_ws(ws: WebSocket):
         
 @router.websocket("/embed_chat_ws")
 async def embed_chat_ws(ws: WebSocket):
-    """
-    WebSocket endpoint for embedded B2B widget.
-    Auth via API key. Per-sentence TTS pipeline. No visual aids.
-    """
     print("HIT embed_chat_ws")
     t0 = time.time()
     await ws.accept()
- 
+
     api_key = ws.query_params.get("api_key")
     if not api_key:
         await ws.close(code=4001, reason="Missing api_key")
         return
- 
+
     initial_key_data = rag.getApiKey(api_key)
     if not initial_key_data or not initial_key_data.get("is_active"):
         await ws.close(code=4001, reason="Invalid or inactive API key")
         return
- 
+
     owner_user_id = initial_key_data.get("owner_user_id")
     if not owner_user_id:
         await ws.close(code=4001, reason="API key has no owner")
         return
- 
+
     import uuid
     embed_session_id = f"embed_{api_key}_{uuid.uuid4().hex[:12]}"
     MIN_CREDITS_PER_TURN = 0.05
- 
+
     print(f"==> embed WS opened for api_key={api_key}, owner={owner_user_id}, session={embed_session_id}")
- 
+
     try:
         while True:
             try:
@@ -959,12 +978,12 @@ async def embed_chat_ws(ws: WebSocket):
             except Exception:
                 await ws.send_json({"type": "error", "message": "Invalid JSON payload"})
                 continue
- 
+
             if _as_str(payload.get("type")).lower() == "close":
                 await ws.send_json({"type": "done"})
                 await ws.close()
                 return
- 
+
             # ----------------------------------------------------------
             # RE-VALIDATE API KEY
             # ----------------------------------------------------------
@@ -973,7 +992,7 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "error", "message": "API key deactivated", "code": "INVALID_KEY"})
                 await ws.close()
                 return
- 
+
             # ----------------------------------------------------------
             # CONVERSATION LIMIT CHECK
             # ----------------------------------------------------------
@@ -981,7 +1000,7 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "error", "message": "Monthly conversation limit reached", "code": "LIMIT_REACHED"})
                 await ws.send_json({"type": "done"})
                 continue
- 
+
             # ----------------------------------------------------------
             # BUSINESS CREDIT CHECK
             # ----------------------------------------------------------
@@ -996,7 +1015,7 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "error", "message": "Temporary billing error. Please try again shortly.", "code": "BILLING_ERROR"})
                 await ws.send_json({"type": "done"})
                 continue
- 
+
             # ----------------------------------------------------------
             # DAILY COST CAP
             # ----------------------------------------------------------
@@ -1009,24 +1028,39 @@ async def embed_chat_ws(ws: WebSocket):
                     continue
             except Exception:
                 pass
- 
+
             # ----------------------------------------------------------
             # EXTRACT PAYLOAD
             # ----------------------------------------------------------
             business_name = key_data.get("business_name") or "this business"
             business_description = key_data.get("business_description") or ""
             assistant_name = key_data.get("assistant_name") or "Assistant"
- 
+            version = key_data.get("assistant_version", "professional")
+            model = rag.get_model(owner_user_id) or "gemini"
+
             user_text = _as_str(payload.get("message"))
             voice_id = _as_str(payload.get("voice_name"))
             audio_on = bool(payload.get("voice_on", True))
             raw_audio = payload.get("audio_bytes")
-            session_id = _as_str(payload.get("session_id"))
-            version = key_data.get("assistant_version", "professional")
+            session_id = _as_str(payload.get("session_id")) or f"embed_{api_key}_{uuid.uuid4().hex[:12]}"
+            
+            rag.get_or_create_embed_session(session_id, api_key, owner_user_id)
+
             if raw_audio and "," in raw_audio:
                 raw_audio = raw_audio.split(",", 1)[1]
             audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
- 
+
+            embed_input_tokens = 0
+            embed_output_tokens = 0
+
+            # ----------------------------------------------------------
+            # CREDIT CHECK
+            # ----------------------------------------------------------
+            if not rag.hasEnoughCredits(owner_user_id):
+                await ws.send_json({"type": "error", "message": "No credits remaining.", "code": "NO_CREDITS"})
+                await ws.send_json({"type": "done"})
+                continue
+
             # ----------------------------------------------------------
             # STT
             # ----------------------------------------------------------
@@ -1043,32 +1077,32 @@ async def embed_chat_ws(ws: WebSocket):
                     await ws.send_json({"type": "error", "message": f"Transcription failed: {e}"})
                     await ws.send_json({"type": "done"})
                     continue
- 
+
             if not user_text:
                 await ws.send_json({"type": "error", "message": "Missing message"})
                 await ws.send_json({"type": "done"})
                 continue
- 
+
             # ----------------------------------------------------------
             # VOICE ID FALLBACK
             # ----------------------------------------------------------
             if not voice_id:
                 avatar = rag.getAvatarByName(key_data.get("avatar_name") or "Mia Sterling") or {}
                 voice_id = avatar.get("voice") or "UgBBYS2sOqTuMpoF3BR0"
- 
+
             # ----------------------------------------------------------
             # CONVERSATION HISTORY
             # ----------------------------------------------------------
             try:
-                history = rag.get_embed_messages_by_session(session_id=session_id, limit=10)
+                history = rag.get_recent_messages(user_id=owner_user_id, chat_id=session_id, limit=10)
             except Exception:
                 history = []
- 
+
             try:
-                rag.add_embed_message(session_id=session_id, api_key=api_key, role="user", content=user_text)
+                rag.add_message(chat_id=session_id, role="user", content=user_text)
             except Exception as e:
                 print(f"==> Failed to save user message: {e}")
- 
+
             # ----------------------------------------------------------
             # RAG LOOKUP
             # ----------------------------------------------------------
@@ -1090,27 +1124,22 @@ async def embed_chat_ws(ws: WebSocket):
                 "concise": "Be extremely brief. One to two sentences max. No filler. Just the answer.",
             }
             tone = tone_map.get(version, tone_map["professional"])
-
-            # ----------------------------------------------------------
-            # BUILD SYSTEM PROMPT
-            # ----------------------------------------------------------
             kb_section = rag_context if rag_context else "No information has been loaded yet."
- 
+
             system_prompt = (
                 f"You are {assistant_name}, a support assistant for {business_name}. "
                 f"{business_description}\n\n"
                 "RULES\n\n"
                 f"1. ONLY use information from the knowledge base below to answer questions about {business_name}. "
                 "If the answer is not there, say so directly and suggest the user contact the business.\n\n"
-                "2. Never invent, guess, or fill in gaps. No plausible-sounding guesses. "
+                "2. Never invent, guess, or fill in gaps. "
                 "If you are not sure, say \"I don't have that information.\"\n\n"
                 "3. Never make up contact details, policies, pricing, hours, or product features.\n\n"
                 f"4. Stay on topic. You help with {business_name} only. "
                 "Politely redirect off-topic questions.\n\n"
                 "5. Keep responses under 80 words. Use short sentences. "
                 "This will be spoken aloud, not read on screen.\n\n"
-                f"6. {tone}. Use \"I\" statements. "
-                "Sound like a helpful person, not a corporate script.\n\n"
+                f"6. {tone} Use \"I\" statements. Sound like a helpful person, not a corporate script.\n\n"
                 "7. No markdown, no formatting, no lists, no headers, no bold, no asterisks. "
                 "Plain conversational sentences only.\n\n"
                 "8. When you don't know something, always offer a next step: "
@@ -1124,7 +1153,13 @@ async def embed_chat_ws(ws: WebSocket):
                 "If something is not here, you do not know it.\n\n"
                 f"{kb_section}"
             )
- 
+
+            if audio_on:
+                system_prompt += (
+                    "\n\nLENGTH RULE: This response will be spoken aloud. "
+                    "Keep it under 80 words. Lead with the core answer."
+                )
+
             # ----------------------------------------------------------
             # BUILD USER PROMPT WITH HISTORY
             # ----------------------------------------------------------
@@ -1138,7 +1173,7 @@ async def embed_chat_ws(ws: WebSocket):
                     history_lines.append(f"User: {content}")
                 elif role == "assistant":
                     history_lines.append(f"Assistant: {content}")
- 
+
             if history_lines:
                 user_prompt = (
                     "Conversation history:\n"
@@ -1147,7 +1182,7 @@ async def embed_chat_ws(ws: WebSocket):
                 )
             else:
                 user_prompt = user_text
- 
+
             # ----------------------------------------------------------
             # GENERATE RESPONSE (streaming + per-sentence TTS)
             # ----------------------------------------------------------
@@ -1158,95 +1193,116 @@ async def embed_chat_ws(ws: WebSocket):
                 tts_queue = None
                 tts_task = None
                 tts_done_event = None
- 
+
                 if audio_on:
                     tts_queue = asyncio.Queue()
                     tts_done_event = asyncio.Event()
                     tts_task = asyncio.create_task(
                         _tts_pipeline(ws, tts_queue, voice_id, tts_done_event)
                     )
-                print(f"==> Stream starting at {time.time() - t0:.2f}s", flush=True)
+
+                print(f"==> embed stream starting at {time.time() - t0:.2f}s", flush=True)
                 first_delta = True
+
                 async for delta in ai.stream(
                     site_id=api_key,
                     system=system_prompt,
                     user=user_prompt,
                 ):
                     if first_delta:
-                        print(f"==> First token at {time.time() - t0:.2f}s", flush=True)
-                    first_delta = False
-                    
+                        print(f"==> embed first token at {time.time() - t0:.2f}s", flush=True)
+                        first_delta = False
+
+                    # Capture real token usage from Anthropic
+                    if delta.startswith("__USAGE__"):
+                        try:
+                            parts = delta[len("__USAGE__"):].strip().split(",")
+                            embed_input_tokens += int(parts[0])
+                            embed_output_tokens += int(parts[1])
+                        except Exception:
+                            pass
+                        continue
+
                     full_text_parts.append(delta)
                     await ws.send_json({"type": "text_delta", "text": delta})
- 
+
                     sentence_buffer += delta
                     while re.search(r'[.?!]\s', sentence_buffer):
                         match = re.search(r'[.?!]\s', sentence_buffer)
                         cut = match.end()
                         sentence = sentence_buffer[:cut].strip()
                         sentence_buffer = sentence_buffer[cut:]
-                        if sentence and len(sentence) > 2:
-                            sentences_for_tts.append(sentence)
-                            if tts_queue:
-                                await tts_queue.put(sentence)
- 
+
+                        # Filter garbage before sending to TTS
+                        ROUTING_TAGS = {'none', 'inline', 'diagram', 'code', 'math'}
+                        if sentence and len(sentence) > 2 and sentence.strip().lower() not in ROUTING_TAGS:
+                            cleaned_sentence = re.sub(
+                                r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH)\]?\s*$', '',
+                                sentence, flags=re.IGNORECASE
+                            ).strip()
+                            if cleaned_sentence and len(cleaned_sentence) > 2:
+                                sentences_for_tts.append(cleaned_sentence)
+                                if tts_queue:
+                                    await tts_queue.put(cleaned_sentence)
+
                 # Handle remaining buffer
                 remaining = sentence_buffer.strip()
+                remaining = re.sub(
+                    r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH)\]?\s*$', '',
+                    remaining, flags=re.IGNORECASE
+                ).strip()
                 if remaining and len(remaining) > 2:
                     sentences_for_tts.append(remaining)
                     if tts_queue:
                         await tts_queue.put(remaining)
- 
-                # Signal TTS done
+
                 if tts_done_event:
                     tts_done_event.set()
- 
+
                 bot_text = "".join(full_text_parts).strip()
-                # Strip stray code fences
                 bot_text = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
                 bot_text = re.sub(r'\n\s*\n', '\n\n', bot_text)
 
                 await ws.send_json({"type": "text_done", "text": bot_text})
-                print(f"==> Stream done at {time.time() - t0:.2f}s", flush=True)
+                print(f"==> embed stream done at {time.time() - t0:.2f}s", flush=True)
+
                 if not sentences_for_tts:
                     await ws.send_json({"type": "error", "message": "No response generated"})
                     await ws.send_json({"type": "done"})
                     if tts_task:
                         tts_task.cancel()
                     continue
- 
-                print(f"==> embed {len(sentences_for_tts)} sentences", flush=True)
- 
+
             except Exception as e:
                 await ws.send_json({"type": "error", "message": "The assistant is unavailable right now. Please try again shortly."})
-                print(f"==> AI failed: {e}")
+                print(f"==> embed AI failed: {e}")
+                traceback.print_exc()
                 if tts_task:
                     tts_task.cancel()
                 await ws.send_json({"type": "done"})
                 continue
- 
+
             # ----------------------------------------------------------
-            # WAIT FOR TTS TO FINISH
+            # WAIT FOR TTS
             # ----------------------------------------------------------
             if tts_task:
                 try:
-                    await tts_task
+                    await asyncio.wait_for(tts_task, timeout=30)
+                except asyncio.TimeoutError:
+                    tts_task.cancel()
+                    print("==> embed TTS task timed out, cancelled")
                 except Exception as e:
-                    print(f"==> TTS pipeline task error: {e}", flush=True)
- 
+                    print(f"==> embed TTS pipeline error: {e}", flush=True)
+
             # ----------------------------------------------------------
             # SAVE ASSISTANT RESPONSE
             # ----------------------------------------------------------
             try:
-                rag.add_embed_message(
-                    session_id=embed_session_id,
-                    api_key=api_key,
-                    role="assistant",
-                    content=bot_text,
-                )
+                rag.add_message(chat_id=session_id, role="assistant", content=stored_content)
+                rag.update_last_message(chat_id=session_id, last_message=bot_text)
             except Exception as e:
                 print(f"==> Failed to save assistant message: {e}")
- 
+
             # ----------------------------------------------------------
             # INCREMENT CONVERSATION COUNT
             # ----------------------------------------------------------
@@ -1254,47 +1310,48 @@ async def embed_chat_ws(ws: WebSocket):
                 rag.incrementConversationCount(api_key)
             except Exception as e:
                 print(f"==> Failed to increment conversation count: {e}")
- 
+
             # ----------------------------------------------------------
             # COST TRACKING + CREDIT DEDUCTION
             # ----------------------------------------------------------
             try:
                 cost_aud = account_manager.processUsedCost(
+                    input_tokens=embed_input_tokens,
+                    output_tokens=embed_output_tokens,
                     outputText=bot_text,
-                    outputDiagramText="",
-                    inputText=user_prompt,
                     SST_Length_seconds=len(audio_bytes) / 32000 if audio_bytes else 0,
                     webSearch=False,
                     voice_on=bool(audio_on),
                     diagram_on=False,
+                    model=model,
                 )
- 
+
                 try:
                     rag.addApiKeyCost(api_key, cost_aud)
                 except Exception as e:
                     print(f"==> Failed to add api_key cost: {e}")
- 
+
                 try:
                     new_balance = rag.deductBusinessCredits(owner_user_id, cost_aud)
-                    print(f"==> Embed cost: ${cost_aud:.4f} AUD, balance: ${new_balance:.4f}", flush=True)
- 
+                    print(f"==> Embed cost: ${cost_aud:.4f} AUD | tokens in={embed_input_tokens} out={embed_output_tokens} | balance: ${new_balance:.4f}", flush=True)
+
                     if new_balance < 0.50:
                         await ws.send_json({"type": "credits_low", "balance": new_balance, "message": "Credits running low"})
                 except Exception as e:
                     print(f"==> Failed to deduct business credits: {e}")
- 
+
             except Exception as e:
                 print(f"==> Embed cost tracking failed: {e}", flush=True)
- 
+
             # ----------------------------------------------------------
             # DONE
             # ----------------------------------------------------------
             try:
                 await ws.send_json({"type": "done"})
-                print("==> DONE sent, turn complete", flush=True)
+                print("==> embed DONE sent", flush=True)
             except Exception as e:
                 print(f"==> Failed to send done: {e}", flush=True)
- 
+
     except WebSocketDisconnect:
         return
     except Exception as e:
@@ -1308,4 +1365,3 @@ async def embed_chat_ws(ws: WebSocket):
             await ws.close()
         except Exception:
             pass
- 
