@@ -158,13 +158,13 @@ async def _tts_pipeline(ws, sentences_queue: asyncio.Queue, voice_id: str, done_
             break
         
         try:
-            ROUTING_TAGS = {'none', 'inline', 'diagram', 'code', 'math'}
+            ROUTING_TAGS = {'none', 'inline', 'diagram', 'code', 'math', 'html'}
             cleaned = strip_markdown(sentence)
             if not cleaned or len(cleaned.strip()) < 3:
                 continue
             if cleaned.strip().lower() in ROUTING_TAGS:
                 continue
-            cleaned = re.sub(r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH)\]?\s*$', '', cleaned, flags=re.IGNORECASE).strip()
+            cleaned = re.sub(r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH|HTML)\]?\s*$', '', cleaned, flags=re.IGNORECASE).strip()
             if not cleaned or len(cleaned) < 3:
                 continue
             result = await tts_instance.synthesize_sentence(cleaned, voice_id)
@@ -235,7 +235,7 @@ def _extract_routing_tag(text: str) -> tuple:
     """
     import re
     # Match routing tag at end of text (possibly with trailing whitespace)
-    match = re.search(r'\[(NONE|INLINE|DIAGRAM|CODE|MATH)\]\s*$', text, re.IGNORECASE)
+    match = re.search(r'\[(NONE|INLINE|DIAGRAM|CODE|MATH|HTML)\]\s*$', text, re.IGNORECASE)
     if match:
         tag = match.group(1).upper()
         cleaned = text[:match.start()].rstrip()
@@ -245,8 +245,8 @@ def _extract_routing_tag(text: str) -> tuple:
     lines = text.strip().rsplit('\n', 1)
     if len(lines) == 2:
         last_line = lines[1].strip().upper()
-        if last_line in ('NONE', 'INLINE', 'DIAGRAM', 'CODE', 'MATH',
-                         '[NONE]', '[INLINE]', '[DIAGRAM]', '[CODE]', '[MATH]'):
+        if last_line in ('NONE', 'INLINE', 'DIAGRAM', 'CODE', 'MATH', 'HTML',
+                 '[NONE]', '[INLINE]', '[DIAGRAM]', '[CODE]', '[MATH]', '[HTML]'):
             tag = last_line.strip('[]')
             return lines[0].rstrip(), tag
     
@@ -498,36 +498,7 @@ async def audio_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "error", "message": f"Failed to load history: {str(e)}"})
                 continue
 
-            # SAVE TO DB
-            try:
-                stored_content = bot_text
-
-                if visual_aid:
-                    if visual_aid["type"] == "diagram":
-                        # Quick Flash call to summarise what the SVG showed
-                        try:
-                            svg_content = visual_aid.get("svg", "")
-                            summary = await ai.get_chat(
-                                system="You are a concise summariser. In one sentence, describe what this SVG diagram visually shows to the user. Focus on the content and structure, not the SVG syntax.",
-                                user=f"Summarise this diagram for chat history context:\n{svg_content[:3000]}",
-                            )
-                            stored_content += f"\n\n[DIAGRAM WAS SHOWN: {summary.strip()}]"
-                        except Exception:
-                            stored_content += "\n\n[DIAGRAM WAS SHOWN TO USER]"
-
-                    elif visual_aid["type"] == "code":
-                        lang = visual_aid.get("language", "")
-                        code = visual_aid.get("code", "")
-                        stored_content += f"\n\n[CODE WAS SHOWN TO USER]\n```{lang}\n{code}\n```"
-
-                    elif visual_aid["type"] == "math":
-                        stored_content += f"\n\n[MATH WAS SHOWN TO USER]\n{visual_aid.get('content', '')}"
-
-                rag.add_message(chat_id=chat_id, role="assistant", content=stored_content)
-                rag.update_last_message(chat_id=chat_id, last_message=bot_text)
-            except Exception as e:
-                print(f"==> Failed to save message: {e}")
-
+        
             # ----------------------------------------------------------
             # PROCESS FILES
             # ----------------------------------------------------------
@@ -600,13 +571,13 @@ async def audio_chat_ws(ws: WebSocket):
             summary_context = smgr.build_context(chat_id)
             system_prompt = f"{prompt}\n\n{summary_context}" if summary_context else prompt
 
-            recent_history = history[-6:] if len(history) < 6 else history
+            recent_history = history[-100:] if len(history) < 100 else history
 
             if web_search:
                 web_response = get_web_search().web_search(user_text, 3)
                 system_prompt = f"{system_prompt}\n\n{web_response}"
 
-            MAX_INPUT_CHARS = 1000
+            MAX_INPUT_CHARS = 30000
 
             history_lines = []
             for m in recent_history:
@@ -709,7 +680,7 @@ async def audio_chat_ws(ws: WebSocket):
                 # Handle remaining buffer
                 remaining = sentence_buffer.strip()
                 # Strip routing tag before sending to TTS
-                remaining = re.sub(r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH)\]?\s*$', '', remaining, flags=re.IGNORECASE).strip()
+                remaining = re.sub(r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH|HTML)\]?\s*$', '', remaining, flags=re.IGNORECASE).strip()
                 if remaining and len(remaining) > 2:
                     sentences_for_tts.append(remaining)
                     if tts_queue:
@@ -763,7 +734,7 @@ async def audio_chat_ws(ws: WebSocket):
             visual_aid = None
             visual_task = None
 
-            if routing_decision in ("DIAGRAM", "CODE", "MATH"):
+            if routing_decision in ("DIAGRAM", "CODE", "MATH", "HTML"):
                 # Fire visual generation while TTS is still playing
                 async def _generate_visual_content():
                     nonlocal diagram_input_tokens, diagram_output_tokens
@@ -808,7 +779,9 @@ async def audio_chat_ws(ws: WebSocket):
                             if not language or not code_body:
                                 return None
                             return {"type": "code", "language": language, "code": code_body}
- 
+                        if upper.startswith("HTML"):
+                            body = stripped[4:].strip().lstrip(":").strip()
+                            return {"type": "html", "content": body} if body else None
                         # Fallback SVG salvage
                         match = re.search(r'<svg.*?</svg>', stripped, re.DOTALL | re.IGNORECASE)
                         return {"type": "diagram", "svg": match.group(0)} if match else None
@@ -850,7 +823,7 @@ async def audio_chat_ws(ws: WebSocket):
                     visual_aid = None
  
             # Send visual aid to frontend
-            if visual_aid is None and routing_decision in ("DIAGRAM", "CODE", "MATH"):
+            if visual_aid is None and routing_decision in ("DIAGRAM", "CODE", "MATH", "HTML"):
                 try:
                     await ws.send_json({"type": "visual_aid_none"})
                 except Exception:
@@ -861,11 +834,12 @@ async def audio_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "code", "language": visual_aid["language"], "code": visual_aid["code"]})
             elif visual_aid and visual_aid["type"] == "math":
                 await ws.send_json({"type": "math", "content": visual_aid["content"]})
- 
+            elif visual_aid and visual_aid["type"] == "html":
+                            await ws.send_json({"type": "html", "content": visual_aid["content"]})
             # Save visual to DB
             if visual_aid and visual_aid.get("type") not in (None, "inline"):
                 try:
-                    content_to_save = visual_aid.get("svg") or visual_aid.get("code") or visual_aid.get("content", "")
+                    content_to_save = visual_aid.get("svg") or visual_aid.get("code") or visual_aid.get("content", "") or visual_aid.get("math") or visual_aid.get("html")
                     rag.save_visual(
                         session_id=chat_id,
                         visual_type=visual_aid["type"],
@@ -913,7 +887,7 @@ async def audio_chat_ws(ws: WebSocket):
             try:
                 billable_visual_text = ""
                 if visual_aid:
-                    billable_visual_text = visual_aid.get("svg") or visual_aid.get("code") or visual_aid.get("content", "")
+                    billable_visual_text = visual_aid.get("svg") or visual_aid.get("code") or visual_aid.get("math") or visual_aid.get("html") or visual_aid.get("content", "")
 
                 cost = account_manager.processUsedCost(
                     # Call 1 — real tokens
@@ -1240,10 +1214,10 @@ async def embed_chat_ws(ws: WebSocket):
                         sentence_buffer = sentence_buffer[cut:]
 
                         # Filter garbage before sending to TTS
-                        ROUTING_TAGS = {'none', 'inline', 'diagram', 'code', 'math'}
+                        ROUTING_TAGS = {'none', 'inline', 'diagram', 'code', 'math', 'html'}
                         if sentence and len(sentence) > 2 and sentence.strip().lower() not in ROUTING_TAGS:
                             cleaned_sentence = re.sub(
-                                r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH)\]?\s*$', '',
+                                r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH|HTML)\]?\s*$', '',
                                 sentence, flags=re.IGNORECASE
                             ).strip()
                             if cleaned_sentence and len(cleaned_sentence) > 2:
@@ -1254,7 +1228,7 @@ async def embed_chat_ws(ws: WebSocket):
                 # Handle remaining buffer
                 remaining = sentence_buffer.strip()
                 remaining = re.sub(
-                    r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH)\]?\s*$', '',
+                    r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH|HTML)\]?\s*$', '',
                     remaining, flags=re.IGNORECASE
                 ).strip()
                 if remaining and len(remaining) > 2:
