@@ -197,6 +197,17 @@ variables for all colors — never hex, rgb(), or named colors. No external
 libraries or CDN links. Fully self-contained. Make it visually clean and
 functional using the CSS variables available.
 
+VISUAL QUALITY RULES:
+- Bar charts must use actual div bars with height proportional to value. Never just floating numbers.
+  Each bar must have: a colored background, explicit pixel height, min-height 4px, border-radius on top corners.
+- Buttons must have visible borders, padding, and hover states. Never plain unstyled text.
+- Use a clean card wrapper: white background, border-radius 12px, padding 24px, subtle border.
+- Color scheme: use a cohesive palette. Pick 3-4 hex colors and stick to them. Avoid browser defaults.
+- Typography: set font-family: system-ui on the root element. Labels 12-13px, values 14-15px bold, titles 18px.
+- Spacing: generous padding and gaps. Minimum 8px gap between elements, 16-24px section padding.
+- Interactive states: all buttons and controls must have cursor:pointer and a hover background change.
+- The overall widget must look polished enough to ship in a real product — not like a browser default HTML page.
+
 HTML
 <style>
   .container {
