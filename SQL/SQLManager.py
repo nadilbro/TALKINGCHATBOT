@@ -1048,7 +1048,48 @@ class VectorRAGService:
 
 
 
+# -----------------------------------------------------------------------
+# MICROSOFT OAUTH TOKENS
+# -----------------------------------------------------------------------
 
+def save_microsoft_tokens(self, user_id: str, access_token: str, refresh_token: str, expires_at, scopes: str = None):
+    self._get_conn()
+    try:
+        with self.conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO microsoft_tokens (user_id, access_token, refresh_token, token_expires_at, scopes)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (user_id) DO UPDATE SET
+                    access_token = EXCLUDED.access_token,
+                    refresh_token = EXCLUDED.refresh_token,
+                    token_expires_at = EXCLUDED.token_expires_at,
+                    scopes = EXCLUDED.scopes,
+                    updated_at = NOW()
+            """, (user_id, access_token, refresh_token, expires_at, scopes))
+        self.conn.commit()
+    except Exception:
+        self.conn.rollback()
+        raise
+
+def get_microsoft_tokens(self, user_id: str) -> dict | None:
+    self._get_conn()
+    with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("""
+            SELECT access_token, refresh_token, token_expires_at, scopes
+            FROM microsoft_tokens WHERE user_id = %s
+        """, (user_id,))
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+def delete_microsoft_tokens(self, user_id: str):
+    self._get_conn()
+    try:
+        with self.conn.cursor() as cur:
+            cur.execute("DELETE FROM microsoft_tokens WHERE user_id = %s", (user_id,))
+        self.conn.commit()
+    except Exception:
+        self.conn.rollback()
+        raise
  
 """
 Bubbleworks is a self-service laundromat located in Caroline Springs, Victoria, Australia, operating at https://www.bubbleworks.com.au.
