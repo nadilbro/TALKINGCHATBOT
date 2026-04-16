@@ -143,6 +143,21 @@ async def create_calendar_event(
     attendee_emails: list[str] = [],
 ) -> dict:
     """Book a new calendar event."""
+
+    import base64, json
+    
+    def decode_jwt_payload(token):
+        try:
+            payload = token.split(".")[1]
+            payload += "=" * (4 - len(payload) % 4)
+            return json.loads(base64.b64decode(payload))
+        except:
+            return {}
+    
+    decoded = decode_jwt_payload(access_token)
+    print(f"==> TOKEN AUDIENCE: {decoded.get('aud')}")
+    print(f"==> TOKEN SCOPES: {decoded.get('scp')}")
+    print(f"==> TOKEN UPN: {decoded.get('upn')}")
     payload = {
         "subject": subject,
         "body": {"contentType": "Text", "content": body},
