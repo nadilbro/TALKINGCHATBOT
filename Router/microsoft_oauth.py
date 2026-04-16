@@ -70,6 +70,7 @@ async def microsoft_status(user=Depends(verify_token)):
     """Check if a user has Microsoft connected."""
     user_id = user["uid"]
     tokens = rag.get_microsoft_tokens(user_id)
+    print(f"==> STORED SCOPES: {tokens.get('scopes') if tokens else 'No tokens'}")
     return {"connected": tokens is not None}
 
 

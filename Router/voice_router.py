@@ -1337,6 +1337,7 @@ async def agent_chat_ws(ws: WebSocket):
             # --- EXECUTE CALENDAR ACTION ---
             if calendar_action and calendar_payload:
                 access_token = await get_valid_access_token(user_id, rag)
+                print(f"==> ACCESS TOKEN (first 20 chars): {access_token[:20] if access_token else 'None'}")
                 if not access_token:
                     await ws.send_json({"type": "error", "message": "Microsoft not connected"})
                 else:
