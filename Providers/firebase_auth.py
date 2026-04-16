@@ -22,6 +22,10 @@ def _get_firebase_app():
     return _firebase_app
 
 
+async def verify_token_from_string(token: str) -> dict:
+    decoded = auth.verify_id_token(token)
+    return decoded
+
 # ---------------------------------------------------------------------------
 # HTTP endpoint auth — use as a FastAPI dependency
 # ---------------------------------------------------------------------------
