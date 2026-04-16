@@ -1346,8 +1346,8 @@ async def agent_chat_ws(ws: WebSocket):
                             result = await create_calendar_event(
                                 access_token=access_token,
                                 subject=calendar_payload["subject"],
-                                start=datetime.fromisoformat(calendar_payload["start"]),
-                                end=datetime.fromisoformat(calendar_payload["end"]),
+                                start=datetime.fromisoformat(calendar_payload["start"].replace("Z", "+00:00")),
+                                end=datetime.fromisoformat(calendar_payload["end"].replace("Z", "+00:00")),
                                 body=calendar_payload.get("body", ""),
                                 attendee_emails=calendar_payload.get("attendees", []),
                             )
