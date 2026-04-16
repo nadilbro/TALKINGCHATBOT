@@ -946,7 +946,7 @@ async def audio_chat_ws(ws: WebSocket):
 
 @router.websocket("/audio_chat_ws")
 async def agent_chat_ws(ws: WebSocket):
-    print("HIT audio_chat_ws")
+    print("HIT agent_chat_ws")
     await ws.accept()
     try:
         user = await verify_ws_token(ws)
@@ -1199,6 +1199,7 @@ async def agent_chat_ws(ws: WebSocket):
             # INTEGRATIONS CHECK (check if there is integrations enabled for this User)
             # ----------------------------------------------------------
             integrators = rag.checkIntegrations(user_id) #MVP, we force the user to choose a specific integrator. Which one to use. Later one we can create a loop where the AI asks which one the user would like to use
+            print(f"==> INTEGRATIONS CHECK: {integrators} for {user_id}")
             if integrators: 
                 #Then we add logic to the AI to say hey, these are the integrations the user has, if needed, ask the user what integrator they would like to use
                 system_prompt += (
