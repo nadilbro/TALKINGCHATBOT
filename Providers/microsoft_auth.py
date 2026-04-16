@@ -163,5 +163,7 @@ async def create_calendar_event(
             },
             json=payload,
         )
+        print(f"==> Graph API status: {resp.status_code}")
+        print(f"==> Graph API response: {resp.text}")
         resp.raise_for_status()
         return resp.json()
