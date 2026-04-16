@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from Router.stripe_router import router as stripe_router
 from SQL.db_init import init_db
 from Router.stripe_business_router import router as stripe_business_router
+from Router.microsoft_oauth import router as microsoft_router
 app = FastAPI()
 
 
@@ -28,6 +29,8 @@ app.include_router(stripe_router)
 app.include_router(voice_router)
 app.include_router(embed_router)   
 app.include_router(stripe_business_router)
+app.include_router(microsoft_router)
+
 
 @app.get("/")
 def root():

@@ -1091,6 +1091,16 @@ def delete_microsoft_tokens(self, user_id: str):
         self.conn.rollback()
         raise
  
+
+
+# INTEGRATIONS CHECK 
+
+def checkIntegrations(self, user_id: str) -> bool:
+    self._get_conn()
+    with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT integrator FROM accounts WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+        return row["integrator"] if row else None
 """
 Bubbleworks is a self-service laundromat located in Caroline Springs, Victoria, Australia, operating at https://www.bubbleworks.com.au.
 It is situated inside the Westsprings Shopping Centre at Shop A12, 1042 Western Highway, Caroline Springs VIC 3023.

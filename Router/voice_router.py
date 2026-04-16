@@ -19,11 +19,14 @@ import time
 from Providers.Account_Manager import AccountManager
 router = APIRouter(prefix="/system", tags=["chat"])
 from Providers.file_extractor import FileExtractor
+import json
+from Providers.microsoft_auth import *
 summary_mgr = None
 rag = VectorRAGService()
 ai = AIProvider(rag)
 account_manager = AccountManager(rag)
 fileE = FileExtractor(ai)
+from datetime import datetime, timezone
 tts = None
 tav = None
 stt = None
@@ -384,6 +387,9 @@ async def chat_diagram_init(init_details: DiagramInit, user=Depends(verify_token
     return {"visuals": visuals}
 
 
+# -----------------------------------------------------------------------
+# FOR NORMAL CHATTING
+# -----------------------------------------------------------------------
 
 @router.websocket("/audio_chat_ws")
 async def audio_chat_ws(ws: WebSocket):
@@ -422,6 +428,7 @@ async def audio_chat_ws(ws: WebSocket):
             pro_mode   = payload.get("pro_mode", False)
             raw_audio  = payload.get("audio_bytes")
 
+
             # Multi-file support with legacy single-file fallback
             files_payload = payload.get("files") or []
             if not files_payload:
@@ -440,6 +447,8 @@ async def audio_chat_ws(ws: WebSocket):
             # ----------------------------------------------------------
             # CREDIT CHECK
             # ----------------------------------------------------------
+
+
             if not rag.hasEnoughCredits(user_id):
                 await ws.send_json({"type": "error", "message": "You have no credits remaining. Please top up to continue chatting.", "code": "NO_CREDITS"})
                 await ws.send_json({"type": "done"})
@@ -448,9 +457,15 @@ async def audio_chat_ws(ws: WebSocket):
             chat_output_tokens = 0
             diagram_input_tokens = 0
             diagram_output_tokens = 0
+
+
+
             # ----------------------------------------------------------
             # FILE COUNT CAP
             # ----------------------------------------------------------
+
+
+
             if len(files_payload) > MAX_FILES:
                 await ws.send_json({"type": "error", "message": f"Max {MAX_FILES} files per message.", "code": "TOO_MANY_FILES"})
                 await ws.send_json({"type": "done"})
@@ -459,6 +474,9 @@ async def audio_chat_ws(ws: WebSocket):
             # ----------------------------------------------------------
             # SPEECH TO TEXT
             # ----------------------------------------------------------
+
+
+
             if audio_bytes:
                 try:
                     stt_instance = get_stt()
@@ -921,7 +939,507 @@ async def audio_chat_ws(ws: WebSocket):
             await ws.close()
         except Exception:
             pass
+
+# -----------------------------------------------------------------------
+# FOR AGENT MODE (BOOKINGS)
+# -----------------------------------------------------------------------
+
+@router.websocket("/audio_chat_ws")
+async def agent_chat_ws(ws: WebSocket):
+    print("HIT audio_chat_ws")
+    await ws.accept()
+    try:
+        user = await verify_ws_token(ws)
+    except ValueError:
+        return
+
+    try:
+        while True:
+            try:
+                payload = await ws.receive_json()
+            except WebSocketDisconnect:
+                return
+            except Exception:
+                await ws.send_json({"type": "error", "message": "Invalid JSON payload"})
+                continue
+
+            if _as_str(payload.get("type")).lower() == "close":
+                await ws.send_json({"type": "done"})
+                await ws.close()
+                return
+
+            # ----------------------------------------------------------
+            # PARSE PAYLOAD
+            # ----------------------------------------------------------
+            user_id    = _as_str(payload.get("user_id") or payload.get("site_id"))
+            chat_id    = _as_str(payload.get("chat_id"))
+            user_text  = _as_str(payload.get("message"))
+            voice_id   = _as_str(payload.get("voice_name"))
+            prompt     = _as_str(payload.get("prompt"))
+            web_search = _as_str(payload.get("web_search"))
+            audio_on   = payload.get("voice_on", True)
+            pro_mode   = payload.get("pro_mode", False)
+            raw_audio  = payload.get("audio_bytes")
+            integrations = True
+
+            # Multi-file support with legacy single-file fallback
+            files_payload = payload.get("files") or []
+            if not files_payload:
+                legacy_raw  = payload.get("file_bytes")
+                legacy_name = payload.get("file_name")
+                if legacy_raw and legacy_name:
+                    files_payload = [{"file_bytes": legacy_raw, "file_name": legacy_name}]
+
+            MAX_FILES             = 5
+            MAX_TOTAL_UPLOAD_BYTES = 40 * 1024 * 1024  # 40MB
+
+            if raw_audio and "," in raw_audio:
+                raw_audio = raw_audio.split(",", 1)[1]
+            audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
+
+            # ----------------------------------------------------------
+            # CREDIT CHECK
+            # ----------------------------------------------------------
+
+
+            if not rag.hasEnoughCredits(user_id):
+                await ws.send_json({"type": "error", "message": "You have no credits remaining. Please top up to continue chatting.", "code": "NO_CREDITS"})
+                await ws.send_json({"type": "done"})
+                continue
+            chat_input_tokens = 0 
+            chat_output_tokens = 0
+            diagram_input_tokens = 0
+            diagram_output_tokens = 0
+
+
+            # ----------------------------------------------------------
+            # FILE COUNT CAP
+            # ----------------------------------------------------------
+
+
+
+            if len(files_payload) > MAX_FILES:
+                await ws.send_json({"type": "error", "message": f"Max {MAX_FILES} files per message.", "code": "TOO_MANY_FILES"})
+                await ws.send_json({"type": "done"})
+                continue
+
+            # ----------------------------------------------------------
+            # SPEECH TO TEXT
+            # ----------------------------------------------------------
+
+
+
+            if audio_bytes:
+                try:
+                    stt_instance = get_stt()
+                    user_text = stt_instance.get_transcript(audio_bytes)
+                    if not user_text:
+                        await ws.send_json({"type": "error", "message": "Could not understand audio. Try again."})
+                        continue
+                    await ws.send_json({"type": "transcript", "text": user_text})
+                except Exception as e:
+                    traceback.print_exc()
+                    await ws.send_json({"type": "error", "message": f"Transcription failed: {e}"})
+                    continue
+
+            if not user_id or not chat_id or (not user_text and not audio_bytes):
+                await ws.send_json({"type": "error", "message": "Missing user_id/chat_id/message"})
+                continue
+
+            # ----------------------------------------------------------
+            # VOICE ID FALLBACK
+            # ----------------------------------------------------------
+            if not voice_id:
+                try:
+                    avatar_data = rag.get_avatar(user_id, chat_id)
+                    if avatar_data:
+                        voice_id = _as_str(avatar_data[1])
+                except Exception:
+                    pass
+                if not voice_id:
+                    voice_id = "UgBBYS2sOqTuMpoF3BR0"
+
+            # ----------------------------------------------------------
+            # LOAD HISTORY
+            # ----------------------------------------------------------
+            try:
+                history = rag.get_recent_messages(user_id=user_id, chat_id=chat_id, limit=20)
+            except Exception as e:
+                await ws.send_json({"type": "error", "message": f"Failed to load history: {str(e)}"})
+                continue
+
         
+            # ----------------------------------------------------------
+            # PROCESS FILES
+            # ----------------------------------------------------------
+            file_context     = ""
+            image_attachments = []
+            file_text_parts  = []
+            total_upload_bytes = 0
+            upload_too_large = False
+
+            for idx, f in enumerate(files_payload):
+                raw_file  = f.get("file_bytes")
+                file_name = f.get("file_name")
+
+                if not raw_file or not file_name:
+                    continue
+
+                if "," in raw_file:
+                    raw_file = raw_file.split(",", 1)[1]
+
+                try:
+                    file_bytes_decoded = base64.b64decode(raw_file)
+                except Exception as e:
+                    await ws.send_json({"type": "error", "message": f"Could not decode {file_name}."})
+                    continue
+
+                total_upload_bytes += len(file_bytes_decoded)
+                if total_upload_bytes > MAX_TOTAL_UPLOAD_BYTES:
+                    await ws.send_json({"type": "error", "message": f"Total upload exceeds {MAX_TOTAL_UPLOAD_BYTES // (1024*1024)}MB limit.", "code": "UPLOAD_TOO_LARGE"})
+                    upload_too_large = True
+                    break
+
+                try:
+                    ext = file_name.lower().split(".")[-1]
+                    if ext in ("png", "jpg", "jpeg", "webp"):
+                        # Image — pass directly to vision
+                        mime_map = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
+                        image_attachments.append({"mime_type": mime_map[ext], "data": file_bytes_decoded})
+                        file_text_parts.append(f"[Image {idx + 1}: {file_name}]")
+                        print(f"==> Image attached: {file_name}")
+                    else:
+                        # Document — extract + summarise
+                        extracted = await fileE.extract_text(file_bytes_decoded, file_name)
+                        if extracted and len(extracted) > 500:
+                            summary_prompt = (
+                                "Summarise the key information, questions, and any given answers from the following content "
+                                "in a concise way that preserves all important values, equations, and steps. "
+                                "Do not explain or elaborate, just extract and compress:\n\n"
+                                + extracted
+                            )
+                            extracted = await ai.chat(site_id=user_id, system="You are a precise summariser.", user=summary_prompt)
+                            print(f"==> File summarised: {file_name}, length={len(extracted)}")
+                        file_text_parts.append(f"=== File {idx + 1}: {file_name} ===\n{extracted}")
+                        print(f"==> File processed: {file_name}")
+                except Exception as e:
+                    traceback.print_exc()
+                    await ws.send_json({"type": "error", "message": f"Could not read {file_name}: {e}"})
+
+            if upload_too_large:
+                await ws.send_json({"type": "done"})
+                continue
+
+            if file_text_parts:
+                file_context = "\n\n".join(file_text_parts)
+                print(f"==> Total file_context length: {len(file_context)}")
+
+            # ----------------------------------------------------------
+            # BUILD BASE PROMPT
+            # ----------------------------------------------------------
+            smgr = get_summary_manager()
+            summary_context = smgr.build_context(chat_id)
+            system_prompt = f"{prompt}\n\n{summary_context}" if summary_context else prompt
+
+            recent_history = history[-100:] if len(history) < 100 else history
+
+            if web_search:
+                web_response = get_web_search().web_search(user_text, 3)
+                system_prompt = f"{system_prompt}\n\n{web_response}"
+
+            MAX_INPUT_CHARS = 30000
+
+            history_lines = []
+            for m in recent_history:
+                role    = (m.get("role") or "").lower()
+                content = (m.get("content") or "").strip()
+                if not content:
+                    continue
+                if role == "user":
+                    if len(content) > MAX_INPUT_CHARS:
+                        content = content[:MAX_INPUT_CHARS]
+                    history_lines.append(f"User: {content}")
+                elif role == "assistant":
+                    history_lines.append(f"Assistant: {content}")
+
+            conversation_history = "\n".join(history_lines)
+            if conversation_history or summary_context:
+                user_prompt = f"Conversation history:\n{conversation_history}\n\nLatest user message:\n{user_text}"
+            else:
+                user_prompt = user_text
+
+            
+            # File context injection
+            if file_context:
+                system_prompt = (
+                    f"{system_prompt}\n\n"
+                    f"The user has attached {len(files_payload)} file(s). Here is the content:\n{file_context}\n\n"
+                    "Use this as context. Do not read it verbatim. Explain conversationally."
+                )
+            else:
+                system_prompt = f"{system_prompt}\n\nNo files attached."
+            
+
+            # ----------------------------------------------------------
+            # LENGTH RULE
+            # ----------------------------------------------------------
+            if audio_on:
+                system_prompt += (
+                    "\n\nLENGTH RULE: This response will be spoken aloud. Keep it under 120 words. "
+                    "Lead with the core answer, then the most important detail. "
+                    "If the topic needs a visual, keep your spoken response to a brief summary."
+                )
+            else:
+                system_prompt += (
+                    "\n\nLENGTH RULE: Audio is off. You have room to be thorough. "
+                    "Use headers, lists, and examples freely."
+                )
+                
+            # ----------------------------------------------------------
+            # INTEGRATIONS CHECK (check if there is integrations enabled for this User)
+            # ----------------------------------------------------------
+            integrators = rag.checkIntegrations(user_id) #MVP, we force the user to choose a specific integrator. Which one to use. Later one we can create a loop where the AI asks which one the user would like to use
+            if integrators: 
+                #Then we add logic to the AI to say hey, these are the integrations the user has, if needed, ask the user what integrator they would like to use
+                system_prompt += (
+                    "\n\nINTEGRATIONS: The user has connected Microsoft Calendar. "
+                    "If the user asks to book, schedule, or create an event/meeting/appointment, respond naturally confirming what you're doing, then at the very end of your response append a calendar action in this exact format with no space between the tag and JSON:\n"
+                    "[CALENDAR_WRITE]{\"subject\": \"<title>\", \"start\": \"<ISO datetime>\", \"end\": \"<ISO datetime>\", \"body\": \"<optional notes>\", \"attendees\": []}\n"
+                    "If the user asks to check, view, or list their calendar/events/schedule, respond naturally then append:\n"
+                    "[CALENDAR_READ]{\"days_ahead\": 7}\n"
+                    "IMPORTANT: Only append the tag if a calendar action is clearly needed. For normal conversation, do not append any calendar tag."
+                )
+            else:
+                system_prompt += (
+                    "\n\nINTEGRATIONS RULE: User has not yet connected services to the AI for you to be able to perform calendar actions"
+                )
+
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            system_prompt += (
+                f"\n\nToday's date is {today} (UTC)."
+            )
+            # ----------------------------------------------------------
+            # GENERATE RESPONSE (streaming to client + per-sentence TTS)
+            # ----------------------------------------------------------
+            try: 
+                full_text_parts = []
+                sentence_buffer = ""
+                sentences_for_tts = []
+                tts_queue = None
+                tts_task = None
+                tts_done_event = None
+                
+                if audio_on:
+                    tts_queue = asyncio.Queue()
+                    tts_done_event = asyncio.Event()
+                    tts_task = asyncio.create_task(
+                        _tts_pipeline(ws, tts_queue, voice_id, tts_done_event)
+                    )
+                
+                routing_tag_found = False
+
+                async for delta in ai.stream(
+                    site_id=user_id,
+                    system=system_prompt,
+                    user=user_prompt,
+                    images=image_attachments or None,
+                ):
+                    if delta.startswith("__USAGE__"):
+                        try:
+                            parts = delta[len("__USAGE__"):].split(",")
+                            chat_input_tokens  += int(parts[0])
+                            chat_output_tokens += int(parts[1])
+                        except Exception:
+                            pass
+                        continue
+
+                    full_text_parts.append(delta)
+                    await ws.send_json({"type": "text_delta", "text": delta})
+
+                    sentence_buffer += delta
+                    while re.search(r'[.?!]\s', sentence_buffer):
+                        match = re.search(r'[.?!]\s', sentence_buffer)
+                        cut = match.end()
+                        sentence = sentence_buffer[:cut].strip()
+                        sentence_buffer = sentence_buffer[cut:]
+                        if sentence and len(sentence) > 2:
+                            sentences_for_tts.append(sentence)
+                            if tts_queue and not routing_tag_found:
+                                await tts_queue.put(sentence)
+
+                # Handle remaining buffer
+                remaining = sentence_buffer.strip()
+                remaining = re.sub(r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH|HTML)\]?\s*$', '', remaining, flags=re.IGNORECASE).strip()
+                if remaining and len(remaining) > 2:
+                    sentences_for_tts.append(remaining)
+                    if tts_queue:
+                        await tts_queue.put(remaining)
+
+                if tts_done_event:
+                    tts_done_event.set()
+
+                raw_text = "".join(full_text_parts)
+                print(f"==> RAW TAIL: {repr(raw_text[-80:])}", flush=True)
+                bot_text, routing_decision = _extract_routing_tag(raw_text)
+                print(f"==> ROUTING: {routing_decision}", flush=True)
+                # --- CALENDAR TOOL DETECTION ---
+                calendar_action = None
+                calendar_payload = None
+
+                cal_match = re.search(r'\[(CALENDAR_WRITE|CALENDAR_READ)\](\{.*?\})', raw_text, re.DOTALL)
+                if cal_match:
+                    calendar_action = cal_match.group(1)   # "CALENDAR_WRITE" or "CALENDAR_READ"
+                    try:
+                        calendar_payload = json.loads(cal_match.group(2))
+                    except Exception as e:
+                        print(f"==> Failed to parse calendar JSON: {e}")
+                    
+                    # Strip it from bot_text so user doesn't see the raw tag
+                    bot_text = re.sub(r'\[(CALENDAR_WRITE|CALENDAR_READ)\]\{.*?\}', '', bot_text, flags=re.DOTALL).strip()
+
+                bot_text = fix_markdown_formatting(bot_text)
+                await ws.send_json({"type": "text_done", "text": bot_text})
+
+                if not sentences_for_tts:
+                    await ws.send_json({"type": "error", "message": "No response generated"})
+                    await ws.send_json({"type": "done"})
+                    if tts_task:
+                        tts_task.cancel()
+                    continue
+
+                print(f"==> Routing decision: {routing_decision}", flush=True)
+
+            except Exception as e:
+                await ws.send_json({"type": "error", "message": f"AI failed: {str(e)}"})
+                if tts_task:
+                    tts_task.cancel()
+                continue
+            
+
+            # ----------------------------------------------------------
+            # WAIT FOR TTS TO FINISH
+            # ----------------------------------------------------------
+            if tts_task:
+                try:
+                    await asyncio.wait_for(tts_task, timeout=30)
+                except asyncio.TimeoutError:
+                    tts_task.cancel()
+                    print("==> TTS task timed out, cancelled")
+                except Exception as e:
+                    print(f"==> TTS pipeline task error: {e}", flush=True)
+            
+
+            # Tell frontend no visual coming
+            await ws.send_json({"type": "visual_aid_none"})
+
+
+            # --- EXECUTE CALENDAR ACTION ---
+            if calendar_action and calendar_payload:
+                access_token = await get_valid_access_token(user_id, rag)
+                if not access_token:
+                    await ws.send_json({"type": "error", "message": "Microsoft not connected"})
+                else:
+                    try:
+                        if calendar_action == "CALENDAR_WRITE":
+                            result = await create_calendar_event(
+                                access_token=access_token,
+                                subject=calendar_payload["subject"],
+                                start=datetime.fromisoformat(calendar_payload["start"]),
+                                end=datetime.fromisoformat(calendar_payload["end"]),
+                                body=calendar_payload.get("body", ""),
+                                attendee_emails=calendar_payload.get("attendees", []),
+                            )
+                            await ws.send_json({"type": "calendar_done", "message": "Event booked!", "event": result})
+
+                        elif calendar_action == "CALENDAR_READ":
+                            events = await list_calendar_events(
+                                access_token=access_token,
+                                days_ahead=calendar_payload.get("days_ahead", 7),
+                            )
+                            await ws.send_json({"type": "calendar_events", "events": events})
+
+                    except Exception as e:
+                        print(f"==> Calendar action failed: {e}")
+                        await ws.send_json({"type": "error", "message": f"Calendar action failed: {e}"}) #LATER WE NEED TO ALSO CALL THE AI AGAIN WITH ANOTHER RESPONSE TO THE FACT IT DIDNT WORK. //TWO CALLS
+
+            # ----------------------------------------------------------
+            # SAVE TO DB
+            # ----------------------------------------------------------
+            try:
+                rag.add_message(chat_id=chat_id, role="assistant", content=bot_text)
+                rag.update_last_message(chat_id=chat_id, last_message=bot_text)
+            except Exception:
+                pass        
+            # ----------------------------------------------------------
+            # Summary Builder
+            # ----------------------------------------------------------
+            try:
+                char_count = 0
+                cutoff = len(history)  # start assuming we use all of it
+
+                for j in range(len(history) - 1, -1, -1):
+                    char_count += len(history[j].get("content", ""))
+                    if char_count > 800_000:
+                        cutoff = j + 1  # everything from here forward is within budget
+                        break
+
+
+                trimmed_history = history[cutoff:]
+                recent_for_summary = trimmed_history.copy()
+                recent_for_summary.append({"role": "user", "content": user_text})
+                recent_for_summary.append({"role": "assistant", "content": bot_text})
+                await smgr.on_new_message(chat_id, recent_for_summary[-6:])
+            except Exception as e:
+                print(f"Summary update error: {e}")
+            # ---------------------------------------------------------
+            # MODEL 
+            # ----------------------------------------------------------
+            model = rag.get_model(user_id)
+
+            # ----------------------------------------------------------
+            # COST TRACKING
+            # ----------------------------------------------------------
+            try:
+                billable_visual_text = ""
+
+                cost = account_manager.processUsedCost(
+                    # Call 1 — real tokens
+                    input_tokens=chat_input_tokens+diagram_input_tokens,
+                    output_tokens=chat_output_tokens+diagram_output_tokens,
+                    # Everything else
+                    SST_Length_seconds=len(audio_bytes) / 16000 if audio_bytes else 0,
+                    webSearch=bool(web_search),
+                    voice_on=bool(audio_on),
+                    diagram_on=bool(False), #for agent #TEMP
+                    pro_mode=bool(pro_mode),
+                    image_count=len(image_attachments),
+                    model=model
+                )
+                credits_used = cost / 0.15
+                remaining = rag.deductCredits(user_id, credits_used)
+                print(f"==> Cost: ${cost:.4f} | Credits deducted: {credits_used:.4f} | Remaining: {remaining}")
+            except Exception as e:
+                print(f"==> Cost tracking failed: {e}")
+ 
+            await ws.send_json({"type": "done"})
+ 
+    except Exception as e:
+        print("❌ WS error:", repr(e))
+        traceback.print_exc()
+        try:
+            await ws.send_json({"type": "error", "message": str(e)})
+        except Exception:
+            pass
+        try:
+            await ws.close()
+        except Exception:
+            pass
+        
+
+# -----------------------------------------------------------------------
+# FOR WEBSITE EMBEDDINGS
+# -----------------------------------------------------------------------
+
 @router.websocket("/embed_chat_ws")
 async def embed_chat_ws(ws: WebSocket):
     print("HIT embed_chat_ws")
