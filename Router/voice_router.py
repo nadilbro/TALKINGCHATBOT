@@ -1289,14 +1289,15 @@ async def agent_chat_ws(ws: WebSocket):
                 calendar_action = None
                 calendar_payload = None
 
-                cal_match = re.search(r'\[(CALENDAR_WRITE|CALENDAR_READ)\](\{.*?\})', raw_text, re.DOTALL)
+                cal_match = re.search(r'\[(CALENDAR_WRITE|CALENDAR_READ)\](\{.*\})', raw_text, re.DOTALL)
                 if cal_match:
-                    calendar_action = cal_match.group(1)   # "CALENDAR_WRITE" or "CALENDAR_READ"
+                    calendar_action = cal_match.group(1)
                     try:
-                        calendar_payload = json.loads(cal_match.group(2))
+                        json_str = cal_match.group(2).replace("\\'", "'")
+                        calendar_payload = json.loads(json_str)
                     except Exception as e:
                         print(f"==> Failed to parse calendar JSON: {e}")
-                    
+                        print(f"==> Raw JSON string: {repr(cal_match.group(2))}")
                     # Strip it from bot_text so user doesn't see the raw tag
                     bot_text = re.sub(r'\[(CALENDAR_WRITE|CALENDAR_READ)\]\{.*?\}', '', bot_text, flags=re.DOTALL).strip()
 
