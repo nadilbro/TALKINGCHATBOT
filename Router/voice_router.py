@@ -944,7 +944,7 @@ async def audio_chat_ws(ws: WebSocket):
 # FOR AGENT MODE (BOOKINGS)
 # -----------------------------------------------------------------------
 
-@router.websocket("/audio_chat_ws")
+@router.websocket("/agent_chat_ws")
 async def agent_chat_ws(ws: WebSocket):
     print("HIT agent_chat_ws")
     await ws.accept()
