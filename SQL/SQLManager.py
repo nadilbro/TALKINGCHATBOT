@@ -1048,88 +1048,88 @@ class VectorRAGService:
 
 
 
-# -----------------------------------------------------------------------
-# MICROSOFT OAUTH TOKENS
-# -----------------------------------------------------------------------
+    # -----------------------------------------------------------------------
+    # MICROSOFT OAUTH TOKENS
+    # -----------------------------------------------------------------------
 
-def save_microsoft_tokens(self, user_id: str, access_token: str, refresh_token: str, expires_at, scopes: str = None):
-    self._get_conn()
-    try:
-        with self.conn.cursor() as cur:
+    def save_microsoft_tokens(self, user_id: str, access_token: str, refresh_token: str, expires_at, scopes: str = None):
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("""
+                    INSERT INTO microsoft_tokens (user_id, access_token, refresh_token, token_expires_at, scopes)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        access_token = EXCLUDED.access_token,
+                        refresh_token = EXCLUDED.refresh_token,
+                        token_expires_at = EXCLUDED.token_expires_at,
+                        scopes = EXCLUDED.scopes,
+                        updated_at = NOW()
+                """, (user_id, access_token, refresh_token, expires_at, scopes))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def get_microsoft_tokens(self, user_id: str) -> dict | None:
+        self._get_conn()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
-                INSERT INTO microsoft_tokens (user_id, access_token, refresh_token, token_expires_at, scopes)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (user_id) DO UPDATE SET
-                    access_token = EXCLUDED.access_token,
-                    refresh_token = EXCLUDED.refresh_token,
-                    token_expires_at = EXCLUDED.token_expires_at,
-                    scopes = EXCLUDED.scopes,
-                    updated_at = NOW()
-            """, (user_id, access_token, refresh_token, expires_at, scopes))
-        self.conn.commit()
-    except Exception:
-        self.conn.rollback()
-        raise
+                SELECT access_token, refresh_token, token_expires_at, scopes
+                FROM microsoft_tokens WHERE user_id = %s
+            """, (user_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
 
-def get_microsoft_tokens(self, user_id: str) -> dict | None:
-    self._get_conn()
-    with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("""
-            SELECT access_token, refresh_token, token_expires_at, scopes
-            FROM microsoft_tokens WHERE user_id = %s
-        """, (user_id,))
-        row = cur.fetchone()
-        return dict(row) if row else None
-
-def delete_microsoft_tokens(self, user_id: str):
-    self._get_conn()
-    try:
-        with self.conn.cursor() as cur:
-            cur.execute("DELETE FROM microsoft_tokens WHERE user_id = %s", (user_id,))
-        self.conn.commit()
-    except Exception:
-        self.conn.rollback()
-        raise
- 
-
-
-# INTEGRATIONS CHECK 
-
-def checkIntegrations(self, user_id: str) -> bool:
-    self._get_conn()
-    with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute("SELECT integrator FROM accounts WHERE user_id = %s", (user_id,))
-        row = cur.fetchone()
-        return row["integrator"] if row else None
-"""
-Bubbleworks is a self-service laundromat located in Caroline Springs, Victoria, Australia, operating at https://www.bubbleworks.com.au.
-It is situated inside the Westsprings Shopping Centre at Shop A12, 1042 Western Highway, Caroline Springs VIC 3023.
-This location places the laundromat within a busy retail hub that includes supermarkets, hardware stores, electronics retailers, cafes, and other everyday services.
-The shopping centre provides ample free parking, which makes it convenient for customers transporting large or heavy laundry loads, and it allows people to shop, eat, or run errands while their laundry is being washed or dried.
-Bubbleworks is designed to cater to local residents, families, students, renters, and shift workers who may not have access to large washing machines at home or who need flexible hours.Bubbleworks operates seven days a week with extended hours, opening daily from 6:00 AM and closing at 1:00 AM.
-These long operating hours make it suitable for a wide range of schedules, including early mornings, late nights, and weekends.
-Being open every day, including most public holidays, adds to its reliability as a laundry option for people who cannot rely on standard business-hour services.
-The laundromat follows a self-service model, meaning customers are responsible for loading, operating, and unloading the machines themselves.The facility is equipped with large-capacity commercial washing machines and high-powered dryers.
-The washers are suitable for both small and very large loads, making them ideal for everyday clothing as well as bulky household items.
-Items that can generally be washed include regular clothing such as shirts, pants, underwear, socks, hoodies, and jumpers, as well as towels, bath mats, bed sheets, pillowcases, duvet covers, blankets, light jackets, and some fabric household items like curtains.
-The large machines are particularly useful for families or people washing several days’ worth of laundry at once.
-Customers are expected to check garment care labels before washing and to separate loads by colour and fabric type. The dryers at Bubbleworks are commercial-grade and designed to dry laundry efficiently and evenly.
-They are suitable for cotton clothing, synthetic fabrics, towels, linens, sheets, and duvet covers.
-Heavier items such as blankets and thick towels may require longer drying times.
-Customers are advised not to overload dryers, as this can reduce drying effectiveness and increase drying time.
-Items that should generally be avoided in the dryers include heat-sensitive fabrics, rubber-backed items, delicate garments not designed for tumble drying, leather, suede, or heavily embellished clothing. There are certain items that should not be placed in either the washers or dryers at Bubbleworks.
-These include leather or suede items, silk or wool garments unless they are clearly labelled as machine-wash safe, clothing heavily contaminated with oils, grease, paint, or chemicals, and garments with fragile decorations such as sequins or beads.
-Following these guidelines helps protect both the customer’s items and the machines themselves. Using the laundromat typically involves bringing laundry and detergent, sorting clothes by colour and fabric, selecting an appropriately sized washing machine, loading the laundry, adding detergent, paying for the cycle, and starting the wash.
-Once washing is complete, laundry is transferred to a dryer, a drying time is selected, and the dryer is started.
-Bubbleworks machines support card payment and coin payment, offering flexibility for customers who may not carry cash.The interior of Bubbleworks is designed to be clean, modern, and well-lit, creating a comfortable and safe environment for users of all ages.
-The overall setup is intended to make laundry efficient and straightforward, reducing the number of cycles needed by using large machines and allowing customers to complete their laundry in fewer visits. 
-Bubbleworks combines extended hours, a convenient shopping-centre location, and large-capacity machines to provide a practical and accessible laundry solution for the Caroline Springs community and surrounding areas.
-We have a count of 14 Dryers and 9 Washers.
-We have a televetion for our customers to watch while waiting for the their laundromat to clean.
-If any issues call us.
-For any problems related to your payments please give us a call to help you further.
-If you are not happy with our services, please give us a call on 0429 818 652.
-We only have the one location in Caroline Springs.
- """
-
+    def delete_microsoft_tokens(self, user_id: str):
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute("DELETE FROM microsoft_tokens WHERE user_id = %s", (user_id,))
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
     
+
+
+    # INTEGRATIONS CHECK 
+
+    def checkIntegrations(self, user_id: str) -> bool:
+        self._get_conn()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT integrator FROM accounts WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            return row["integrator"] if row else None
+    """
+    Bubbleworks is a self-service laundromat located in Caroline Springs, Victoria, Australia, operating at https://www.bubbleworks.com.au.
+    It is situated inside the Westsprings Shopping Centre at Shop A12, 1042 Western Highway, Caroline Springs VIC 3023.
+    This location places the laundromat within a busy retail hub that includes supermarkets, hardware stores, electronics retailers, cafes, and other everyday services.
+    The shopping centre provides ample free parking, which makes it convenient for customers transporting large or heavy laundry loads, and it allows people to shop, eat, or run errands while their laundry is being washed or dried.
+    Bubbleworks is designed to cater to local residents, families, students, renters, and shift workers who may not have access to large washing machines at home or who need flexible hours.Bubbleworks operates seven days a week with extended hours, opening daily from 6:00 AM and closing at 1:00 AM.
+    These long operating hours make it suitable for a wide range of schedules, including early mornings, late nights, and weekends.
+    Being open every day, including most public holidays, adds to its reliability as a laundry option for people who cannot rely on standard business-hour services.
+    The laundromat follows a self-service model, meaning customers are responsible for loading, operating, and unloading the machines themselves.The facility is equipped with large-capacity commercial washing machines and high-powered dryers.
+    The washers are suitable for both small and very large loads, making them ideal for everyday clothing as well as bulky household items.
+    Items that can generally be washed include regular clothing such as shirts, pants, underwear, socks, hoodies, and jumpers, as well as towels, bath mats, bed sheets, pillowcases, duvet covers, blankets, light jackets, and some fabric household items like curtains.
+    The large machines are particularly useful for families or people washing several days’ worth of laundry at once.
+    Customers are expected to check garment care labels before washing and to separate loads by colour and fabric type. The dryers at Bubbleworks are commercial-grade and designed to dry laundry efficiently and evenly.
+    They are suitable for cotton clothing, synthetic fabrics, towels, linens, sheets, and duvet covers.
+    Heavier items such as blankets and thick towels may require longer drying times.
+    Customers are advised not to overload dryers, as this can reduce drying effectiveness and increase drying time.
+    Items that should generally be avoided in the dryers include heat-sensitive fabrics, rubber-backed items, delicate garments not designed for tumble drying, leather, suede, or heavily embellished clothing. There are certain items that should not be placed in either the washers or dryers at Bubbleworks.
+    These include leather or suede items, silk or wool garments unless they are clearly labelled as machine-wash safe, clothing heavily contaminated with oils, grease, paint, or chemicals, and garments with fragile decorations such as sequins or beads.
+    Following these guidelines helps protect both the customer’s items and the machines themselves. Using the laundromat typically involves bringing laundry and detergent, sorting clothes by colour and fabric, selecting an appropriately sized washing machine, loading the laundry, adding detergent, paying for the cycle, and starting the wash.
+    Once washing is complete, laundry is transferred to a dryer, a drying time is selected, and the dryer is started.
+    Bubbleworks machines support card payment and coin payment, offering flexibility for customers who may not carry cash.The interior of Bubbleworks is designed to be clean, modern, and well-lit, creating a comfortable and safe environment for users of all ages.
+    The overall setup is intended to make laundry efficient and straightforward, reducing the number of cycles needed by using large machines and allowing customers to complete their laundry in fewer visits. 
+    Bubbleworks combines extended hours, a convenient shopping-centre location, and large-capacity machines to provide a practical and accessible laundry solution for the Caroline Springs community and surrounding areas.
+    We have a count of 14 Dryers and 9 Washers.
+    We have a televetion for our customers to watch while waiting for the their laundromat to clean.
+    If any issues call us.
+    For any problems related to your payments please give us a call to help you further.
+    If you are not happy with our services, please give us a call on 0429 818 652.
+    We only have the one location in Caroline Springs.
+    """
+
+        
