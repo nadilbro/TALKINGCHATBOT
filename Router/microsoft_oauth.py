@@ -13,13 +13,14 @@ rag = VectorRAGService()
 
 
 @router.get("/connect")
-async def microsoft_connect(user=Depends(verify_token)):
-    """
-    Step 1: User hits this to start connecting their Microsoft account.
-    We redirect them to Microsoft's login page.
-    """
+async def microsoft_connect(token: str = Query(...)):
+    try:
+        user = await verify_token_from_string(token)
+    except Exception:
+        return JSONResponse(status_code=401, content={"error": "Invalid token"})
+    
     user_id = user["uid"]
-    auth_url = build_auth_url(state=user_id)  # Pass user_id as state so we know who this is after redirect
+    auth_url = build_auth_url(state=user_id)
     return RedirectResponse(url=auth_url)
 
 
