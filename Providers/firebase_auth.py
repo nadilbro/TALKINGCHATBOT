@@ -23,8 +23,12 @@ def _get_firebase_app():
 
 
 async def verify_token_from_string(token: str) -> dict:
-    decoded = auth.verify_id_token(token)
-    return decoded
+    try:
+        decoded = auth.verify_id_token(token)
+        return decoded
+    except Exception as e:
+        print(f"==> Token verify failed: {e}")
+        raise
 
 # ---------------------------------------------------------------------------
 # HTTP endpoint auth — use as a FastAPI dependency
