@@ -16,7 +16,7 @@ SCOPES = [
     "Calendars.ReadWrite",
 ]
 
-AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
+AUTHORITY = "https://login.microsoftonline.com/common"
 TOKEN_URL  = f"{AUTHORITY}/oauth2/v2.0/token"
 AUTH_URL   = f"{AUTHORITY}/oauth2/v2.0/authorize"
 
