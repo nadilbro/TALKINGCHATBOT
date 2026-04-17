@@ -468,10 +468,11 @@ def _build_integration_prompt(user_id: str) -> str:
         return "\n\nINTEGRATIONS RULE: User has connected services but has not set a default provider. Ask them to select one in settings."
 
 
-# -----------------------------------------------------------------------
-# CALENDAR ACTION EXECUTOR
-# -----------------------------------------------------------------------
-async def _execute_calendar_action(ws, user_id: str, calendar_action: str, calendar_payload: dict, default_integration: str):
+async def _execute_calendar_action(
+    ws, user_id: str, calendar_action: str, calendar_payload: dict,
+    default_integration: str, user_text: str, system_prompt: str,
+    voice_id: str, audio_on: bool
+):
     access_token = await get_valid_access_token(user_id, rag)
     if not access_token:
         await ws.send_json({"type": "error", "message": "Microsoft not connected or token expired."})
@@ -495,11 +496,87 @@ async def _execute_calendar_action(ws, user_id: str, calendar_action: str, calen
                 access_token=access_token,
                 days_ahead=calendar_payload.get("days_ahead", 7),
             )
-            await ws.send_json({"type": "calendar_events", "events": events})
+
+            if events:
+                events_text = "\n".join([
+                    f"- {e.get('subject', 'Untitled')}: {e.get('start', {}).get('dateTime', '')} to {e.get('end', {}).get('dateTime', '')}"
+                    for e in events
+                ])
+            else:
+                events_text = "No upcoming events found."
+
+            print(f"==> Calendar events fetched: {len(events)} events")
+
+            # Second AI pass — stream the response with calendar data injected
+            await _stream_calendar_read_response(
+                ws=ws,
+                user_id=user_id,
+                user_text=user_text,
+                events_text=events_text,
+                system_prompt=system_prompt,
+                voice_id=voice_id,
+                audio_on=audio_on,
+            )
 
     except Exception as e:
         print(f"==> Calendar action failed: {e}")
         await ws.send_json({"type": "error", "message": f"Calendar action failed: {e}"})
+
+
+async def _stream_calendar_read_response(
+    ws, user_id: str, user_text: str, events_text: str,
+    system_prompt: str, voice_id: str, audio_on: bool
+):
+    """Second AI pass — feeds calendar data back to AI and streams the response."""
+    followup_system = (
+        f"{system_prompt}\n\n"
+        "You have just retrieved the user's calendar data. "
+        "Answer their question naturally and conversationally based on it. "
+        "Keep it brief — spoken aloud, under 80 words."
+    )
+    followup_user = (
+        f"The user asked: \"{user_text}\"\n\n"
+        f"Here are their upcoming calendar events:\n{events_text}\n\n"
+        "Answer their question naturally based on this data."
+    )
+
+    tts_queue = tts_task = tts_done_event = None
+
+    try:
+        if audio_on:
+            tts_queue = asyncio.Queue()
+            tts_done_event = asyncio.Event()
+            tts_task = asyncio.create_task(
+                _tts_pipeline(ws, tts_queue, voice_id, tts_done_event)
+            )
+
+        full_text_parts, sentences_for_tts, _, _ = await _stream_ai_response(
+            ws, user_id, followup_system, followup_user,
+            [], audio_on, voice_id, tts_queue, False
+        )
+
+        if tts_done_event:
+            tts_done_event.set()
+
+        raw_text = "".join(full_text_parts)
+        bot_text, _ = _extract_routing_tag(raw_text)
+        bot_text = fix_markdown_formatting(bot_text)
+
+        await ws.send_json({"type": "text_done", "text": bot_text})
+
+        if tts_task:
+            try:
+                await asyncio.wait_for(tts_task, timeout=30)
+            except asyncio.TimeoutError:
+                tts_task.cancel()
+            except Exception as e:
+                print(f"==> Calendar read TTS error: {e}")
+
+    except Exception as e:
+        print(f"==> Calendar read second pass failed: {e}")
+        traceback.print_exc()
+        if tts_task:
+            tts_task.cancel()
 
 
 # -----------------------------------------------------------------------
@@ -926,7 +1003,17 @@ async def audio_chat_ws(ws: WebSocket):
             # EXECUTE CALENDAR ACTION
             # ----------------------------------------------------------
             if calendar_action and calendar_payload:
-                await _execute_calendar_action(ws, user_id, calendar_action, calendar_payload, default_integration)
+                await _execute_calendar_action(
+                    ws=ws,
+                    user_id=user_id,
+                    calendar_action=calendar_action,
+                    calendar_payload=calendar_payload,
+                    default_integration=default_integration,
+                    user_text=user_text,
+                    system_prompt=system_prompt,
+                    voice_id=voice_id,
+                    audio_on=audio_on,
+                )
 
             # ----------------------------------------------------------
             # SAVE TO DB
