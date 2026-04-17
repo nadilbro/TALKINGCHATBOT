@@ -110,3 +110,7 @@ class changeModel(BaseModel):
 
 class toggleDiagramPro(BaseModel):
     toggle: bool
+
+
+class toggleEvent(BaseModel):
+    integrator: str
