@@ -2,7 +2,7 @@ import os
 import httpx
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
-from Providers.firebase_auth import verify_token, verify_token_from_string, _get_firebase_app
+
 load_dotenv()
 
 CLIENT_ID     = os.getenv("MICROSOFT_CLIENT_ID")
@@ -161,8 +161,8 @@ async def create_calendar_event(
     payload = {
         "subject": subject,
         "body": {"contentType": "Text", "content": body},
-        "start": {"dateTime": start.isoformat(), "timeZone": "UTC"},
-        "end":   {"dateTime": end.isoformat(),   "timeZone": "UTC"},
+        "start": {"dateTime": start.isoformat(), "timeZone": "AUS Eastern Standard Time"},
+        "end":   {"dateTime": end.isoformat(),   "timeZone": "AUS Eastern Standard Time"},
         "attendees": [
             {"emailAddress": {"address": e}, "type": "required"}
             for e in attendee_emails
