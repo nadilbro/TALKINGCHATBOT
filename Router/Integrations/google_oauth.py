@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import RedirectResponse, JSONResponse
 from Providers.firebase_auth import verify_token, verify_token_from_string
-from Providers.google_auth import (
+from Providers.Integrations.google_auth import (
     build_auth_url,
     exchange_code_for_tokens,
     token_expiry_from_response,
