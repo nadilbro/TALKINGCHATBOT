@@ -50,7 +50,9 @@ async def google_callback(
             expires_at=expires_at,
             scopes=token_response.get("scope"),
         )
-
+        rag.set_integrator_active(user_id, True)
+        if not rag.getDefaultIntegration(user_id):
+            rag.set_default_integration(user_id, "google")
         print(f"==> Google connected for user {user_id}")
         return RedirectResponse(url="/?google_connected=true")
 
@@ -70,4 +72,12 @@ async def google_status(user=Depends(verify_token)):
 async def google_disconnect(user=Depends(verify_token)):
     user_id = user["uid"]
     rag.delete_google_tokens(user_id)
+    
+    ms_tokens = rag.get_microsoft_tokens(user_id)
+    if not ms_tokens:
+        rag.set_integrator_active(user_id, False)
+        rag.set_default_integration(user_id, None)
+    else:
+        rag.set_default_integration(user_id, "microsoft")
+    
     return {"disconnected": True}

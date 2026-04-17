@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Query
 
-from Providers.APIContracts import SessionBase, SessionCreate, SessionDelete, AccountCreate, toggleDiagramPro, changeModel
+from Providers.APIContracts import SessionBase, SessionCreate, SessionDelete, AccountCreate, toggleDiagramPro, changeModel, toggleEvent
 from SQL.SQLManager import VectorRAGService
 from Providers.ai_provider import AIProvider
 from Providers.startup_provider import StartUp
@@ -139,5 +139,23 @@ async def change_model(data: changeModel, user=Depends(verify_token)):
 async def get_model(user=Depends(verify_token)):
     try:
         return {"model_use": rag.get_model(user["uid"])}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch setting: {e}")
+    
+# -----------------------------------------------------------------------
+# Diagram Enable
+# -----------------------------------------------------------------------
+@router.post("/toggle_event_integrations")
+async def toggle_event_integrations(data: toggleEvent, user=Depends(verify_token)):
+    try:
+        rag.set_default_integration(user["uid"], data.integrator)
+        return {"ok": True, "integrations": data.integrator}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update setting: {e}")
+
+@router.get("/check_event_integrations")
+async def check_event_integrations(user=Depends(verify_token)):
+    try:
+        return {"diagram_use": rag.get_default_integration(user["uid"])}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch setting: {e}")

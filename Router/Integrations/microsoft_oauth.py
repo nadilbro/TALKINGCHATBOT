@@ -56,7 +56,9 @@ async def microsoft_callback(
             expires_at=expires_at,
             scopes=token_response.get("scope"),
         )
-
+        rag.set_integrator_active(user_id, True)
+        if not rag.getDefaultIntegration(user_id):
+            rag.set_default_integration(user_id, "microsoft")
         print(f"==> Microsoft connected for user {user_id}")
         return RedirectResponse(url="/?microsoft_connected=true")
 
@@ -76,7 +78,16 @@ async def microsoft_status(user=Depends(verify_token)):
 
 @router.delete("/disconnect")
 async def microsoft_disconnect(user=Depends(verify_token)):
-    """Remove stored Microsoft tokens for this user."""
     user_id = user["uid"]
     rag.delete_microsoft_tokens(user_id)
+    
+    # If no other providers connected, disable integrations
+    google_tokens = rag.get_google_tokens(user_id)
+    if not google_tokens:
+        rag.set_integrator_active(user_id, False)
+        rag.set_default_integration(user_id, None)
+    else:
+        # Fall back to google as default
+        rag.set_default_integration(user_id, "google")
+    
     return {"disconnected": True}

@@ -1161,6 +1161,39 @@ class VectorRAGService:
             self.conn.rollback()
             raise
         
+    def set_integrator_active(self, user_id: str, active: bool):
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE accounts SET integrator = %s WHERE user_id = %s",
+                    (active, user_id)
+                )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def set_default_integration(self, user_id: str, provider: str | None):
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE accounts SET default_integration = %s WHERE user_id = %s",
+                    (provider, user_id)
+                )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def get_default_integration(self, user_id: str) -> str | None:
+        self._get_conn()
+        with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT default_integration FROM accounts WHERE user_id = %s", (user_id,))
+            row = cur.fetchone()
+            return row["default_integration"] if row else None
+
     """
     Bubbleworks is a self-service laundromat located in Caroline Springs, Victoria, Australia, operating at https://www.bubbleworks.com.au.
     It is situated inside the Westsprings Shopping Centre at Shop A12, 1042 Western Highway, Caroline Springs VIC 3023.
