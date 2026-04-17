@@ -437,19 +437,20 @@ def _build_integration_prompt(user_id: str) -> str:
 
     default_integration = rag.getDefaultIntegration(user_id)
     print(f"==> DEFAULT INTEGRATION: {default_integration} for {user_id}")
-
     if default_integration == "microsoft":
         return (
-            "\n\nINTEGRATIONS: The user has connected Microsoft Calendar as their default provider. "
-            "If the user asks to book, schedule, or create an event/meeting/appointment, respond naturally "
-            "confirming what you're doing, then at the very end of your response append a calendar action "
-            "in this exact format with no space between the tag and JSON:\n"
-            "[CALENDAR_WRITE]{\"subject\": \"<title>\", \"start\": \"<ISO datetime>\", \"end\": \"<ISO datetime>\", \"body\": \"<optional notes>\", \"attendees\": []}\n"
-            "If the user asks to check, view, or list their calendar/events/schedule, respond naturally then append:\n"
-            "[CALENDAR_READ]{\"days_ahead\": 7}\n"
-            "IMPORTANT: Only append the tag if a calendar action is clearly needed. "
+            "\n\nINTEGRATIONS: The user has connected Microsoft Calendar. "
+            "You have the ability to read and write to their calendar.\n\n"
+            "If the user asks to book, schedule, or create an event/meeting/appointment, "
+            "respond naturally confirming what you're doing, then at the very end append:\n"
+            "[CALENDAR_WRITE]{\"subject\": \"<title>\", \"start\": \"<ISO datetime>\", \"end\": \"<ISO datetime>\", \"body\": \"<optional notes>\", \"attendees\": []}\n\n"
+            "If the user asks ANYTHING about their schedule, upcoming events, what they have planned, "
+            "what's on their calendar, or questions like 'what do I have tomorrow', 'am I free at 3pm', "
+            "'what's happening this week' — respond naturally saying you're checking, then at the very end append:\n"
+            "[CALENDAR_READ]{\"days_ahead\": <number based on the question, e.g. 1 for tomorrow, 7 for this week>}\n\n"
+            "IMPORTANT: Only append a tag if a calendar action is clearly needed. "
             "For normal conversation, do not append any calendar tag. "
-            "Do not use apostrophes in field values (e.g. Doctors Appointment not Doctor's Appointment)."
+            "Do not use apostrophes in field values."
         )
     elif default_integration == "google":
         return (
@@ -828,7 +829,10 @@ async def audio_chat_ws(ws: WebSocket):
             if not user_id or not chat_id or (not user_text and not audio_bytes):
                 await ws.send_json({"type": "error", "message": "Missing user_id/chat_id/message"})
                 continue
-
+            try:
+                rag.add_message(chat_id=chat_id, role="user", content=user_text)
+            except Exception as e:
+                print(f"==> Failed to save user message: {e}")
             # ----------------------------------------------------------
             # VOICE ID FALLBACK
             # ----------------------------------------------------------
@@ -943,6 +947,7 @@ async def audio_chat_ws(ws: WebSocket):
                         r'\[(CALENDAR_WRITE|CALENDAR_READ|GOOGLE_CALENDAR_WRITE|GOOGLE_CALENDAR_READ)\]\{[^}]*\}',
                         '', bot_text
                     ).strip()
+
 
                 bot_text = fix_markdown_formatting(bot_text)
                 await ws.send_json({"type": "text_done", "text": bot_text})
