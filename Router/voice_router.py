@@ -19,10 +19,15 @@ from Providers.summary_generator import RollingSummaryManager
 from Providers.STT import DeepgramProvider
 from Providers.Account_Manager import AccountManager
 from Providers.file_extractor import FileExtractor
-from Providers.microsoft_auth import (
-    get_valid_access_token,
-    create_calendar_event,
-    list_calendar_events,
+from Providers.Integrations.microsoft_auth import (
+    get_valid_access_token as ms_get_token,
+    create_calendar_event as ms_create_event,
+    list_calendar_events as ms_list_events,
+)
+from Providers.Integrations.google_auth import (
+    get_valid_access_token as google_get_token,
+    create_calendar_event as google_create_event,
+    list_calendar_events as google_list_events,
 )
 from datetime import datetime, timezone
 
@@ -474,29 +479,57 @@ async def _execute_calendar_action(
     default_integration: str, user_text: str, system_prompt: str,
     voice_id: str, audio_on: bool
 ):
-    access_token = await get_valid_access_token(user_id, rag)
+    # Pick the right provider based on the action tag and default integration
+    is_google = (
+        calendar_action in ("GOOGLE_CALENDAR_WRITE", "GOOGLE_CALENDAR_READ")
+        or default_integration == "google"
+    )
+
+    if is_google:
+        access_token = await google_get_token(user_id, rag)
+        provider_name = "Google"
+    else:
+        access_token = await ms_get_token(user_id, rag)
+        provider_name = "Microsoft"
+
     if not access_token:
-        await ws.send_json({"type": "error", "message": "Microsoft not connected or token expired."})
+        await ws.send_json({"type": "error", "message": f"{provider_name} not connected or token expired."})
         return
 
     try:
         if calendar_action in ("CALENDAR_WRITE", "GOOGLE_CALENDAR_WRITE"):
-            result = await create_calendar_event(
-                access_token=access_token,
-                subject=calendar_payload["subject"],
-                start=datetime.fromisoformat(calendar_payload["start"].replace("Z", "+00:00")),
-                end=datetime.fromisoformat(calendar_payload["end"].replace("Z", "+00:00")),
-                body=calendar_payload.get("body", ""),
-                attendee_emails=calendar_payload.get("attendees", []),
-            )
-            print(f"==> Calendar event created: {result.get('id')}")
+            if is_google:
+                result = await google_create_event(
+                    access_token=access_token,
+                    subject=calendar_payload["subject"],
+                    start=datetime.fromisoformat(calendar_payload["start"].replace("Z", "+00:00")),
+                    end=datetime.fromisoformat(calendar_payload["end"].replace("Z", "+00:00")),
+                    body=calendar_payload.get("body", ""),
+                    attendee_emails=calendar_payload.get("attendees", []),
+                )
+            else:
+                result = await ms_create_event(
+                    access_token=access_token,
+                    subject=calendar_payload["subject"],
+                    start=datetime.fromisoformat(calendar_payload["start"].replace("Z", "+00:00")),
+                    end=datetime.fromisoformat(calendar_payload["end"].replace("Z", "+00:00")),
+                    body=calendar_payload.get("body", ""),
+                    attendee_emails=calendar_payload.get("attendees", []),
+                )
+            print(f"==> {provider_name} calendar event created: {result.get('id')}")
             await ws.send_json({"type": "calendar_done", "message": "Event booked!", "event": result})
 
         elif calendar_action in ("CALENDAR_READ", "GOOGLE_CALENDAR_READ"):
-            events = await list_calendar_events(
-                access_token=access_token,
-                days_ahead=calendar_payload.get("days_ahead", 7),
-            )
+            if is_google:
+                events = await google_list_events(
+                    access_token=access_token,
+                    days_ahead=calendar_payload.get("days_ahead", 7),
+                )
+            else:
+                events = await ms_list_events(
+                    access_token=access_token,
+                    days_ahead=calendar_payload.get("days_ahead", 7),
+                )
 
             if events:
                 events_text = "\n".join([
@@ -506,9 +539,8 @@ async def _execute_calendar_action(
             else:
                 events_text = "No upcoming events found."
 
-            print(f"==> Calendar events fetched: {len(events)} events")
+            print(f"==> {provider_name} calendar events fetched: {len(events)} events")
 
-            # Second AI pass — stream the response with calendar data injected
             await _stream_calendar_read_response(
                 ws=ws,
                 user_id=user_id,
@@ -520,7 +552,7 @@ async def _execute_calendar_action(
             )
 
     except Exception as e:
-        print(f"==> Calendar action failed: {e}")
+        print(f"==> {provider_name} calendar action failed: {e}")
         await ws.send_json({"type": "error", "message": f"Calendar action failed: {e}"})
 
 
