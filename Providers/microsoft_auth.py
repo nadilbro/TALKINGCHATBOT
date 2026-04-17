@@ -2,7 +2,7 @@ import os
 import httpx
 from datetime import datetime, timezone, timedelta
 from dotenv import load_dotenv
-
+from Providers.firebase_auth import verify_token, verify_token_from_string, _get_firebase_app
 load_dotenv()
 
 CLIENT_ID     = os.getenv("MICROSOFT_CLIENT_ID")

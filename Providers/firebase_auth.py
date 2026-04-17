@@ -24,6 +24,7 @@ def _get_firebase_app():
 
 async def verify_token_from_string(token: str) -> dict:
     try:
+        _get_firebase_app()  # make sure Firebase is initialised
         decoded = auth.verify_id_token(token)
         return decoded
     except Exception as e:
