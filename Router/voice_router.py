@@ -1132,416 +1132,416 @@ async def audio_chat_ws(ws: WebSocket):
 # EMBED WEBSOCKET
 # -----------------------------------------------------------------------
 # -----------------------------------------------------------------------
-    # EMBED WEBSOCKET
-    # -----------------------------------------------------------------------
-    @router.websocket("/embed_chat_ws")
-    async def embed_chat_ws(ws: WebSocket):
-        print("HIT embed_chat_ws")
-        t0 = time.time()
-        await ws.accept()
+# EMBED WEBSOCKET
+# -----------------------------------------------------------------------
+@router.websocket("/embed_chat_ws")
+async def embed_chat_ws(ws: WebSocket):
+    print("HIT embed_chat_ws")
+    t0 = time.time()
+    await ws.accept()
 
-        api_key = ws.query_params.get("api_key")
-        if not api_key:
-            await ws.close(code=4001, reason="Missing api_key")
-            return
+    api_key = ws.query_params.get("api_key")
+    if not api_key:
+        await ws.close(code=4001, reason="Missing api_key")
+        return
 
-        initial_key_data = rag.getApiKey(api_key)
-        if not initial_key_data or not initial_key_data.get("is_active"):
-            await ws.close(code=4001, reason="Invalid or inactive API key")
-            return
+    initial_key_data = rag.getApiKey(api_key)
+    if not initial_key_data or not initial_key_data.get("is_active"):
+        await ws.close(code=4001, reason="Invalid or inactive API key")
+        return
 
-        owner_user_id = initial_key_data.get("owner_user_id")
-        if not owner_user_id:
-            await ws.close(code=4001, reason="API key has no owner")
-            return
+    owner_user_id = initial_key_data.get("owner_user_id")
+    if not owner_user_id:
+        await ws.close(code=4001, reason="API key has no owner")
+        return
 
-        embed_session_id = f"embed_{api_key}_{uuid.uuid4().hex[:12]}"
-        MIN_CREDITS_PER_TURN = 0.05
-        print(f"==> embed WS opened for api_key={api_key}, owner={owner_user_id}")
+    embed_session_id = f"embed_{api_key}_{uuid.uuid4().hex[:12]}"
+    MIN_CREDITS_PER_TURN = 0.05
+    print(f"==> embed WS opened for api_key={api_key}, owner={owner_user_id}")
 
-        try:
-            while True:
-                try:
-                    payload = await ws.receive_json()
-                except WebSocketDisconnect:
-                    return
-                except Exception:
-                    await ws.send_json({"type": "error", "message": "Invalid JSON payload"})
-                    continue
+    try:
+        while True:
+            try:
+                payload = await ws.receive_json()
+            except WebSocketDisconnect:
+                return
+            except Exception:
+                await ws.send_json({"type": "error", "message": "Invalid JSON payload"})
+                continue
 
-                if _as_str(payload.get("type")).lower() == "close":
+            if _as_str(payload.get("type")).lower() == "close":
+                await ws.send_json({"type": "done"})
+                await ws.close()
+                return
+
+            # ----------------------------------------------------------
+            # RE-VALIDATE API KEY
+            # ----------------------------------------------------------
+            key_data = rag.getApiKey(api_key)
+            if not key_data or not key_data.get("is_active"):
+                await ws.send_json({"type": "error", "message": "API key deactivated", "code": "INVALID_KEY"})
+                await ws.close()
+                return
+
+            # ----------------------------------------------------------
+            # LIMITS
+            # ----------------------------------------------------------
+            if key_data.get("conversations_used", 0) >= key_data.get("monthly_limit", 500):
+                await ws.send_json({"type": "error", "message": "Monthly conversation limit reached", "code": "LIMIT_REACHED"})
+                await ws.send_json({"type": "done"})
+                continue
+
+            try:
+                current_credits = rag.getBusinessCredits(owner_user_id)
+                if current_credits < MIN_CREDITS_PER_TURN:
+                    await ws.send_json({"type": "error", "message": "This business has run out of credits.", "code": "NO_CREDITS"})
                     await ws.send_json({"type": "done"})
-                    await ws.close()
-                    return
+                    continue
+            except Exception as e:
+                print(f"==> Credit check failed: {e}")
+                await ws.send_json({"type": "error", "message": "Temporary billing error.", "code": "BILLING_ERROR"})
+                await ws.send_json({"type": "done"})
+                continue
 
-                # ----------------------------------------------------------
-                # RE-VALIDATE API KEY
-                # ----------------------------------------------------------
-                key_data = rag.getApiKey(api_key)
-                if not key_data or not key_data.get("is_active"):
-                    await ws.send_json({"type": "error", "message": "API key deactivated", "code": "INVALID_KEY"})
-                    await ws.close()
-                    return
-
-                # ----------------------------------------------------------
-                # LIMITS
-                # ----------------------------------------------------------
-                if key_data.get("conversations_used", 0) >= key_data.get("monthly_limit", 500):
-                    await ws.send_json({"type": "error", "message": "Monthly conversation limit reached", "code": "LIMIT_REACHED"})
+            try:
+                daily_cost = rag.getApiKeyDailyCost(api_key)
+                daily_cap = key_data.get("daily_cost_cap", 10.00)
+                if daily_cost >= daily_cap:
+                    await ws.send_json({"type": "error", "message": "Daily usage cap reached.", "code": "DAILY_CAP"})
                     await ws.send_json({"type": "done"})
                     continue
+            except Exception:
+                pass
 
+            # ----------------------------------------------------------
+            # EXTRACT PAYLOAD
+            # ----------------------------------------------------------
+            business_name        = key_data.get("business_name") or "this business"
+            business_description = key_data.get("business_description") or ""
+            assistant_name       = key_data.get("assistant_name") or "Assistant"
+            version              = key_data.get("assistant_version", "professional")
+            model                = rag.get_model(owner_user_id) or "gemini"
+            diagrams_enabled     = rag.getEmbedDiagrams(owner_user_id)
+
+            user_text  = _as_str(payload.get("message"))
+            voice_id   = _as_str(payload.get("voice_name"))
+            audio_on   = bool(payload.get("voice_on", True))
+            raw_audio  = payload.get("audio_bytes")
+            session_id = _as_str(payload.get("session_id")) or f"embed_{api_key}_{uuid.uuid4().hex[:12]}"
+
+            rag.get_or_create_embed_session(session_id, api_key, owner_user_id)
+
+            if raw_audio and "," in raw_audio:
+                raw_audio = raw_audio.split(",", 1)[1]
+            audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
+
+            embed_input_tokens = embed_output_tokens = 0
+            diagram_input_tokens = diagram_output_tokens = 0
+
+            if not rag.hasEnoughCredits(owner_user_id):
+                await ws.send_json({"type": "error", "message": "No credits remaining.", "code": "NO_CREDITS"})
+                await ws.send_json({"type": "done"})
+                continue
+
+            # ----------------------------------------------------------
+            # STT
+            # ----------------------------------------------------------
+            if audio_bytes:
                 try:
-                    current_credits = rag.getBusinessCredits(owner_user_id)
-                    if current_credits < MIN_CREDITS_PER_TURN:
-                        await ws.send_json({"type": "error", "message": "This business has run out of credits.", "code": "NO_CREDITS"})
+                    user_text = get_stt().get_transcript(audio_bytes)
+                    if not user_text:
+                        await ws.send_json({"type": "error", "message": "Could not understand audio."})
                         await ws.send_json({"type": "done"})
                         continue
+                    await ws.send_json({"type": "transcript", "text": user_text})
                 except Exception as e:
-                    print(f"==> Credit check failed: {e}")
-                    await ws.send_json({"type": "error", "message": "Temporary billing error.", "code": "BILLING_ERROR"})
+                    await ws.send_json({"type": "error", "message": f"Transcription failed: {e}"})
                     await ws.send_json({"type": "done"})
                     continue
 
+            if not user_text:
+                await ws.send_json({"type": "error", "message": "Missing message"})
+                await ws.send_json({"type": "done"})
+                continue
+
+            # ----------------------------------------------------------
+            # VOICE ID FALLBACK
+            # ----------------------------------------------------------
+            if not voice_id:
+                avatar = rag.getAvatarByName(key_data.get("avatar_name") or "Mia Sterling") or {}
+                voice_id = avatar.get("voice") or "UgBBYS2sOqTuMpoF3BR0"
+
+            # ----------------------------------------------------------
+            # HISTORY
+            # ----------------------------------------------------------
+            try:
+                history = rag.get_recent_messages(user_id=owner_user_id, chat_id=session_id, limit=10)
+            except Exception:
+                history = []
+
+            try:
+                rag.add_message(chat_id=session_id, role="user", content=user_text)
+            except Exception as e:
+                print(f"==> Failed to save user message: {e}")
+
+            # ----------------------------------------------------------
+            # RAG LOOKUP
+            # ----------------------------------------------------------
+            rag_context = ""
+            try:
+                embedding = await rag.embedText(user_text)
+                chunks = rag.searchDocumentChunks(api_key=api_key, embedding=embedding, limit=5)
+                if chunks and chunks[0].get("similarity", 0) >= 0.3:
+                    rag_context = "\n".join(f"- {c['content']}" for c in chunks)
+            except Exception as e:
+                print(f"==> RAG failed: {e}")
+
+            # ----------------------------------------------------------
+            # BUILD SYSTEM PROMPT
+            # ----------------------------------------------------------
+            tone_map = {
+                "professional": "Be polite, professional, and clear. Sound like a well-trained support agent.",
+                "friendly": "Be warm, casual, and approachable. Sound like a helpful friend who works at the company.",
+                "concise": "Be extremely brief. One to two sentences max. No filler. Just the answer.",
+            }
+            tone = tone_map.get(version, tone_map["professional"])
+            kb_section = rag_context if rag_context else "No information has been loaded yet."
+
+            system_prompt = (
+                f"You are {assistant_name}, a support assistant for {business_name}. "
+                f"{business_description}\n\n"
+                "RULES\n\n"
+                f"1. ONLY use information from the knowledge base below to answer questions about {business_name}. "
+                "If the answer is not there, say so directly and suggest the user contact the business.\n\n"
+                "2. Never invent, guess, or fill in gaps. If you are not sure, say \"I don't have that information.\"\n\n"
+                "3. Never make up contact details, policies, pricing, hours, or product features.\n\n"
+                f"4. Stay on topic. You help with {business_name} only. Politely redirect off-topic questions.\n\n"
+                "5. Keep responses under 80 words. Use short sentences. This will be spoken aloud, not read on screen.\n\n"
+                f"6. {tone} Use \"I\" statements. Sound like a helpful person, not a corporate script.\n\n"
+                "7. No markdown, no formatting, no lists, no headers, no bold, no asterisks. Plain conversational sentences only.\n\n"
+                "8. When you don't know something, always offer a next step: \"You could reach out to them directly for that.\"\n\n"
+                "9. Never say \"based on my training\", \"as an AI\", or \"I believe\". Just answer naturally or say you don't know.\n\n"
+                f"10. If someone asks who you are, say: \"I'm {assistant_name}, a support assistant for {business_name}.\"\n\n"
+                f"KNOWLEDGE BASE\n"
+                f"Everything you know about {business_name} is below. If something is not here, you do not know it.\n\n"
+                f"{kb_section}"
+            )
+
+            # ----------------------------------------------------------
+            # INTEGRATIONS (on behalf of business owner)
+            # ----------------------------------------------------------
+            system_prompt += _build_integration_prompt(owner_user_id)
+            default_integration = rag.getDefaultIntegration(owner_user_id)
+
+            # ----------------------------------------------------------
+            # DIAGRAMS
+            # ----------------------------------------------------------
+            if diagrams_enabled:
+                system_prompt += (
+                    "\n\nVISUAL AIDS: You can generate visual aids. End your response with one of these tags:\n"
+                    "[NONE] - no visual needed\n"
+                    "[DIAGRAM] - flowchart or architecture diagram\n"
+                    "[CODE] - code snippet\n"
+                    "[MATH] - equation or formula\n"
+                    "[HTML] - interactive visual\n"
+                    "Only use a visual tag if it genuinely helps. Default to [NONE]."
+                )
+
+            if audio_on:
+                system_prompt += "\n\nLENGTH RULE: This response will be spoken aloud. Keep it under 80 words. Lead with the core answer."
+
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            system_prompt += f"\n\nToday's date is {today} (UTC). The user is in Melbourne, Australia (AEST, UTC+10). When booking calendar events, use Melbourne local time."
+
+            # ----------------------------------------------------------
+            # USER PROMPT WITH HISTORY
+            # ----------------------------------------------------------
+            history_lines = _build_history_lines(history[-6:])
+            if history_lines:
+                user_prompt = "Conversation history:\n" + "\n".join(history_lines) + f"\n\nLatest user message:\n{user_text}"
+            else:
+                user_prompt = user_text
+
+            # ----------------------------------------------------------
+            # GENERATE RESPONSE
+            # ----------------------------------------------------------
+            tts_queue = tts_task = tts_done_event = None
+
+            try:
+                if audio_on:
+                    tts_queue = asyncio.Queue()
+                    tts_done_event = asyncio.Event()
+                    tts_task = asyncio.create_task(
+                        _tts_pipeline(ws, tts_queue, voice_id, tts_done_event)
+                    )
+
+                print(f"==> embed stream starting at {time.time() - t0:.2f}s", flush=True)
+
+                full_text_parts, sentences_for_tts, embed_input_tokens, embed_output_tokens = await _stream_ai_response(
+                    ws, api_key, system_prompt, user_prompt,
+                    [], audio_on, voice_id, tts_queue, False
+                )
+
+                if tts_done_event:
+                    tts_done_event.set()
+
+                raw_text = "".join(full_text_parts).strip()
+                print(f"==> embed FULL RAW: {repr(raw_text)}", flush=True)
+
+                bot_text, routing_decision = _extract_routing_tag(raw_text)
+
+                # Calendar detection
+                calendar_action, calendar_payload = _detect_calendar_action(raw_text)
+                if calendar_action:
+                    bot_text = re.sub(
+                        r'\[(CALENDAR_WRITE|CALENDAR_READ|GOOGLE_CALENDAR_WRITE|GOOGLE_CALENDAR_READ)\]\{[^}]*\}',
+                        '', bot_text
+                    ).strip()
+
+                if not diagrams_enabled:
+                    routing_decision = "NONE"
+
+                bot_text = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
+                bot_text = re.sub(r'\n\s*\n', '\n\n', bot_text)
+                bot_text = fix_markdown_formatting(bot_text)
+
+                await ws.send_json({"type": "text_done", "text": bot_text})
+                print(f"==> embed stream done at {time.time() - t0:.2f}s", flush=True)
+
+                if not sentences_for_tts:
+                    await ws.send_json({"type": "error", "message": "No response generated"})
+                    await ws.send_json({"type": "done"})
+                    if tts_task:
+                        tts_task.cancel()
+                    continue
+
+            except Exception as e:
+                await ws.send_json({"type": "error", "message": "The assistant is unavailable right now. Please try again shortly."})
+                print(f"==> embed AI failed: {e}")
+                traceback.print_exc()
+                if tts_task:
+                    tts_task.cancel()
+                await ws.send_json({"type": "done"})
+                continue
+
+            # ----------------------------------------------------------
+            # VISUAL AID (only if enabled)
+            # ----------------------------------------------------------
+            visual_aid = None
+            visual_task = None
+
+            if diagrams_enabled and routing_decision in ("DIAGRAM", "CODE", "MATH", "HTML"):
+                async def _gen_embed_visual():
+                    va, d_in, d_out = await _generate_visual(api_key, user_text, history_lines, "", [])
+                    return va, d_in, d_out
+
+                visual_task = asyncio.create_task(_gen_embed_visual())
+                await ws.send_json({"type": "visual_aid_pending"})
+
+            # ----------------------------------------------------------
+            # WAIT FOR TTS
+            # ----------------------------------------------------------
+            if tts_task:
                 try:
-                    daily_cost = rag.getApiKeyDailyCost(api_key)
-                    daily_cap = key_data.get("daily_cost_cap", 10.00)
-                    if daily_cost >= daily_cap:
-                        await ws.send_json({"type": "error", "message": "Daily usage cap reached.", "code": "DAILY_CAP"})
-                        await ws.send_json({"type": "done"})
-                        continue
+                    await asyncio.wait_for(tts_task, timeout=30)
+                except asyncio.TimeoutError:
+                    tts_task.cancel()
+                    print("==> embed TTS timed out")
+                except Exception as e:
+                    print(f"==> embed TTS error: {e}", flush=True)
+
+            # ----------------------------------------------------------
+            # WAIT FOR VISUAL + SEND
+            # ----------------------------------------------------------
+            if visual_task:
+                try:
+                    visual_aid, d_in, d_out = await visual_task
+                    diagram_input_tokens = d_in
+                    diagram_output_tokens = d_out
+                except Exception as e:
+                    print(f"==> embed visual task error: {e}", flush=True)
+
+            if diagrams_enabled:
+                await _send_and_save_visual(ws, visual_aid, routing_decision, session_id)
+            else:
+                try:
+                    await ws.send_json({"type": "visual_aid_none"})
                 except Exception:
                     pass
 
-                # ----------------------------------------------------------
-                # EXTRACT PAYLOAD
-                # ----------------------------------------------------------
-                business_name        = key_data.get("business_name") or "this business"
-                business_description = key_data.get("business_description") or ""
-                assistant_name       = key_data.get("assistant_name") or "Assistant"
-                version              = key_data.get("assistant_version", "professional")
-                model                = rag.get_model(owner_user_id) or "gemini"
-                diagrams_enabled     = rag.getEmbedDiagrams(owner_user_id)
-
-                user_text  = _as_str(payload.get("message"))
-                voice_id   = _as_str(payload.get("voice_name"))
-                audio_on   = bool(payload.get("voice_on", True))
-                raw_audio  = payload.get("audio_bytes")
-                session_id = _as_str(payload.get("session_id")) or f"embed_{api_key}_{uuid.uuid4().hex[:12]}"
-
-                rag.get_or_create_embed_session(session_id, api_key, owner_user_id)
-
-                if raw_audio and "," in raw_audio:
-                    raw_audio = raw_audio.split(",", 1)[1]
-                audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
-
-                embed_input_tokens = embed_output_tokens = 0
-                diagram_input_tokens = diagram_output_tokens = 0
-
-                if not rag.hasEnoughCredits(owner_user_id):
-                    await ws.send_json({"type": "error", "message": "No credits remaining.", "code": "NO_CREDITS"})
-                    await ws.send_json({"type": "done"})
-                    continue
-
-                # ----------------------------------------------------------
-                # STT
-                # ----------------------------------------------------------
-                if audio_bytes:
-                    try:
-                        user_text = get_stt().get_transcript(audio_bytes)
-                        if not user_text:
-                            await ws.send_json({"type": "error", "message": "Could not understand audio."})
-                            await ws.send_json({"type": "done"})
-                            continue
-                        await ws.send_json({"type": "transcript", "text": user_text})
-                    except Exception as e:
-                        await ws.send_json({"type": "error", "message": f"Transcription failed: {e}"})
-                        await ws.send_json({"type": "done"})
-                        continue
-
-                if not user_text:
-                    await ws.send_json({"type": "error", "message": "Missing message"})
-                    await ws.send_json({"type": "done"})
-                    continue
-
-                # ----------------------------------------------------------
-                # VOICE ID FALLBACK
-                # ----------------------------------------------------------
-                if not voice_id:
-                    avatar = rag.getAvatarByName(key_data.get("avatar_name") or "Mia Sterling") or {}
-                    voice_id = avatar.get("voice") or "UgBBYS2sOqTuMpoF3BR0"
-
-                # ----------------------------------------------------------
-                # HISTORY
-                # ----------------------------------------------------------
-                try:
-                    history = rag.get_recent_messages(user_id=owner_user_id, chat_id=session_id, limit=10)
-                except Exception:
-                    history = []
-
-                try:
-                    rag.add_message(chat_id=session_id, role="user", content=user_text)
-                except Exception as e:
-                    print(f"==> Failed to save user message: {e}")
-
-                # ----------------------------------------------------------
-                # RAG LOOKUP
-                # ----------------------------------------------------------
-                rag_context = ""
-                try:
-                    embedding = await rag.embedText(user_text)
-                    chunks = rag.searchDocumentChunks(api_key=api_key, embedding=embedding, limit=5)
-                    if chunks and chunks[0].get("similarity", 0) >= 0.3:
-                        rag_context = "\n".join(f"- {c['content']}" for c in chunks)
-                except Exception as e:
-                    print(f"==> RAG failed: {e}")
-
-                # ----------------------------------------------------------
-                # BUILD SYSTEM PROMPT
-                # ----------------------------------------------------------
-                tone_map = {
-                    "professional": "Be polite, professional, and clear. Sound like a well-trained support agent.",
-                    "friendly": "Be warm, casual, and approachable. Sound like a helpful friend who works at the company.",
-                    "concise": "Be extremely brief. One to two sentences max. No filler. Just the answer.",
-                }
-                tone = tone_map.get(version, tone_map["professional"])
-                kb_section = rag_context if rag_context else "No information has been loaded yet."
-
-                system_prompt = (
-                    f"You are {assistant_name}, a support assistant for {business_name}. "
-                    f"{business_description}\n\n"
-                    "RULES\n\n"
-                    f"1. ONLY use information from the knowledge base below to answer questions about {business_name}. "
-                    "If the answer is not there, say so directly and suggest the user contact the business.\n\n"
-                    "2. Never invent, guess, or fill in gaps. If you are not sure, say \"I don't have that information.\"\n\n"
-                    "3. Never make up contact details, policies, pricing, hours, or product features.\n\n"
-                    f"4. Stay on topic. You help with {business_name} only. Politely redirect off-topic questions.\n\n"
-                    "5. Keep responses under 80 words. Use short sentences. This will be spoken aloud, not read on screen.\n\n"
-                    f"6. {tone} Use \"I\" statements. Sound like a helpful person, not a corporate script.\n\n"
-                    "7. No markdown, no formatting, no lists, no headers, no bold, no asterisks. Plain conversational sentences only.\n\n"
-                    "8. When you don't know something, always offer a next step: \"You could reach out to them directly for that.\"\n\n"
-                    "9. Never say \"based on my training\", \"as an AI\", or \"I believe\". Just answer naturally or say you don't know.\n\n"
-                    f"10. If someone asks who you are, say: \"I'm {assistant_name}, a support assistant for {business_name}.\"\n\n"
-                    f"KNOWLEDGE BASE\n"
-                    f"Everything you know about {business_name} is below. If something is not here, you do not know it.\n\n"
-                    f"{kb_section}"
+            # ----------------------------------------------------------
+            # EXECUTE CALENDAR ACTION (on behalf of business owner)
+            # ----------------------------------------------------------
+            if calendar_action and calendar_payload:
+                await _execute_calendar_action(
+                    ws=ws,
+                    user_id=owner_user_id,
+                    calendar_action=calendar_action,
+                    calendar_payload=calendar_payload,
+                    default_integration=default_integration,
+                    user_text=user_text,
+                    system_prompt=system_prompt,
+                    voice_id=voice_id,
+                    audio_on=audio_on,
                 )
 
-                # ----------------------------------------------------------
-                # INTEGRATIONS (on behalf of business owner)
-                # ----------------------------------------------------------
-                system_prompt += _build_integration_prompt(owner_user_id)
-                default_integration = rag.getDefaultIntegration(owner_user_id)
-
-                # ----------------------------------------------------------
-                # DIAGRAMS
-                # ----------------------------------------------------------
-                if diagrams_enabled:
-                    system_prompt += (
-                        "\n\nVISUAL AIDS: You can generate visual aids. End your response with one of these tags:\n"
-                        "[NONE] - no visual needed\n"
-                        "[DIAGRAM] - flowchart or architecture diagram\n"
-                        "[CODE] - code snippet\n"
-                        "[MATH] - equation or formula\n"
-                        "[HTML] - interactive visual\n"
-                        "Only use a visual tag if it genuinely helps. Default to [NONE]."
-                    )
-
-                if audio_on:
-                    system_prompt += "\n\nLENGTH RULE: This response will be spoken aloud. Keep it under 80 words. Lead with the core answer."
-
-                today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                system_prompt += f"\n\nToday's date is {today} (UTC). The user is in Melbourne, Australia (AEST, UTC+10). When booking calendar events, use Melbourne local time."
-
-                # ----------------------------------------------------------
-                # USER PROMPT WITH HISTORY
-                # ----------------------------------------------------------
-                history_lines = _build_history_lines(history[-6:])
-                if history_lines:
-                    user_prompt = "Conversation history:\n" + "\n".join(history_lines) + f"\n\nLatest user message:\n{user_text}"
-                else:
-                    user_prompt = user_text
-
-                # ----------------------------------------------------------
-                # GENERATE RESPONSE
-                # ----------------------------------------------------------
-                tts_queue = tts_task = tts_done_event = None
-
-                try:
-                    if audio_on:
-                        tts_queue = asyncio.Queue()
-                        tts_done_event = asyncio.Event()
-                        tts_task = asyncio.create_task(
-                            _tts_pipeline(ws, tts_queue, voice_id, tts_done_event)
-                        )
-
-                    print(f"==> embed stream starting at {time.time() - t0:.2f}s", flush=True)
-
-                    full_text_parts, sentences_for_tts, embed_input_tokens, embed_output_tokens = await _stream_ai_response(
-                        ws, api_key, system_prompt, user_prompt,
-                        [], audio_on, voice_id, tts_queue, False
-                    )
-
-                    if tts_done_event:
-                        tts_done_event.set()
-
-                    raw_text = "".join(full_text_parts).strip()
-                    print(f"==> embed FULL RAW: {repr(raw_text)}", flush=True)
-
-                    bot_text, routing_decision = _extract_routing_tag(raw_text)
-
-                    # Calendar detection
-                    calendar_action, calendar_payload = _detect_calendar_action(raw_text)
-                    if calendar_action:
-                        bot_text = re.sub(
-                            r'\[(CALENDAR_WRITE|CALENDAR_READ|GOOGLE_CALENDAR_WRITE|GOOGLE_CALENDAR_READ)\]\{[^}]*\}',
-                            '', bot_text
-                        ).strip()
-
-                    if not diagrams_enabled:
-                        routing_decision = "NONE"
-
-                    bot_text = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
-                    bot_text = re.sub(r'\n\s*\n', '\n\n', bot_text)
-                    bot_text = fix_markdown_formatting(bot_text)
-
-                    await ws.send_json({"type": "text_done", "text": bot_text})
-                    print(f"==> embed stream done at {time.time() - t0:.2f}s", flush=True)
-
-                    if not sentences_for_tts:
-                        await ws.send_json({"type": "error", "message": "No response generated"})
-                        await ws.send_json({"type": "done"})
-                        if tts_task:
-                            tts_task.cancel()
-                        continue
-
-                except Exception as e:
-                    await ws.send_json({"type": "error", "message": "The assistant is unavailable right now. Please try again shortly."})
-                    print(f"==> embed AI failed: {e}")
-                    traceback.print_exc()
-                    if tts_task:
-                        tts_task.cancel()
-                    await ws.send_json({"type": "done"})
-                    continue
-
-                # ----------------------------------------------------------
-                # VISUAL AID (only if enabled)
-                # ----------------------------------------------------------
-                visual_aid = None
-                visual_task = None
-
-                if diagrams_enabled and routing_decision in ("DIAGRAM", "CODE", "MATH", "HTML"):
-                    async def _gen_embed_visual():
-                        va, d_in, d_out = await _generate_visual(api_key, user_text, history_lines, "", [])
-                        return va, d_in, d_out
-
-                    visual_task = asyncio.create_task(_gen_embed_visual())
-                    await ws.send_json({"type": "visual_aid_pending"})
-
-                # ----------------------------------------------------------
-                # WAIT FOR TTS
-                # ----------------------------------------------------------
-                if tts_task:
-                    try:
-                        await asyncio.wait_for(tts_task, timeout=30)
-                    except asyncio.TimeoutError:
-                        tts_task.cancel()
-                        print("==> embed TTS timed out")
-                    except Exception as e:
-                        print(f"==> embed TTS error: {e}", flush=True)
-
-                # ----------------------------------------------------------
-                # WAIT FOR VISUAL + SEND
-                # ----------------------------------------------------------
-                if visual_task:
-                    try:
-                        visual_aid, d_in, d_out = await visual_task
-                        diagram_input_tokens = d_in
-                        diagram_output_tokens = d_out
-                    except Exception as e:
-                        print(f"==> embed visual task error: {e}", flush=True)
-
-                if diagrams_enabled:
-                    await _send_and_save_visual(ws, visual_aid, routing_decision, session_id)
-                else:
-                    try:
-                        await ws.send_json({"type": "visual_aid_none"})
-                    except Exception:
-                        pass
-
-                # ----------------------------------------------------------
-                # EXECUTE CALENDAR ACTION (on behalf of business owner)
-                # ----------------------------------------------------------
-                if calendar_action and calendar_payload:
-                    await _execute_calendar_action(
-                        ws=ws,
-                        user_id=owner_user_id,
-                        calendar_action=calendar_action,
-                        calendar_payload=calendar_payload,
-                        default_integration=default_integration,
-                        user_text=user_text,
-                        system_prompt=system_prompt,
-                        voice_id=voice_id,
-                        audio_on=audio_on,
-                    )
-
-                # ----------------------------------------------------------
-                # SAVE + BILLING
-                # ----------------------------------------------------------
-                try:
-                    rag.add_message(chat_id=session_id, role="assistant", content=bot_text)
-                    rag.update_last_message(chat_id=session_id, last_message=bot_text)
-                except Exception as e:
-                    print(f"==> Failed to save assistant message: {e}")
-
-                try:
-                    rag.incrementConversationCount(api_key)
-                except Exception as e:
-                    print(f"==> Failed to increment conversation count: {e}")
-
-                try:
-                    cost_aud = account_manager.processUsedCost(
-                        input_tokens=embed_input_tokens + diagram_input_tokens,
-                        output_tokens=embed_output_tokens + diagram_output_tokens,
-                        outputText=bot_text,
-                        SST_Length_seconds=len(audio_bytes) / 32000 if audio_bytes else 0,
-                        webSearch=False,
-                        voice_on=bool(audio_on),
-                        diagram_on=bool(visual_aid),
-                        model=model,
-                    )
-                    try:
-                        rag.addApiKeyCost(api_key, cost_aud)
-                    except Exception as e:
-                        print(f"==> Failed to add api_key cost: {e}")
-
-                    try:
-                        new_balance = rag.deductBusinessCredits(owner_user_id, cost_aud)
-                        print(f"==> Embed cost: ${cost_aud:.4f} | balance: ${new_balance:.4f}", flush=True)
-                        if new_balance < 0.50:
-                            await ws.send_json({"type": "credits_low", "balance": new_balance, "message": "Credits running low"})
-                    except Exception as e:
-                        print(f"==> Failed to deduct business credits: {e}")
-
-                except Exception as e:
-                    print(f"==> Embed cost tracking failed: {e}", flush=True)
-
-                try:
-                    await ws.send_json({"type": "done"})
-                    print("==> embed DONE sent", flush=True)
-                except Exception as e:
-                    print(f"==> Failed to send done: {e}", flush=True)
-
-        except WebSocketDisconnect:
-            return
-        except Exception as e:
-            print("❌ Embed WS error:", repr(e))
-            traceback.print_exc()
+            # ----------------------------------------------------------
+            # SAVE + BILLING
+            # ----------------------------------------------------------
             try:
-                await ws.send_json({"type": "error", "message": "Connection error"})
-            except Exception:
-                pass
+                rag.add_message(chat_id=session_id, role="assistant", content=bot_text)
+                rag.update_last_message(chat_id=session_id, last_message=bot_text)
+            except Exception as e:
+                print(f"==> Failed to save assistant message: {e}")
+
             try:
-                await ws.close()
-            except Exception:
-                pass
+                rag.incrementConversationCount(api_key)
+            except Exception as e:
+                print(f"==> Failed to increment conversation count: {e}")
+
+            try:
+                cost_aud = account_manager.processUsedCost(
+                    input_tokens=embed_input_tokens + diagram_input_tokens,
+                    output_tokens=embed_output_tokens + diagram_output_tokens,
+                    outputText=bot_text,
+                    SST_Length_seconds=len(audio_bytes) / 32000 if audio_bytes else 0,
+                    webSearch=False,
+                    voice_on=bool(audio_on),
+                    diagram_on=bool(visual_aid),
+                    model=model,
+                )
+                try:
+                    rag.addApiKeyCost(api_key, cost_aud)
+                except Exception as e:
+                    print(f"==> Failed to add api_key cost: {e}")
+
+                try:
+                    new_balance = rag.deductBusinessCredits(owner_user_id, cost_aud)
+                    print(f"==> Embed cost: ${cost_aud:.4f} | balance: ${new_balance:.4f}", flush=True)
+                    if new_balance < 0.50:
+                        await ws.send_json({"type": "credits_low", "balance": new_balance, "message": "Credits running low"})
+                except Exception as e:
+                    print(f"==> Failed to deduct business credits: {e}")
+
+            except Exception as e:
+                print(f"==> Embed cost tracking failed: {e}", flush=True)
+
+            try:
+                await ws.send_json({"type": "done"})
+                print("==> embed DONE sent", flush=True)
+            except Exception as e:
+                print(f"==> Failed to send done: {e}", flush=True)
+
+    except WebSocketDisconnect:
+        return
+    except Exception as e:
+        print("❌ Embed WS error:", repr(e))
+        traceback.print_exc()
+        try:
+            await ws.send_json({"type": "error", "message": "Connection error"})
+        except Exception:
+            pass
+        try:
+            await ws.close()
+        except Exception:
+            pass
