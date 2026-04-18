@@ -51,12 +51,15 @@ class CreateApiKeyRequest(BaseModel):
     assistant_name: Optional[str] = "Assistant"
     website_url: Optional[str] = None
     assistant_version: Optional[str] = "professional"
-    inner_color: Optional[str] = "#FFFFFF"
-    outer_color: Optional[str] = "#000000"
+    outer_color: Optional[str] = "#F5E6D3"
+    message_color: Optional[str] = "#E8D5C4"
+    user_message_color: Optional[str] = "#6B4F3A"
+    font_color: Optional[str] = "#3D2B1F"
     icon_size: Optional[str] = "medium"
     font: Optional[str] = "system-ui"
     font_size: Optional[str] = "medium"
     welcome_message: Optional[str] = None
+
 
 class UpdateApiKeyRequest(BaseModel):
     business_name: Optional[str] = None
@@ -69,8 +72,10 @@ class UpdateApiKeyRequest(BaseModel):
     website_url: Optional[str] = None
     last_scrape_at: Optional[str] = None
     assistant_version: Optional[str] = None
-    inner_color: Optional[str] = None
     outer_color: Optional[str] = None
+    message_color: Optional[str] = None
+    user_message_color: Optional[str] = None
+    font_color: Optional[str] = None
     icon_size: Optional[str] = None
     font: Optional[str] = None
     font_size: Optional[str] = None
@@ -130,8 +135,10 @@ async def update_api_key(key: str, req: UpdateApiKeyRequest, user=Depends(verify
         last_scrape_at=req.last_scrape_at,
         assistant_name=req.assistant_name,
         assistant_version=req.assistant_version, 
-        inner_color=req.inner_color,
-        outer_color=req.outer_color, 
+        outer_color=req.outer_color,
+        message_color=req.message_color, 
+        user_message_color=req.user_message_color,
+        font_color=req.font_color,
         icon_size=req.icon_size, 
         font=req.font,
         font_size=req.font_size,
@@ -274,8 +281,10 @@ async def get_embed_config(key_data=Depends(verify_api_key)):
         "welcome_message": key_data.get("welcome_message") or f"Hi, I'm {assistant_name}. How can I help you today?",
 
         # Widget styling
-        "inner_color": key_data.get("inner_color", "#FFFFFF"),
-        "outer_color": key_data.get("outer_color", "#000000"),
+        "outer_color": key_data.get("outer_color", "#FFFFFF"),
+        "message_color": key_data.get("message_color", "#000000"),
+        "user_message_color": key_data.get("user_message_color", "#000000"),
+        "font_color": key_data.get("font_color", "#5C4E4E"),
         "icon_size": key_data.get("icon_size", "medium"),
         "font": key_data.get("font", "system-ui"),
         "font_size": key_data.get("font_size", "medium"),

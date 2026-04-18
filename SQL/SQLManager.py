@@ -609,12 +609,13 @@ class VectorRAGService:
             return dict(row) if row else None
 
     def updateApiKey(self, key, business_name=None, avatar_name=None,
-                        system_prompt=None, monthly_limit=None, is_active=None,
-                        business_description=None, website_url=None,
-                        last_scrape_at=None, assistant_name=None,
-                        assistant_version=None, inner_color=None,
-                        outer_color=None, icon_size=None, font=None,
-                        font_size=None, welcome_message=None):
+                    system_prompt=None, monthly_limit=None, is_active=None,
+                    business_description=None, website_url=None,
+                    last_scrape_at=None, assistant_name=None,
+                    assistant_version=None, outer_color=None,
+                    message_color=None, user_message_color=None,
+                    font_color=None, icon_size=None, font=None,
+                    font_size=None, welcome_message=None):
         self._get_conn()
         try:
             with self.conn.cursor() as cur:
@@ -630,8 +631,10 @@ class VectorRAGService:
                         last_scrape_at = COALESCE(%s, last_scrape_at),
                         assistant_name = COALESCE(%s, assistant_name),
                         assistant_version = COALESCE(%s, assistant_version),
-                        inner_color = COALESCE(%s, inner_color),
                         outer_color = COALESCE(%s, outer_color),
+                        message_color = COALESCE(%s, message_color),
+                        user_message_color = COALESCE(%s, user_message_color),
+                        font_color = COALESCE(%s, font_color),
                         icon_size = COALESCE(%s, icon_size),
                         font = COALESCE(%s, font),
                         font_size = COALESCE(%s, font_size),
@@ -640,8 +643,9 @@ class VectorRAGService:
                     WHERE key = %s
                 """, (business_name, avatar_name, system_prompt, monthly_limit,
                     is_active, business_description, website_url, last_scrape_at,
-                    assistant_name, assistant_version, inner_color, outer_color,
-                    icon_size, font, font_size, welcome_message, key))
+                    assistant_name, assistant_version, outer_color, message_color,
+                    user_message_color, font_color, icon_size, font, font_size,
+                    welcome_message, key))
             self.conn.commit()
         except Exception:
             self.conn.rollback()
@@ -679,7 +683,6 @@ class VectorRAGService:
         except Exception:
             self.conn.rollback()
             raise
-    
 
 
     # -----------------------------------------------------------------------
@@ -1190,9 +1193,10 @@ class VectorRAGService:
     def get_default_integration(self, user_id: str) -> str | None:
         self._get_conn()
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT default_integration FROM accounts WHERE user_id = %s", (user_id,))
+            cur.execute("SELECT business_integration FROM accounts WHERE user_id = %s", (user_id,))
             row = cur.fetchone()
             return row["default_integration"] if row else None
+        
 
     """
     Bubbleworks is a self-service laundromat located in Caroline Springs, Victoria, Australia, operating at https://www.bubbleworks.com.au.

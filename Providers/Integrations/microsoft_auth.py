@@ -182,3 +182,12 @@ async def create_calendar_event(
         print(f"==> Graph API response: {resp.text}")
         resp.raise_for_status()
         return resp.json()
+    
+async def delete_calendar_event(access_token: str, event_id: str) -> bool:
+    async with httpx.AsyncClient() as client:
+        resp = await client.delete(
+            f"https://graph.microsoft.com/v1.0/me/events/{event_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        resp.raise_for_status()
+        return True

@@ -33,7 +33,16 @@ def build_auth_url(state: str = "") -> str:
         f"&prompt=consent"
     )
 
-
+async def delete_calendar_event(access_token: str, event_id: str) -> bool:
+    async with httpx.AsyncClient() as client:
+        resp = await client.delete(
+            f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        resp.raise_for_status()
+        return True
+    
+    
 async def exchange_code_for_tokens(code: str) -> dict:
     async with httpx.AsyncClient() as client:
         response = await client.post(TOKEN_URL, data={
