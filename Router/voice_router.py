@@ -1075,6 +1075,7 @@ async def audio_chat_ws(ws: WebSocket):
                         r'\[(CALENDAR_WRITE|CALENDAR_READ|GOOGLE_CALENDAR_WRITE|GOOGLE_CALENDAR_READ)\]\{[^}]*\}',
                         '', bot_text
                     ).strip() 
+                    await ws.send_json({"type": "calendar_action"})
                 
 
                 #WebSearch Detection 
@@ -1086,6 +1087,7 @@ async def audio_chat_ws(ws: WebSocket):
                         r'\[(WEB_SEARCH)\]\{[^}]*\}',
                         '', bot_text
                     ).strip() 
+                    await ws.send_json({"type": "web_search_pending"})
                 bot_text = fix_markdown_formatting(bot_text)
                 await ws.send_json({"type": "text_done", "text": bot_text})
 
