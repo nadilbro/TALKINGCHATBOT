@@ -487,6 +487,17 @@ def _build_integration_prompt(user_id: str) -> str:
     else:
         return "\n\nINTEGRATIONS RULE: User has connected services but has not set a default provider. Ask them to select one in settings."
 
+def _build_websearch_prompt() -> str:
+    return (
+        "\n\nWEB SEARCH: You have access to real-time web search. "
+        "If the user asks about current events, recent news, live data (weather, stocks, sports scores), "
+        "or anything that requires up-to-date information beyond your training, "
+        "respond naturally saying you're looking it up, then at the very end append:\n"
+        "[WEB_SEARCH]{\"query\": \"<concise search query based on what the user asked>\"}\n\n"
+        "IMPORTANT: Only use web search when the question genuinely requires current or real-time data. "
+        "For general knowledge questions you already know the answer to, do not append a web search tag. "
+        "Never mention that you're searching — just say you're checking or looking it up."
+    )
 
 async def _execute_calendar_action(
     ws, user_id: str, calendar_action: str, calendar_payload: dict,
@@ -564,6 +575,7 @@ async def _execute_calendar_action(
                 voice_id=voice_id,
                 audio_on=audio_on,
             )
+
         elif calendar_action in ("CALENDAR_DELETE", "GOOGLE_CALENDAR_DELETE"):
             event_id = calendar_payload.get("event_id")
             if not event_id:
@@ -636,7 +648,67 @@ async def _stream_calendar_read_response(
         if tts_task:
             tts_task.cancel()
 
+# -----------------------------------------------------------------------
+# WEB SEARCH MANAGE
+# -----------------------------------------------------------------------
+async def _stream_web_search_response(
+    ws, user_id: str, user_text: str, search_query: str,
+    system_prompt: str, voice_id: str, audio_on: bool
+):
+    """Second AI pass — feeds web_search_data"""
 
+
+    web_response = get_web_search().web_search(search_query, 3)
+
+    followup_system = (
+        f"{system_prompt}\n\n"
+        "You have just retrieved the web search data of the user "
+        "Answer their question naturally and conversationally based on it. " 
+        "If the web results dont provide a good enough answer, do not waffle "
+    )
+    followup_user = (
+        f"The user asked: \"{user_text}\"\n\n"
+        f"Here are the web results based off that question:\n{web_response}\n\n"
+        "Answer their question naturally based on this data."
+    )
+
+    tts_queue = tts_task = tts_done_event = None
+
+    try:
+        if audio_on:
+            tts_queue = asyncio.Queue()
+            tts_done_event = asyncio.Event()
+            tts_task = asyncio.create_task(
+                _tts_pipeline(ws, tts_queue, voice_id, tts_done_event)
+            )
+
+        full_text_parts, sentences_for_tts, _, _ = await _stream_ai_response(
+            ws, user_id, followup_system, followup_user,
+            [], audio_on, voice_id, tts_queue, False
+        )
+
+        if tts_done_event:
+            tts_done_event.set()
+
+        raw_text = "".join(full_text_parts)
+        bot_text, _ = _extract_routing_tag(raw_text)
+        bot_text = fix_markdown_formatting(bot_text)
+
+        await ws.send_json({"type": "text_done", "text": bot_text})
+
+        if tts_task:
+            try:
+                await asyncio.wait_for(tts_task, timeout=30)
+            except asyncio.TimeoutError:
+                tts_task.cancel()
+            except Exception as e:
+                print(f"==> Web search read TTS error: {e}")
+
+    except Exception as e:
+        print(f"==> Web search second pass failed: {e}")
+        traceback.print_exc()
+        if tts_task:
+            tts_task.cancel()
 # -----------------------------------------------------------------------
 # SUMMARY UPDATER
 # -----------------------------------------------------------------------
@@ -706,7 +778,7 @@ async def _stream_ai_response(ws, user_id: str, system_prompt: str, user_prompt:
     # Handle remaining buffer
     remaining = sentence_buffer.strip()
     remaining = re.sub(
-        r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH|HTML|CALENDAR_WRITE|CALENDAR_READ|GOOGLE_CALENDAR_WRITE|GOOGLE_CALENDAR_READ)\]?.*$',
+        r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH|HTML|CALENDAR_WRITE|CALENDAR_READ|GOOGLE_CALENDAR_WRITE|GOOGLE_CALENDAR_READ|WEB_SEARCH)\]?.*$',
         '', remaining, flags=re.IGNORECASE
     ).strip()
     if remaining and len(remaining) > 2:
@@ -738,6 +810,7 @@ def _detect_calendar_action(raw_text: str) -> tuple:
         return None, None
 
 
+    
 # -----------------------------------------------------------------------
 # CHAT INIT
 # -----------------------------------------------------------------------
@@ -829,7 +902,6 @@ async def audio_chat_ws(ws: WebSocket):
             user_text  = _as_str(payload.get("message"))
             voice_id   = _as_str(payload.get("voice_name"))
             prompt     = _as_str(payload.get("prompt"))
-            web_search = _as_str(payload.get("web_search"))
             audio_on   = payload.get("voice_on", True)
             pro_mode   = payload.get("pro_mode", False)
             raw_audio  = payload.get("audio_bytes")
@@ -929,10 +1001,6 @@ async def audio_chat_ws(ws: WebSocket):
 
             recent_history = history[-100:] if len(history) < 100 else history
 
-            if web_search:
-                web_response = get_web_search().web_search(user_text, 3)
-                system_prompt = f"{system_prompt}\n\n{web_response}"
-
             history_lines = _build_history_lines(recent_history)
             conversation_history = "\n".join(history_lines)
 
@@ -964,6 +1032,9 @@ async def audio_chat_ws(ws: WebSocket):
             # INTEGRATIONS
             # ----------------------------------------------------------
             system_prompt += _build_integration_prompt(user_id)
+
+            system_prompt += _build_websearch_prompt() 
+            
             default_integration = rag.getDefaultIntegration(user_id)
 
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -1003,9 +1074,18 @@ async def audio_chat_ws(ws: WebSocket):
                     bot_text = re.sub(
                         r'\[(CALENDAR_WRITE|CALENDAR_READ|GOOGLE_CALENDAR_WRITE|GOOGLE_CALENDAR_READ)\]\{[^}]*\}',
                         '', bot_text
-                    ).strip()
+                    ).strip() 
+                
 
-
+                #WebSearch Detection 
+                web_match = None
+                web_match = re.search(r'\[WEB_SEARCH\]\{"query":\s*"([^"]+)"\}', raw_text)
+                
+                if web_match:
+                    bot_text = re.sub(
+                        r'\[(WEB_SEARCH)\]\{[^}]*\}',
+                        '', bot_text
+                    ).strip() 
                 bot_text = fix_markdown_formatting(bot_text)
                 await ws.send_json({"type": "text_done", "text": bot_text})
 
@@ -1076,7 +1156,16 @@ async def audio_chat_ws(ws: WebSocket):
                     voice_id=voice_id,
                     audio_on=audio_on,
                 )
-
+            if web_match:
+                await _stream_web_search_response(
+                    ws=ws,
+                    user_id=user_id,
+                    user_text=user_text,
+                    search_query=web_match.group(1),
+                    system_prompt=system_prompt,
+                    voice_id=voice_id,
+                    audio_on=audio_on,
+                )
             # ----------------------------------------------------------
             # SAVE TO DB
             # ----------------------------------------------------------
@@ -1100,7 +1189,7 @@ async def audio_chat_ws(ws: WebSocket):
                     input_tokens=chat_input_tokens + diagram_input_tokens,
                     output_tokens=chat_output_tokens + diagram_output_tokens,
                     SST_Length_seconds=len(audio_bytes) / 16000 if audio_bytes else 0,
-                    webSearch=bool(web_search),
+                    webSearch=bool(web_match),
                     voice_on=bool(audio_on),
                     diagram_on=bool(visual_aid),
                     pro_mode=bool(pro_mode),
@@ -1128,9 +1217,6 @@ async def audio_chat_ws(ws: WebSocket):
             pass
 
 
-# -----------------------------------------------------------------------
-# EMBED WEBSOCKET
-# -----------------------------------------------------------------------
 # -----------------------------------------------------------------------
 # EMBED WEBSOCKET
 # -----------------------------------------------------------------------
@@ -1332,7 +1418,7 @@ async def embed_chat_ws(ws: WebSocket):
             # ----------------------------------------------------------
             system_prompt += _build_integration_prompt(owner_user_id)
             default_integration = rag.getDefaultIntegration(owner_user_id)
-
+            system_prompt += _build_websearch_prompt() 
             # ----------------------------------------------------------
             # DIAGRAMS
             # ----------------------------------------------------------
@@ -1397,6 +1483,16 @@ async def embed_chat_ws(ws: WebSocket):
                         r'\[(CALENDAR_WRITE|CALENDAR_READ|GOOGLE_CALENDAR_WRITE|GOOGLE_CALENDAR_READ)\]\{[^}]*\}',
                         '', bot_text
                     ).strip()
+                
+                            #WebSearch Detection 
+                web_match = None
+                web_match = re.search(r'\[WEB_SEARCH\]\{"query":\s*"([^"]+)"\}', raw_text)
+                
+                if web_match:
+                    bot_text = re.sub(
+                        r'\[(WEB_SEARCH)\]\{[^}]*\}',
+                        '', bot_text
+                    ).strip() 
 
                 if not diagrams_enabled:
                     routing_decision = "NONE"
@@ -1484,7 +1580,16 @@ async def embed_chat_ws(ws: WebSocket):
                     voice_id=voice_id,
                     audio_on=audio_on,
                 )
-
+            if web_match:
+                await _stream_web_search_response(
+                    ws=ws,
+                    user_id=owner_user_id,
+                    user_text=user_text,
+                    search_query=web_match.group(1),
+                    system_prompt=system_prompt,
+                    voice_id=voice_id,
+                    audio_on=audio_on,
+                )
             # ----------------------------------------------------------
             # SAVE + BILLING
             # ----------------------------------------------------------
