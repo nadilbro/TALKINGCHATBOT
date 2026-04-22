@@ -541,6 +541,15 @@ async def _execute_calendar_action(
                     body=calendar_payload.get("body", ""),
                     attendee_emails=calendar_payload.get("attendees", []),
                 )
+            await _stream_calendar_read_response(
+                ws=ws,
+                user_id=user_id,
+                user_text=user_text,
+                events_text=f"Event '{calendar_payload['subject']}' was successfully created.",
+                system_prompt=system_prompt,
+                voice_id=voice_id,
+                audio_on=audio_on,
+            )
             print(f"==> {provider_name} calendar event created: {result.get('id')}")
             await ws.send_json({"type": "calendar_done", "message": "Event booked!", "event": result})
 
@@ -600,7 +609,7 @@ async def _stream_calendar_read_response(
     """Second AI pass — feeds calendar data back to AI and streams the response."""
     followup_system = (
         f"{system_prompt}\n\n"
-        "You have just retrieved the user's calendar data. "
+        "You have either just retrieved the user's calendar data OR already called a new event(s)  "
         "Answer their question naturally and conversationally based on it. "
         "Keep it brief — spoken aloud, under 80 words."
     )
