@@ -42,9 +42,18 @@ fileE = FileExtractor(ai)
 
 MINUTES_PER_CREDIT = 7
 
-# -----------------------------------------------------------------------
-# LAZY SINGLETONS
-# -----------------------------------------------------------------------
+ACTION_TAG_PATTERN = re.compile(
+    r'\[?(CALENDAR_WRITE|CALENDAR_READ|CALENDAR_DELETE|'
+    r'GOOGLE_CALENDAR_WRITE|GOOGLE_CALENDAR_READ|GOOGLE_CALENDAR_DELETE|'
+    r'WEB_SEARCH)\]?\s*\{[^}]*\}',
+    re.IGNORECASE
+)
+
+ROUTING_TAG_PATTERN = re.compile(
+    r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH|HTML)\]?\s*$',
+    re.IGNORECASE
+)
+
 _tts = None
 _stt = None
 _tav = None
@@ -82,9 +91,6 @@ def get_summary_manager():
     return _summary_mgr
 
 
-# -----------------------------------------------------------------------
-# UTILITY
-# -----------------------------------------------------------------------
 def _as_str(x: Any) -> str:
     return (str(x) if x is not None else "").strip()
 
@@ -124,30 +130,6 @@ def fix_markdown_formatting(text: str) -> str:
 
     text = re.sub(r'^(#{1,6})\s+([^\n]+)$', split_long_header, text, flags=re.MULTILINE)
     text = re.sub(r'(^#{1,6}\s+[^\n]+)\n(?!\n)', r'\1\n\n', text, flags=re.MULTILINE)
-    text = re.sub(r'(?<=[.!?:])\s+(\*\s{2,}\*\*)', r'\n\1', text)
-    text = re.sub(r'(?<=[.!?:])\s+(-\s{2,}\*\*)', r'\n\1', text)
-    text = re.sub(r'(?<=[.!?:])\s+(\*\s+\*\*[A-Z])', r'\n\1', text)
-
-    def fix_numbered_list_run(match):
-        full = match.group(0)
-        parts = re.split(r'(?<=[.!?])\s+(?=\*\*[A-Z][a-zA-Z]+:?\*\*)', full)
-        if len(parts) <= 1:
-            return full
-        first_num_match = re.match(r'^(\d+)\.\s+', parts[0])
-        if not first_num_match:
-            return full
-        start_num = int(first_num_match.group(1))
-        result = [parts[0]]
-        for i, part in enumerate(parts[1:], start=1):
-            result.append(f"{start_num + i}. {part}")
-        return "\n".join(result)
-
-    text = re.sub(
-        r'^\d+\.\s+\*\*[^*]+\*\*[^\n]*(?:\s+\*\*[^*]+\*\*[^\n]*)+',
-        fix_numbered_list_run,
-        text,
-        flags=re.MULTILINE,
-    )
     return text
 
 
@@ -174,9 +156,50 @@ def _extract_routing_tag(text: str) -> tuple:
     return text, "NONE"
 
 
-# -----------------------------------------------------------------------
-# TTS PIPELINE
-# -----------------------------------------------------------------------
+def _detect_calendar_action(raw_text: str) -> tuple:
+    cal_match = re.search(
+        r'\[(CALENDAR_WRITE|CALENDAR_READ|CALENDAR_DELETE|'
+        r'GOOGLE_CALENDAR_WRITE|GOOGLE_CALENDAR_READ|GOOGLE_CALENDAR_DELETE)\](\{[^}]*\})',
+        raw_text
+    )
+    if not cal_match:
+        return None, None
+    action = cal_match.group(1)
+    try:
+        payload = json.loads(cal_match.group(2))
+        return action, payload
+    except Exception as e:
+        print(f"==> Failed to parse calendar JSON: {e} | raw: {repr(cal_match.group(2))}")
+        return None, None
+
+
+def _detect_web_search(raw_text: str):
+    return re.search(r'\[WEB_SEARCH\]\{"query":\s*"([^"]+)"\}', raw_text)
+
+
+def _clean_bot_text(raw_text: str) -> str:
+    """Strips ALL action tags, routing tags, and artifacts before sending to frontend."""
+    text = ACTION_TAG_PATTERN.sub('', raw_text)
+    text, _ = _extract_routing_tag(text)
+    text = re.sub(r'```[a-z]*\n?.*?```', '', text, flags=re.DOTALL)
+    text = re.sub(r'\n\s*\n', '\n\n', text)
+    return text.strip()
+
+
+def _tts_clean(sentence: str) -> str:
+    """Cleans a sentence before sending to ElevenLabs. Strips all tags."""
+    ROUTING_TAGS = {'none', 'inline', 'diagram', 'code', 'math', 'html'}
+    cleaned = strip_markdown(sentence)
+    cleaned = ACTION_TAG_PATTERN.sub('', cleaned)
+    cleaned = ROUTING_TAG_PATTERN.sub('', cleaned)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    if not cleaned or len(cleaned) < 3:
+        return ''
+    if cleaned.lower() in ROUTING_TAGS:
+        return ''
+    return cleaned
+
+
 async def _tts_pipeline(ws, sentences_queue: asyncio.Queue, voice_id: str, done_event: asyncio.Event):
     tts_instance = get_tts()
     cumulative_offset_ms = 0
@@ -194,14 +217,8 @@ async def _tts_pipeline(ws, sentences_queue: asyncio.Queue, voice_id: str, done_
             break
 
         try:
-            ROUTING_TAGS = {'none', 'inline', 'diagram', 'code', 'math', 'html'}
-            cleaned = strip_markdown(sentence)
-            if not cleaned or len(cleaned.strip()) < 3:
-                continue
-            if cleaned.strip().lower() in ROUTING_TAGS:
-                continue
-            cleaned = re.sub(r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH|HTML)\]?\s*$', '', cleaned, flags=re.IGNORECASE).strip()
-            if not cleaned or len(cleaned) < 3:
+            cleaned = _tts_clean(sentence)
+            if not cleaned:
                 continue
 
             result = await tts_instance.synthesize_sentence(cleaned, voice_id)
@@ -257,11 +274,7 @@ async def _tts_pipeline(ws, sentences_queue: asyncio.Queue, voice_id: str, done_
             pass
 
 
-# -----------------------------------------------------------------------
-# FILE PROCESSING
-# -----------------------------------------------------------------------
 async def _process_files(ws, files_payload: list, user_id: str) -> tuple:
-    """Returns (file_context, image_attachments, upload_too_large)"""
     MAX_TOTAL_UPLOAD_BYTES = 40 * 1024 * 1024
     file_context = ""
     image_attachments = []
@@ -316,9 +329,6 @@ async def _process_files(ws, files_payload: list, user_id: str) -> tuple:
     return file_context, image_attachments, False
 
 
-# -----------------------------------------------------------------------
-# HISTORY BUILDER
-# -----------------------------------------------------------------------
 def _build_history_lines(recent_history: list, max_chars: int = 30000) -> list:
     history_lines = []
     for m in recent_history:
@@ -335,11 +345,7 @@ def _build_history_lines(recent_history: list, max_chars: int = 30000) -> list:
     return history_lines
 
 
-# -----------------------------------------------------------------------
-# VISUAL AID GENERATOR
-# -----------------------------------------------------------------------
 async def _generate_visual(user_id: str, user_text: str, history_lines: list, file_context: str, image_attachments: list) -> tuple:
-    """Returns (visual_aid_dict_or_None, d_in, d_out)"""
     try:
         raw, d_in, d_out = await ai.get_diagram(
             site_id=user_id,
@@ -387,17 +393,7 @@ async def _generate_visual(user_id: str, user_text: str, history_lines: list, fi
         return None, 0, 0
 
 
-# -----------------------------------------------------------------------
-# SEND VISUAL TO FRONTEND + SAVE
-# -----------------------------------------------------------------------
 async def _send_and_save_visual(ws, visual_aid, routing_decision: str, chat_id: str):
-    if visual_aid is None and routing_decision in ("DIAGRAM", "CODE", "MATH", "HTML"):
-        try:
-            await ws.send_json({"type": "visual_aid_none"})
-        except Exception:
-            pass
-        return
-
     if visual_aid is None:
         try:
             await ws.send_json({"type": "visual_aid_none"})
@@ -433,11 +429,7 @@ async def _send_and_save_visual(ws, visual_aid, routing_decision: str, chat_id: 
             print(f"==> Failed to save visual: {e}")
 
 
-# -----------------------------------------------------------------------
-# INTEGRATION PROMPT BUILDER
-# -----------------------------------------------------------------------
 def _build_integration_prompt(user_id: str) -> str:
-    """Checks user's default integration and returns the appropriate prompt snippet."""
     integrators = rag.checkIntegrations(user_id)
     if not integrators:
         return "\n\nINTEGRATIONS RULE: User has not yet connected any services. You cannot perform calendar or external actions."
@@ -453,13 +445,13 @@ def _build_integration_prompt(user_id: str) -> str:
             "[CALENDAR_WRITE]{\"subject\": \"<title>\", \"start\": \"<ISO datetime>\", \"end\": \"<ISO datetime>\", \"body\": \"<optional notes>\", \"attendees\": []}\n\n"
             "If the user asks ANYTHING about their schedule, upcoming events, what they have planned, "
             "what's on their calendar, or questions like 'what do I have tomorrow', 'am I free at 3pm', "
-            "'what's happening this week' — respond naturally saying you're checking, then at the very end append:\n"
+            "'what's happening this week' respond naturally saying you're checking, then at the very end append:\n"
             "[CALENDAR_READ]{\"days_ahead\": <number based on the question, e.g. 1 for tomorrow, 7 for this week>}\n\n"
             "IMPORTANT: Only append a tag if a calendar action is clearly needed. "
             "If the user asks to cancel, delete, or remove an event:\n"
-            "  Step 1 — If you don't already have the event ID, respond naturally saying you're checking the calendar, then append:\n"
+            "  Step 1 If you don't already have the event ID, respond naturally saying you're checking the calendar, then append:\n"
             "[CALENDAR_READ]{\"days_ahead\": 14}\n"
-            "  Step 2 — Once you have the event list and can identify the event the user wants to delete, append:\n"
+            "  Step 2 Once you have the event list and can identify the event the user wants to delete, append:\n"
             "[CALENDAR_DELETE]{\"event_id\": \"<event_id from the calendar data>\"}\n"
             "Never attempt a delete without a real event_id. If you cannot find the event, tell the user.\n\n"
             "For normal conversation, do not append any calendar tag. "
@@ -475,9 +467,9 @@ def _build_integration_prompt(user_id: str) -> str:
             "If the user asks to check, view, or list their calendar/events/schedule, respond naturally then append:\n"
             "[GOOGLE_CALENDAR_READ]{\"days_ahead\": 7}\n"
             "If the user asks to cancel, delete, or remove an event:\n"
-            "  Step 1 — If you don't already have the event ID, respond naturally saying you're checking the calendar, then append:\n"
+            "  Step 1 If you don't already have the event ID, respond naturally saying you're checking the calendar, then append:\n"
             "[CALENDAR_READ]{\"days_ahead\": 14}\n"
-            "  Step 2 — Once you have the event list and can identify the event the user wants to delete, append:\n"
+            "  Step 2 Once you have the event list and can identify the event the user wants to delete, append:\n"
             "[CALENDAR_DELETE]{\"event_id\": \"<event_id from the calendar data>\"}\n"
             "Never attempt a delete without a real event_id. If you cannot find the event, tell the user.\n\n"
             "IMPORTANT: Only append the tag if a calendar action is clearly needed. "
@@ -486,6 +478,7 @@ def _build_integration_prompt(user_id: str) -> str:
         )
     else:
         return "\n\nINTEGRATIONS RULE: User has connected services but has not set a default provider. Ask them to select one in settings."
+
 
 def _build_websearch_prompt() -> str:
     return (
@@ -496,17 +489,17 @@ def _build_websearch_prompt() -> str:
         "[WEB_SEARCH]{\"query\": \"<concise search query based on what the user asked>\"}\n\n"
         "IMPORTANT: Only use web search when the question genuinely requires current or real-time data. "
         "For general knowledge questions you already know the answer to, do not append a web search tag. "
-        "Never mention that you're searching — just say you're checking or looking it up."
+        "Never mention that you're searching just say you're checking or looking it up."
     )
+
 
 async def _execute_calendar_action(
     ws, user_id: str, calendar_action: str, calendar_payload: dict,
     default_integration: str, user_text: str, system_prompt: str,
     voice_id: str, audio_on: bool
 ):
-    # Pick the right provider based on the action tag and default integration
     is_google = (
-        calendar_action in ("GOOGLE_CALENDAR_WRITE", "GOOGLE_CALENDAR_READ")
+        calendar_action in ("GOOGLE_CALENDAR_WRITE", "GOOGLE_CALENDAR_READ", "GOOGLE_CALENDAR_DELETE")
         or default_integration == "google"
     )
 
@@ -541,48 +534,30 @@ async def _execute_calendar_action(
                     body=calendar_payload.get("body", ""),
                     attendee_emails=calendar_payload.get("attendees", []),
                 )
-            await _stream_calendar_read_response(
-                ws=ws,
-                user_id=user_id,
-                user_text=user_text,
-                events_text=f"Event '{calendar_payload['subject']}' was successfully created.",
-                system_prompt=system_prompt,
-                voice_id=voice_id,
-                audio_on=audio_on,
+            await _stream_second_pass(
+                ws=ws, user_id=user_id, user_text=user_text,
+                context_text=f"Event '{calendar_payload['subject']}' was successfully created.",
+                system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
             )
             print(f"==> {provider_name} calendar event created: {result.get('id')}")
             await ws.send_json({"type": "calendar_done", "message": "Event booked!", "event": result})
 
         elif calendar_action in ("CALENDAR_READ", "GOOGLE_CALENDAR_READ"):
             if is_google:
-                events = await google_list_events(
-                    access_token=access_token,
-                    days_ahead=calendar_payload.get("days_ahead", 7),
-                )
+                events = await google_list_events(access_token=access_token, days_ahead=calendar_payload.get("days_ahead", 7))
             else:
-                events = await ms_list_events(
-                    access_token=access_token,
-                    days_ahead=calendar_payload.get("days_ahead", 7),
-                )
+                events = await ms_list_events(access_token=access_token, days_ahead=calendar_payload.get("days_ahead", 7))
 
-            if events:
-                events_text = "\n".join([
-                    f"- {e.get('subject', 'Untitled')}: {e.get('start', {}).get('dateTime', '')} to {e.get('end', {}).get('dateTime', '')}"
-                    for e in events
-                ])
-            else:
-                events_text = "No upcoming events found."
+            events_text = "\n".join([
+                f"- {e.get('subject', 'Untitled')}: {e.get('start', {}).get('dateTime', '')} to {e.get('end', {}).get('dateTime', '')}"
+                for e in events
+            ]) if events else "No upcoming events found."
 
             print(f"==> {provider_name} calendar events fetched: {len(events)} events")
-
-            await _stream_calendar_read_response(
-                ws=ws,
-                user_id=user_id,
-                user_text=user_text,
-                events_text=events_text,
-                system_prompt=system_prompt,
-                voice_id=voice_id,
-                audio_on=audio_on,
+            await _stream_second_pass(
+                ws=ws, user_id=user_id, user_text=user_text,
+                context_text=events_text,
+                system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
             )
 
         elif calendar_action in ("CALENDAR_DELETE", "GOOGLE_CALENDAR_DELETE"):
@@ -596,27 +571,25 @@ async def _execute_calendar_action(
                 await ms_delete_event(access_token=access_token, event_id=event_id)
             await ws.send_json({"type": "calendar_done", "message": "Event deleted!"})
 
-
     except Exception as e:
-        print(f"==> {provider_name} calendar action failed: {e}")
+        print(f"==> Calendar action failed: {e}")
         await ws.send_json({"type": "error", "message": f"Calendar action failed: {e}"})
 
 
-async def _stream_calendar_read_response(
-    ws, user_id: str, user_text: str, events_text: str,
-    system_prompt: str, voice_id: str, audio_on: bool
+async def _stream_second_pass(
+    ws, user_id: str, user_text: str, context_text: str,
+    system_prompt: str, voice_id: str, audio_on: bool,
+    context_label: str = "data"
 ):
-    """Second AI pass — feeds calendar data back to AI and streams the response."""
     followup_system = (
         f"{system_prompt}\n\n"
-        "You have either just retrieved the user's calendar data OR already called a new event(s)  "
-        "Answer their question naturally and conversationally based on it. "
-        "Keep it brief — spoken aloud, under 80 words."
+        "You have just retrieved relevant data. Answer the user's question naturally and conversationally. "
+        "Keep it brief, spoken aloud, under 80 words. No markdown, no tags."
     )
     followup_user = (
         f"The user asked: \"{user_text}\"\n\n"
-        f"Here are their upcoming calendar events:\n{events_text}\n\n"
-        "Answer their question naturally based on this data."
+        f"Here is the retrieved data:\n{context_text}\n\n"
+        "Answer their question naturally based on this."
     )
 
     tts_queue = tts_task = tts_done_event = None
@@ -625,11 +598,9 @@ async def _stream_calendar_read_response(
         if audio_on:
             tts_queue = asyncio.Queue()
             tts_done_event = asyncio.Event()
-            tts_task = asyncio.create_task(
-                _tts_pipeline(ws, tts_queue, voice_id, tts_done_event)
-            )
+            tts_task = asyncio.create_task(_tts_pipeline(ws, tts_queue, voice_id, tts_done_event))
 
-        full_text_parts, sentences_for_tts, _, _ = await _stream_ai_response(
+        full_text_parts, _, _, _ = await _stream_ai_response(
             ws, user_id, followup_system, followup_user,
             [], audio_on, voice_id, tts_queue, False
         )
@@ -638,7 +609,7 @@ async def _stream_calendar_read_response(
             tts_done_event.set()
 
         raw_text = "".join(full_text_parts)
-        bot_text, _ = _extract_routing_tag(raw_text)
+        bot_text = _clean_bot_text(raw_text)
         bot_text = fix_markdown_formatting(bot_text)
 
         await ws.send_json({"type": "text_done", "text": bot_text})
@@ -649,78 +620,15 @@ async def _stream_calendar_read_response(
             except asyncio.TimeoutError:
                 tts_task.cancel()
             except Exception as e:
-                print(f"==> Calendar read TTS error: {e}")
+                print(f"==> Second pass TTS error: {e}")
 
     except Exception as e:
-        print(f"==> Calendar read second pass failed: {e}")
+        print(f"==> Second pass failed: {e}")
         traceback.print_exc()
         if tts_task:
             tts_task.cancel()
 
-# -----------------------------------------------------------------------
-# WEB SEARCH MANAGE
-# -----------------------------------------------------------------------
-async def _stream_web_search_response(
-    ws, user_id: str, user_text: str, search_query: str,
-    system_prompt: str, voice_id: str, audio_on: bool
-):
-    """Second AI pass — feeds web_search_data"""
 
-
-    web_response = get_web_search().web_search(search_query, 3)
-
-    followup_system = (
-        f"{system_prompt}\n\n"
-        "You have just retrieved the web search data of the user "
-        "Answer their question naturally and conversationally based on it. " 
-        "If the web results dont provide a good enough answer, do not waffle "
-    )
-    followup_user = (
-        f"The user asked: \"{user_text}\"\n\n"
-        f"Here are the web results based off that question:\n{web_response}\n\n"
-        "Answer their question naturally based on this data."
-    )
-
-    tts_queue = tts_task = tts_done_event = None
-
-    try:
-        if audio_on:
-            tts_queue = asyncio.Queue()
-            tts_done_event = asyncio.Event()
-            tts_task = asyncio.create_task(
-                _tts_pipeline(ws, tts_queue, voice_id, tts_done_event)
-            )
-
-        full_text_parts, sentences_for_tts, _, _ = await _stream_ai_response(
-            ws, user_id, followup_system, followup_user,
-            [], audio_on, voice_id, tts_queue, False
-        )
-
-        if tts_done_event:
-            tts_done_event.set()
-
-        raw_text = "".join(full_text_parts)
-        bot_text, _ = _extract_routing_tag(raw_text)
-        bot_text = fix_markdown_formatting(bot_text)
-
-        await ws.send_json({"type": "text_done", "text": bot_text})
-
-        if tts_task:
-            try:
-                await asyncio.wait_for(tts_task, timeout=30)
-            except asyncio.TimeoutError:
-                tts_task.cancel()
-            except Exception as e:
-                print(f"==> Web search read TTS error: {e}")
-
-    except Exception as e:
-        print(f"==> Web search second pass failed: {e}")
-        traceback.print_exc()
-        if tts_task:
-            tts_task.cancel()
-# -----------------------------------------------------------------------
-# SUMMARY UPDATER
-# -----------------------------------------------------------------------
 async def _update_summary(smgr, chat_id: str, history: list, user_text: str, bot_text: str):
     try:
         char_count = 0
@@ -739,16 +647,11 @@ async def _update_summary(smgr, chat_id: str, history: list, user_text: str, bot
         print(f"Summary update error: {e}")
 
 
-# -----------------------------------------------------------------------
-# AI STREAM HANDLER
-# -----------------------------------------------------------------------
-async def _stream_ai_response(ws, user_id: str, system_prompt: str, user_prompt: str,
-                               image_attachments: list, audio_on: bool, voice_id: str,
-                               tts_queue, routing_tag_found: bool) -> tuple:
-    """
-    Streams AI response, feeds TTS queue sentence by sentence.
-    Returns (full_text_parts, sentences_for_tts, chat_input_tokens, chat_output_tokens)
-    """
+async def _stream_ai_response(
+    ws, user_id: str, system_prompt: str, user_prompt: str,
+    image_attachments: list, audio_on: bool, voice_id: str,
+    tts_queue, routing_tag_found: bool
+) -> tuple:
     full_text_parts = []
     sentence_buffer = ""
     sentences_for_tts = []
@@ -782,47 +685,23 @@ async def _stream_ai_response(ws, user_id: str, system_prompt: str, user_prompt:
             if sentence and len(sentence) > 2:
                 sentences_for_tts.append(sentence)
                 if tts_queue and not routing_tag_found:
-                    await tts_queue.put(sentence)
+                    cleaned = _tts_clean(sentence)
+                    if cleaned:
+                        await tts_queue.put(cleaned)
 
-    # Handle remaining buffer
     remaining = sentence_buffer.strip()
-    remaining = re.sub(
-        r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH|HTML|CALENDAR_WRITE|CALENDAR_READ|GOOGLE_CALENDAR_WRITE|GOOGLE_CALENDAR_READ|WEB_SEARCH)\]?.*$',
-        '', remaining, flags=re.IGNORECASE
-    ).strip()
-    if remaining and len(remaining) > 2:
+    remaining_clean = ACTION_TAG_PATTERN.sub('', remaining)
+    remaining_clean = ROUTING_TAG_PATTERN.sub('', remaining_clean).strip()
+    if remaining_clean and len(remaining_clean) > 2:
         sentences_for_tts.append(remaining)
         if tts_queue:
-            await tts_queue.put(remaining)
+            cleaned = _tts_clean(remaining_clean)
+            if cleaned:
+                await tts_queue.put(cleaned)
 
     return full_text_parts, sentences_for_tts, chat_input_tokens, chat_output_tokens
 
 
-# -----------------------------------------------------------------------
-# CALENDAR TAG DETECTOR
-# -----------------------------------------------------------------------
-def _detect_calendar_action(raw_text: str) -> tuple:
-    """Returns (calendar_action, calendar_payload) or (None, None)"""
-    cal_match = re.search(
-        r'\[(CALENDAR_WRITE|CALENDAR_READ|CALENDAR_DELETE|GOOGLE_CALENDAR_WRITE|GOOGLE_CALENDAR_READ|GOOGLE_CALENDAR_DELETE)\](\{[^}]*\})',
-        raw_text
-    )
-    if not cal_match:
-        return None, None
-
-    action = cal_match.group(1)
-    try:
-        payload = json.loads(cal_match.group(2))
-        return action, payload
-    except Exception as e:
-        print(f"==> Failed to parse calendar JSON: {e} | raw: {repr(cal_match.group(2))}")
-        return None, None
-
-
-    
-# -----------------------------------------------------------------------
-# CHAT INIT
-# -----------------------------------------------------------------------
 @router.post("/chat_init")
 async def chat_init(init_details: SessionInit, user=Depends(verify_token)):
     userID = init_details.userID
@@ -856,9 +735,6 @@ async def chat_init(init_details: SessionInit, user=Depends(verify_token)):
     }
 
 
-# -----------------------------------------------------------------------
-# CHAT DIAGRAM INIT
-# -----------------------------------------------------------------------
 @router.post("/chat_diagram_init")
 async def chat_diagram_init(init_details: DiagramInit, user=Depends(verify_token)):
     chatID = init_details.chat_id
@@ -872,13 +748,9 @@ async def chat_diagram_init(init_details: DiagramInit, user=Depends(verify_token
         }
         for v in raw_visuals
     ]
-    print(f"=> VISUALS {visuals} {raw_visuals}")
     return {"visuals": visuals}
 
 
-# -----------------------------------------------------------------------
-# MAIN CHAT WEBSOCKET (audio + agent merged)
-# -----------------------------------------------------------------------
 @router.websocket("/audio_chat_ws")
 async def audio_chat_ws(ws: WebSocket):
     print("HIT audio_chat_ws")
@@ -903,9 +775,6 @@ async def audio_chat_ws(ws: WebSocket):
                 await ws.close()
                 return
 
-            # ----------------------------------------------------------
-            # PARSE PAYLOAD
-            # ----------------------------------------------------------
             user_id    = _as_str(payload.get("user_id") or payload.get("site_id"))
             chat_id    = _as_str(payload.get("chat_id"))
             user_text  = _as_str(payload.get("message"))
@@ -927,31 +796,19 @@ async def audio_chat_ws(ws: WebSocket):
                 raw_audio = raw_audio.split(",", 1)[1]
             audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
 
-            # ----------------------------------------------------------
-            # TOKEN INIT
-            # ----------------------------------------------------------
             chat_input_tokens = chat_output_tokens = 0
             diagram_input_tokens = diagram_output_tokens = 0
 
-            # ----------------------------------------------------------
-            # CREDIT CHECK
-            # ----------------------------------------------------------
             if not rag.hasEnoughCredits(user_id):
                 await ws.send_json({"type": "error", "message": "You have no credits remaining.", "code": "NO_CREDITS"})
                 await ws.send_json({"type": "done"})
                 continue
 
-            # ----------------------------------------------------------
-            # FILE COUNT CAP
-            # ----------------------------------------------------------
             if len(files_payload) > MAX_FILES:
                 await ws.send_json({"type": "error", "message": f"Max {MAX_FILES} files per message.", "code": "TOO_MANY_FILES"})
                 await ws.send_json({"type": "done"})
                 continue
 
-            # ----------------------------------------------------------
-            # STT
-            # ----------------------------------------------------------
             if audio_bytes:
                 try:
                     user_text = get_stt().get_transcript(audio_bytes)
@@ -967,13 +824,12 @@ async def audio_chat_ws(ws: WebSocket):
             if not user_id or not chat_id or (not user_text and not audio_bytes):
                 await ws.send_json({"type": "error", "message": "Missing user_id/chat_id/message"})
                 continue
+
             try:
                 rag.add_message(chat_id=chat_id, role="user", content=user_text)
             except Exception as e:
                 print(f"==> Failed to save user message: {e}")
-            # ----------------------------------------------------------
-            # VOICE ID FALLBACK
-            # ----------------------------------------------------------
+
             if not voice_id:
                 try:
                     avatar_data = rag.get_avatar(user_id, chat_id)
@@ -984,32 +840,22 @@ async def audio_chat_ws(ws: WebSocket):
                 if not voice_id:
                     voice_id = "UgBBYS2sOqTuMpoF3BR0"
 
-            # ----------------------------------------------------------
-            # LOAD HISTORY
-            # ----------------------------------------------------------
             try:
                 history = rag.get_recent_messages(user_id=user_id, chat_id=chat_id, limit=20)
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"Failed to load history: {str(e)}"})
                 continue
 
-            # ----------------------------------------------------------
-            # PROCESS FILES
-            # ----------------------------------------------------------
             file_context, image_attachments, upload_too_large = await _process_files(ws, files_payload, user_id)
             if upload_too_large:
                 await ws.send_json({"type": "done"})
                 continue
 
-            # ----------------------------------------------------------
-            # BUILD SYSTEM PROMPT
-            # ----------------------------------------------------------
             smgr = get_summary_manager()
             summary_context = smgr.build_context(chat_id)
             system_prompt = f"{prompt}\n\n{summary_context}" if summary_context else prompt
 
             recent_history = history[-100:] if len(history) < 100 else history
-
             history_lines = _build_history_lines(recent_history)
             conversation_history = "\n".join(history_lines)
 
@@ -1019,53 +865,33 @@ async def audio_chat_ws(ws: WebSocket):
                 user_prompt = user_text
 
             if file_context:
-                system_prompt += (
-                    f"\n\nThe user has attached {len(files_payload)} file(s). Here is the content:\n{file_context}\n\n"
-                    "Use this as context. Do not read it verbatim. Explain conversationally."
-                )
+                system_prompt += f"\n\nThe user has attached {len(files_payload)} file(s). Here is the content:\n{file_context}\n\nUse this as context. Do not read it verbatim. Explain conversationally."
             else:
                 system_prompt += "\n\nNo files attached."
 
             if audio_on:
-                system_prompt += (
-                    "\n\nLENGTH RULE: This response will be spoken aloud. Keep it under 120 words. "
-                    "Lead with the core answer, then the most important detail."
-                )
+                system_prompt += "\n\nLENGTH RULE: This response will be spoken aloud. Keep it under 120 words. Lead with the core answer, then the most important detail."
             else:
-                system_prompt += (
-                    "\n\nLENGTH RULE: Audio is off. You have room to be thorough. "
-                    "Use headers, lists, and examples freely."
-                )
+                system_prompt += "\n\nLENGTH RULE: Audio is off. You have room to be thorough. Use headers, lists, and examples freely."
 
-            # ----------------------------------------------------------
-            # INTEGRATIONS
-            # ----------------------------------------------------------
             system_prompt += _build_integration_prompt(user_id)
+            system_prompt += _build_websearch_prompt()
 
-            system_prompt += _build_websearch_prompt() 
-            
             default_integration = rag.getDefaultIntegration(user_id)
-
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             system_prompt += f"\n\nToday's date is {today} (UTC). The user is in Melbourne, Australia (AEST, UTC+10). When booking calendar events, use Melbourne local time."
 
-            # ----------------------------------------------------------
-            # GENERATE RESPONSE
-            # ----------------------------------------------------------
             tts_queue = tts_task = tts_done_event = None
-            routing_tag_found = False
 
             try:
                 if audio_on:
                     tts_queue = asyncio.Queue()
                     tts_done_event = asyncio.Event()
-                    tts_task = asyncio.create_task(
-                        _tts_pipeline(ws, tts_queue, voice_id, tts_done_event)
-                    )
+                    tts_task = asyncio.create_task(_tts_pipeline(ws, tts_queue, voice_id, tts_done_event))
 
                 full_text_parts, sentences_for_tts, chat_input_tokens, chat_output_tokens = await _stream_ai_response(
                     ws, user_id, system_prompt, user_prompt,
-                    image_attachments, audio_on, voice_id, tts_queue, routing_tag_found
+                    image_attachments, audio_on, voice_id, tts_queue, False
                 )
 
                 if tts_done_event:
@@ -1074,30 +900,20 @@ async def audio_chat_ws(ws: WebSocket):
                 raw_text = "".join(full_text_parts)
                 print(f"==> FULL RAW: {repr(raw_text)}", flush=True)
 
-                bot_text, routing_decision = _extract_routing_tag(raw_text)
+                calendar_action, calendar_payload = _detect_calendar_action(raw_text)
+                web_match = _detect_web_search(raw_text)
+
+                bot_text = _clean_bot_text(raw_text)
+                _, routing_decision = _extract_routing_tag(raw_text)
+                bot_text = fix_markdown_formatting(bot_text)
+
                 print(f"==> ROUTING: {routing_decision}", flush=True)
 
-                # Calendar detection
-                calendar_action, calendar_payload = _detect_calendar_action(raw_text)
                 if calendar_action:
-                    bot_text = re.sub(
-                        r'\[(CALENDAR_WRITE|CALENDAR_READ|GOOGLE_CALENDAR_WRITE|GOOGLE_CALENDAR_READ)\]\{[^}]*\}',
-                        '', bot_text
-                    ).strip() 
                     await ws.send_json({"type": "calendar_action"})
-                
-
-                #WebSearch Detection 
-                web_match = None
-                web_match = re.search(r'\[WEB_SEARCH\]\{"query":\s*"([^"]+)"\}', raw_text)
-                
                 if web_match:
-                    bot_text = re.sub(
-                        r'\[(WEB_SEARCH)\]\{[^}]*\}',
-                        '', bot_text
-                    ).strip() 
                     await ws.send_json({"type": "web_search_pending"})
-                bot_text = fix_markdown_formatting(bot_text)
+
                 await ws.send_json({"type": "text_done", "text": bot_text})
 
                 if not sentences_for_tts:
@@ -1113,9 +929,6 @@ async def audio_chat_ws(ws: WebSocket):
                     tts_task.cancel()
                 continue
 
-            # ----------------------------------------------------------
-            # VISUAL AID
-            # ----------------------------------------------------------
             visual_aid = None
             visual_task = None
 
@@ -1123,13 +936,9 @@ async def audio_chat_ws(ws: WebSocket):
                 async def _gen_visual():
                     va, d_in, d_out = await _generate_visual(user_id, user_text, history_lines, file_context, image_attachments)
                     return va, d_in, d_out
-
                 visual_task = asyncio.create_task(_gen_visual())
                 await ws.send_json({"type": "visual_aid_pending"})
 
-            # ----------------------------------------------------------
-            # WAIT FOR TTS
-            # ----------------------------------------------------------
             if tts_task:
                 try:
                     await asyncio.wait_for(tts_task, timeout=30)
@@ -1139,9 +948,6 @@ async def audio_chat_ws(ws: WebSocket):
                 except Exception as e:
                     print(f"==> TTS error: {e}", flush=True)
 
-            # ----------------------------------------------------------
-            # WAIT FOR VISUAL + SEND
-            # ----------------------------------------------------------
             if visual_task:
                 try:
                     visual_aid, d_in, d_out = await visual_task
@@ -1152,48 +958,29 @@ async def audio_chat_ws(ws: WebSocket):
 
             await _send_and_save_visual(ws, visual_aid, routing_decision, chat_id)
 
-            # ----------------------------------------------------------
-            # EXECUTE CALENDAR ACTION
-            # ----------------------------------------------------------
             if calendar_action and calendar_payload:
                 await _execute_calendar_action(
-                    ws=ws,
-                    user_id=user_id,
-                    calendar_action=calendar_action,
-                    calendar_payload=calendar_payload,
-                    default_integration=default_integration,
-                    user_text=user_text,
-                    system_prompt=system_prompt,
-                    voice_id=voice_id,
-                    audio_on=audio_on,
+                    ws=ws, user_id=user_id,
+                    calendar_action=calendar_action, calendar_payload=calendar_payload,
+                    default_integration=default_integration, user_text=user_text,
+                    system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
                 )
+
             if web_match:
-                await _stream_web_search_response(
-                    ws=ws,
-                    user_id=user_id,
-                    user_text=user_text,
-                    search_query=web_match.group(1),
-                    system_prompt=system_prompt,
-                    voice_id=voice_id,
-                    audio_on=audio_on,
+                await _stream_second_pass(
+                    ws=ws, user_id=user_id, user_text=user_text,
+                    context_text=get_web_search().web_search(web_match.group(1), 3),
+                    system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
                 )
-            # ----------------------------------------------------------
-            # SAVE TO DB
-            # ----------------------------------------------------------
+
             try:
                 rag.add_message(chat_id=chat_id, role="assistant", content=bot_text)
                 rag.update_last_message(chat_id=chat_id, last_message=bot_text)
             except Exception:
                 pass
 
-            # ----------------------------------------------------------
-            # SUMMARY
-            # ----------------------------------------------------------
             await _update_summary(smgr, chat_id, history, user_text, bot_text)
 
-            # ----------------------------------------------------------
-            # COST TRACKING
-            # ----------------------------------------------------------
             try:
                 model = rag.get_model(user_id)
                 cost = account_manager.processUsedCost(
@@ -1228,9 +1015,6 @@ async def audio_chat_ws(ws: WebSocket):
             pass
 
 
-# -----------------------------------------------------------------------
-# EMBED WEBSOCKET
-# -----------------------------------------------------------------------
 @router.websocket("/embed_chat_ws")
 async def embed_chat_ws(ws: WebSocket):
     print("HIT embed_chat_ws")
@@ -1252,7 +1036,6 @@ async def embed_chat_ws(ws: WebSocket):
         await ws.close(code=4001, reason="API key has no owner")
         return
 
-    embed_session_id = f"embed_{api_key}_{uuid.uuid4().hex[:12]}"
     MIN_CREDITS_PER_TURN = 0.05
     print(f"==> embed WS opened for api_key={api_key}, owner={owner_user_id}")
 
@@ -1271,18 +1054,12 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.close()
                 return
 
-            # ----------------------------------------------------------
-            # RE-VALIDATE API KEY
-            # ----------------------------------------------------------
             key_data = rag.getApiKey(api_key)
             if not key_data or not key_data.get("is_active"):
                 await ws.send_json({"type": "error", "message": "API key deactivated", "code": "INVALID_KEY"})
                 await ws.close()
                 return
 
-            # ----------------------------------------------------------
-            # LIMITS
-            # ----------------------------------------------------------
             if key_data.get("conversations_used", 0) >= key_data.get("monthly_limit", 500):
                 await ws.send_json({"type": "error", "message": "Monthly conversation limit reached", "code": "LIMIT_REACHED"})
                 await ws.send_json({"type": "done"})
@@ -1310,9 +1087,6 @@ async def embed_chat_ws(ws: WebSocket):
             except Exception:
                 pass
 
-            # ----------------------------------------------------------
-            # EXTRACT PAYLOAD
-            # ----------------------------------------------------------
             business_name        = key_data.get("business_name") or "this business"
             business_description = key_data.get("business_description") or ""
             assistant_name       = key_data.get("assistant_name") or "Assistant"
@@ -1340,9 +1114,6 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "done"})
                 continue
 
-            # ----------------------------------------------------------
-            # STT
-            # ----------------------------------------------------------
             if audio_bytes:
                 try:
                     user_text = get_stt().get_transcript(audio_bytes)
@@ -1361,16 +1132,10 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "done"})
                 continue
 
-            # ----------------------------------------------------------
-            # VOICE ID FALLBACK
-            # ----------------------------------------------------------
             if not voice_id:
                 avatar = rag.getAvatarByName(key_data.get("avatar_name") or "Mia Sterling") or {}
                 voice_id = avatar.get("voice") or "UgBBYS2sOqTuMpoF3BR0"
 
-            # ----------------------------------------------------------
-            # HISTORY
-            # ----------------------------------------------------------
             try:
                 history = rag.get_recent_messages(user_id=owner_user_id, chat_id=session_id, limit=10)
             except Exception:
@@ -1381,9 +1146,6 @@ async def embed_chat_ws(ws: WebSocket):
             except Exception as e:
                 print(f"==> Failed to save user message: {e}")
 
-            # ----------------------------------------------------------
-            # RAG LOOKUP
-            # ----------------------------------------------------------
             rag_context = ""
             try:
                 embedding = await rag.embedText(user_text)
@@ -1393,9 +1155,6 @@ async def embed_chat_ws(ws: WebSocket):
             except Exception as e:
                 print(f"==> RAG failed: {e}")
 
-            # ----------------------------------------------------------
-            # BUILD SYSTEM PROMPT
-            # ----------------------------------------------------------
             tone_map = {
                 "professional": "Be polite, professional, and clear. Sound like a well-trained support agent.",
                 "friendly": "Be warm, casual, and approachable. Sound like a helpful friend who works at the company.",
@@ -1410,29 +1169,24 @@ async def embed_chat_ws(ws: WebSocket):
                 "RULES\n\n"
                 f"1. ONLY use information from the knowledge base below to answer questions about {business_name}. "
                 "If the answer is not there, say so directly and suggest the user contact the business.\n\n"
-                "2. Never invent, guess, or fill in gaps. If you are not sure, say \"I don't have that information.\"\n\n"
+                "2. Never invent, guess, or fill in gaps. If you are not sure, say I don't have that information.\n\n"
                 "3. Never make up contact details, policies, pricing, hours, or product features.\n\n"
                 f"4. Stay on topic. You help with {business_name} only. Politely redirect off-topic questions.\n\n"
                 "5. Keep responses under 80 words. Use short sentences. This will be spoken aloud, not read on screen.\n\n"
-                f"6. {tone} Use \"I\" statements. Sound like a helpful person, not a corporate script.\n\n"
+                f"6. {tone} Use I statements. Sound like a helpful person, not a corporate script.\n\n"
                 "7. No markdown, no formatting, no lists, no headers, no bold, no asterisks. Plain conversational sentences only.\n\n"
-                "8. When you don't know something, always offer a next step: \"You could reach out to them directly for that.\"\n\n"
-                "9. Never say \"based on my training\", \"as an AI\", or \"I believe\". Just answer naturally or say you don't know.\n\n"
-                f"10. If someone asks who you are, say: \"I'm {assistant_name}, a support assistant for {business_name}.\"\n\n"
+                "8. When you don't know something, always offer a next step: You could reach out to them directly for that.\n\n"
+                "9. Never say based on my training, as an AI, or I believe. Just answer naturally or say you don't know.\n\n"
+                f"10. If someone asks who you are, say: I'm {assistant_name}, a support assistant for {business_name}.\n\n"
                 f"KNOWLEDGE BASE\n"
                 f"Everything you know about {business_name} is below. If something is not here, you do not know it.\n\n"
                 f"{kb_section}"
             )
 
-            # ----------------------------------------------------------
-            # INTEGRATIONS (on behalf of business owner)
-            # ----------------------------------------------------------
             system_prompt += _build_integration_prompt(owner_user_id)
             default_integration = rag.getDefaultIntegration(owner_user_id)
-            system_prompt += _build_websearch_prompt() 
-            # ----------------------------------------------------------
-            # DIAGRAMS
-            # ----------------------------------------------------------
+            system_prompt += _build_websearch_prompt()
+
             if diagrams_enabled:
                 system_prompt += (
                     "\n\nVISUAL AIDS: You can generate visual aids. End your response with one of these tags:\n"
@@ -1450,27 +1204,19 @@ async def embed_chat_ws(ws: WebSocket):
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             system_prompt += f"\n\nToday's date is {today} (UTC). The user is in Melbourne, Australia (AEST, UTC+10). When booking calendar events, use Melbourne local time."
 
-            # ----------------------------------------------------------
-            # USER PROMPT WITH HISTORY
-            # ----------------------------------------------------------
             history_lines = _build_history_lines(history[-6:])
             if history_lines:
                 user_prompt = "Conversation history:\n" + "\n".join(history_lines) + f"\n\nLatest user message:\n{user_text}"
             else:
                 user_prompt = user_text
 
-            # ----------------------------------------------------------
-            # GENERATE RESPONSE
-            # ----------------------------------------------------------
             tts_queue = tts_task = tts_done_event = None
 
             try:
                 if audio_on:
                     tts_queue = asyncio.Queue()
                     tts_done_event = asyncio.Event()
-                    tts_task = asyncio.create_task(
-                        _tts_pipeline(ws, tts_queue, voice_id, tts_done_event)
-                    )
+                    tts_task = asyncio.create_task(_tts_pipeline(ws, tts_queue, voice_id, tts_done_event))
 
                 print(f"==> embed stream starting at {time.time() - t0:.2f}s", flush=True)
 
@@ -1485,31 +1231,14 @@ async def embed_chat_ws(ws: WebSocket):
                 raw_text = "".join(full_text_parts).strip()
                 print(f"==> embed FULL RAW: {repr(raw_text)}", flush=True)
 
-                bot_text, routing_decision = _extract_routing_tag(raw_text)
-
-                # Calendar detection
                 calendar_action, calendar_payload = _detect_calendar_action(raw_text)
-                if calendar_action:
-                    bot_text = re.sub(
-                        r'\[(CALENDAR_WRITE|CALENDAR_READ|GOOGLE_CALENDAR_WRITE|GOOGLE_CALENDAR_READ)\]\{[^}]*\}',
-                        '', bot_text
-                    ).strip()
-                
-                            #WebSearch Detection 
-                web_match = None
-                web_match = re.search(r'\[WEB_SEARCH\]\{"query":\s*"([^"]+)"\}', raw_text)
-                
-                if web_match:
-                    bot_text = re.sub(
-                        r'\[(WEB_SEARCH)\]\{[^}]*\}',
-                        '', bot_text
-                    ).strip() 
+                web_match = _detect_web_search(raw_text)
 
+                _, routing_decision = _extract_routing_tag(raw_text)
                 if not diagrams_enabled:
                     routing_decision = "NONE"
 
-                bot_text = re.sub(r'```[a-z]*\n?.*?```', '', bot_text, flags=re.DOTALL).strip()
-                bot_text = re.sub(r'\n\s*\n', '\n\n', bot_text)
+                bot_text = _clean_bot_text(raw_text)
                 bot_text = fix_markdown_formatting(bot_text)
 
                 await ws.send_json({"type": "text_done", "text": bot_text})
@@ -1531,9 +1260,6 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "done"})
                 continue
 
-            # ----------------------------------------------------------
-            # VISUAL AID (only if enabled)
-            # ----------------------------------------------------------
             visual_aid = None
             visual_task = None
 
@@ -1541,13 +1267,9 @@ async def embed_chat_ws(ws: WebSocket):
                 async def _gen_embed_visual():
                     va, d_in, d_out = await _generate_visual(api_key, user_text, history_lines, "", [])
                     return va, d_in, d_out
-
                 visual_task = asyncio.create_task(_gen_embed_visual())
                 await ws.send_json({"type": "visual_aid_pending"})
 
-            # ----------------------------------------------------------
-            # WAIT FOR TTS
-            # ----------------------------------------------------------
             if tts_task:
                 try:
                     await asyncio.wait_for(tts_task, timeout=30)
@@ -1557,9 +1279,6 @@ async def embed_chat_ws(ws: WebSocket):
                 except Exception as e:
                     print(f"==> embed TTS error: {e}", flush=True)
 
-            # ----------------------------------------------------------
-            # WAIT FOR VISUAL + SEND
-            # ----------------------------------------------------------
             if visual_task:
                 try:
                     visual_aid, d_in, d_out = await visual_task
@@ -1576,34 +1295,21 @@ async def embed_chat_ws(ws: WebSocket):
                 except Exception:
                     pass
 
-            # ----------------------------------------------------------
-            # EXECUTE CALENDAR ACTION (on behalf of business owner)
-            # ----------------------------------------------------------
             if calendar_action and calendar_payload:
                 await _execute_calendar_action(
-                    ws=ws,
-                    user_id=owner_user_id,
-                    calendar_action=calendar_action,
-                    calendar_payload=calendar_payload,
-                    default_integration=default_integration,
-                    user_text=user_text,
-                    system_prompt=system_prompt,
-                    voice_id=voice_id,
-                    audio_on=audio_on,
+                    ws=ws, user_id=owner_user_id,
+                    calendar_action=calendar_action, calendar_payload=calendar_payload,
+                    default_integration=default_integration, user_text=user_text,
+                    system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
                 )
+
             if web_match:
-                await _stream_web_search_response(
-                    ws=ws,
-                    user_id=owner_user_id,
-                    user_text=user_text,
-                    search_query=web_match.group(1),
-                    system_prompt=system_prompt,
-                    voice_id=voice_id,
-                    audio_on=audio_on,
+                await _stream_second_pass(
+                    ws=ws, user_id=owner_user_id, user_text=user_text,
+                    context_text=get_web_search().web_search(web_match.group(1), 3),
+                    system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
                 )
-            # ----------------------------------------------------------
-            # SAVE + BILLING
-            # ----------------------------------------------------------
+
             try:
                 rag.add_message(chat_id=session_id, role="assistant", content=bot_text)
                 rag.update_last_message(chat_id=session_id, last_message=bot_text)
