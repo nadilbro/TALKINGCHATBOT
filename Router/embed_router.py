@@ -160,7 +160,7 @@ async def update_api_key(key: str, req: UpdateApiKeyRequest, user=Depends(verify
 #     }
 
 
-@router.get("/keys/{key}")
+@router.delete("/keys/{key}")
 async def delete_api_key(key: str, user=Depends(verify_token)):
     """Deletes an API key."""
     user_id = user["uid"]

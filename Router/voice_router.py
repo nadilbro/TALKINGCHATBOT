@@ -621,13 +621,13 @@ async def _stream_second_pass(
                 tts_task.cancel()
             except Exception as e:
                 print(f"==> Second pass TTS error: {e}")
-
+        return bot_text
     except Exception as e:
         print(f"==> Second pass failed: {e}")
         traceback.print_exc()
         if tts_task:
             tts_task.cancel()
-
+    
 
 async def _update_summary(smgr, chat_id: str, history: list, user_text: str, bot_text: str):
     try:
@@ -749,7 +749,6 @@ async def chat_diagram_init(init_details: DiagramInit, user=Depends(verify_token
         for v in raw_visuals
     ]
     return {"visuals": visuals}
-
 
 @router.websocket("/audio_chat_ws")
 async def audio_chat_ws(ws: WebSocket):
@@ -929,6 +928,9 @@ async def audio_chat_ws(ws: WebSocket):
                     tts_task.cancel()
                 continue
 
+            # ----------------------------------------------------------
+            # VISUAL AID
+            # ----------------------------------------------------------
             visual_aid = None
             visual_task = None
 
@@ -939,6 +941,9 @@ async def audio_chat_ws(ws: WebSocket):
                 visual_task = asyncio.create_task(_gen_visual())
                 await ws.send_json({"type": "visual_aid_pending"})
 
+            # ----------------------------------------------------------
+            # WAIT FOR TTS
+            # ----------------------------------------------------------
             if tts_task:
                 try:
                     await asyncio.wait_for(tts_task, timeout=30)
@@ -948,6 +953,9 @@ async def audio_chat_ws(ws: WebSocket):
                 except Exception as e:
                     print(f"==> TTS error: {e}", flush=True)
 
+            # ----------------------------------------------------------
+            # WAIT FOR VISUAL + SEND
+            # ----------------------------------------------------------
             if visual_task:
                 try:
                     visual_aid, d_in, d_out = await visual_task
@@ -958,8 +966,13 @@ async def audio_chat_ws(ws: WebSocket):
 
             await _send_and_save_visual(ws, visual_aid, routing_decision, chat_id)
 
+            # ----------------------------------------------------------
+            # EXECUTE CALENDAR ACTION — capture second pass text
+            # ----------------------------------------------------------
+            second_pass_text = None
+
             if calendar_action and calendar_payload:
-                await _execute_calendar_action(
+                second_pass_text = await _execute_calendar_action(
                     ws=ws, user_id=user_id,
                     calendar_action=calendar_action, calendar_payload=calendar_payload,
                     default_integration=default_integration, user_text=user_text,
@@ -967,20 +980,33 @@ async def audio_chat_ws(ws: WebSocket):
                 )
 
             if web_match:
-                await _stream_second_pass(
+                second_pass_text = await _stream_second_pass(
                     ws=ws, user_id=user_id, user_text=user_text,
                     context_text=get_web_search().web_search(web_match.group(1), 3),
                     system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
                 )
 
+            # ----------------------------------------------------------
+            # SAVE TO DB — save first pass, then second pass if exists
+            # ----------------------------------------------------------
             try:
                 rag.add_message(chat_id=chat_id, role="assistant", content=bot_text)
                 rag.update_last_message(chat_id=chat_id, last_message=bot_text)
             except Exception:
                 pass
 
-            await _update_summary(smgr, chat_id, history, user_text, bot_text)
+            if second_pass_text:
+                try:
+                    rag.add_message(chat_id=chat_id, role="assistant", content=second_pass_text)
+                    rag.update_last_message(chat_id=chat_id, last_message=second_pass_text)
+                except Exception:
+                    pass
 
+            await _update_summary(smgr, chat_id, history, user_text, second_pass_text or bot_text)
+
+            # ----------------------------------------------------------
+            # COST TRACKING
+            # ----------------------------------------------------------
             try:
                 model = rag.get_model(user_id)
                 cost = account_manager.processUsedCost(
@@ -1013,8 +1039,7 @@ async def audio_chat_ws(ws: WebSocket):
             await ws.close()
         except Exception:
             pass
-
-
+        
 @router.websocket("/embed_chat_ws")
 async def embed_chat_ws(ws: WebSocket):
     print("HIT embed_chat_ws")
