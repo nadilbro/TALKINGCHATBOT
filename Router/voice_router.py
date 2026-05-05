@@ -580,7 +580,7 @@ async def _stream_second_pass(
     ws, user_id: str, user_text: str, context_text: str,
     system_prompt: str, voice_id: str, audio_on: bool,
     context_label: str = "data"
-):
+) -> str | None:
     followup_system = (
         f"{system_prompt}\n\n"
         "You have just retrieved relevant data. Answer the user's question naturally and conversationally. "
@@ -592,7 +592,9 @@ async def _stream_second_pass(
         "Answer their question naturally based on this."
     )
 
-    tts_queue = tts_task = tts_done_event = None
+    tts_queue = None
+    tts_task = None
+    tts_done_event = None
 
     try:
         if audio_on:
@@ -621,13 +623,15 @@ async def _stream_second_pass(
                 tts_task.cancel()
             except Exception as e:
                 print(f"==> Second pass TTS error: {e}")
+
         return bot_text
+
     except Exception as e:
         print(f"==> Second pass failed: {e}")
         traceback.print_exc()
         if tts_task:
             tts_task.cancel()
-    
+        return None
 
 async def _update_summary(smgr, chat_id: str, history: list, user_text: str, bot_text: str):
     try:
@@ -1039,7 +1043,7 @@ async def audio_chat_ws(ws: WebSocket):
             await ws.close()
         except Exception:
             pass
-        
+
 @router.websocket("/embed_chat_ws")
 async def embed_chat_ws(ws: WebSocket):
     print("HIT embed_chat_ws")
