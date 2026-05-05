@@ -152,10 +152,10 @@ async def toggle_event_integrations(data: toggleEvent, user=Depends(verify_token
         return {"ok": True, "integrations": data.integrator}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update setting: {e}")
-
+    
 @router.get("/check_event_integrations")
 async def check_event_integrations(user=Depends(verify_token)):
     try:
-        return {"diagram_use": rag.get_default_integration(user["uid"])}
+        return {"diagram_use": rag.get_event_integrations(user["uid"])}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to fetch setting: {e}")
+        return {"diagram_use": None}
