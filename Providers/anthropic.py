@@ -128,7 +128,12 @@ VISUAL QUALITY RULES:
 - Spacing: generous padding and gaps. Minimum 8px gap between elements, 16-24px section padding.
 - Interactive states: all buttons and controls must have cursor:pointer and a hover background change.
 - The overall widget must look polished enough to ship in a real product — not like a browser default HTML page.
-
+- Travel itineraries, schedules, and day-by-day plans must use a card-based layout. Each day gets its own card with a colored header, day number badge, and location tag. Activities within a day use a timeline-style list with time on the left and activity on the right.
+- Color the day cards with distinct accent colors cycling through the palette. Not everything should be the same color.
+- Use icons represented as text/emoji-free symbols — use CSS shapes or unicode characters like arrows, dots, circles for visual interest instead of plain bullet points.
+- Progress indicators, completion checkboxes, and status badges should be visually styled — not plain browser default checkboxes.
+- Headers should have gradient backgrounds or bold color fills, not plain white.
+- Never output a plain unstyled list for structured data like itineraries, schedules, menus, or plans. Always use cards, timelines, or structured visual layouts.
 HTML
 <style>
   .container { background: var(--color-bg); color: var(--color-fg); padding: 24px; border-radius: 12px; font-family: system-ui, sans-serif; }
