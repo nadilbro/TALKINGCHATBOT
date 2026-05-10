@@ -17,13 +17,8 @@ app = FastAPI()
 # CORS FIRST
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://kannai.lovable.app",
-        "https://7d6a4df9-b42e-4ddd-bedd-7fe6f8b70293.lovableproject.com",
-        "http://localhost:5173",
-        "http://localhost:3000",
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,  # must be False when using wildcard
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -36,7 +31,6 @@ app.include_router(voice_router)
 app.include_router(embed_router)   
 app.include_router(stripe_business_router)
 app.include_router(microsoft_router)
-
 app.include_router(google_router)
 
 @app.get("/")
