@@ -609,13 +609,14 @@ class VectorRAGService:
             return dict(row) if row else None
 
     def updateApiKey(self, key, business_name=None, avatar_name=None,
-                    system_prompt=None, monthly_limit=None, is_active=None,
-                    business_description=None, website_url=None,
-                    last_scrape_at=None, assistant_name=None,
-                    assistant_version=None, outer_color=None,
-                    message_color=None, user_message_color=None,
-                    font_color=None, icon_size=None, font=None,
-                    font_size=None, welcome_message=None):
+                        system_prompt=None, monthly_limit=None, is_active=None,
+                        business_description=None, website_url=None,
+                        last_scrape_at=None, assistant_name=None,
+                        assistant_version=None, outer_color=None,
+                        message_color=None, user_message_color=None,
+                        font_color=None, icon_size=None, font=None,
+                        font_size=None, welcome_message=None,
+                        popup_questions=None):
         self._get_conn()
         try:
             with self.conn.cursor() as cur:
@@ -639,13 +640,14 @@ class VectorRAGService:
                         font = COALESCE(%s, font),
                         font_size = COALESCE(%s, font_size),
                         welcome_message = COALESCE(%s, welcome_message),
+                        popup_questions = COALESCE(%s, popup_questions),
                         updated_at = NOW()
                     WHERE key = %s
                 """, (business_name, avatar_name, system_prompt, monthly_limit,
                     is_active, business_description, website_url, last_scrape_at,
                     assistant_name, assistant_version, outer_color, message_color,
                     user_message_color, font_color, icon_size, font, font_size,
-                    welcome_message, key))
+                    welcome_message, popup_questions, key))
             self.conn.commit()
         except Exception:
             self.conn.rollback()

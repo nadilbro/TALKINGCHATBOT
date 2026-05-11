@@ -81,7 +81,7 @@ class UpdateApiKeyRequest(BaseModel):
     font: Optional[str] = None
     font_size: Optional[str] = None
     welcome_message: Optional[str] = None
-
+    popup_questions: Optional[list[str]] = None
 
 # ---------------------------------------------------------------------------
 # Dashboard endpoints — protected by Firebase auth (business owner)
@@ -119,7 +119,6 @@ async def list_api_keys(user=Depends(verify_token)):
 
 @router.patch("/keys/{key}")
 async def update_api_key(key: str, req: UpdateApiKeyRequest, user=Depends(verify_token)):
-    """Updates an API key — change avatar, prompt, limit, or disable it."""
     user_id = user["uid"]
     key_data = rag.getApiKey(key)
     if not key_data or key_data.get("owner_user_id") != user_id:
@@ -135,18 +134,18 @@ async def update_api_key(key: str, req: UpdateApiKeyRequest, user=Depends(verify
         website_url=req.website_url,
         last_scrape_at=req.last_scrape_at,
         assistant_name=req.assistant_name,
-        assistant_version=req.assistant_version, 
+        assistant_version=req.assistant_version,
         outer_color=req.outer_color,
-        message_color=req.message_color, 
+        message_color=req.message_color,
         user_message_color=req.user_message_color,
         font_color=req.font_color,
-        icon_size=req.icon_size, 
+        icon_size=req.icon_size,
         font=req.font,
         font_size=req.font_size,
         welcome_message=req.welcome_message,
+        popup_questions=json.dumps(req.popup_questions) if req.popup_questions is not None else None,
     )
     return {"success": True}
-
 
 # @router.delete("/keys/get_info/{key}")
 # async def get_api_key_info(key: str, user=Depends(verify_token)):
@@ -271,8 +270,15 @@ async def get_embed_config(key_data=Depends(verify_api_key)):
     avatar = rag.getAvatarByName(avatar_name)
     assistant_name = key_data.get("assistant_name") or "Assistant"
 
+    raw_questions = key_data.get("popup_questions")
+    popup_questions = []
+    if raw_questions:
+        try:
+            popup_questions = json.loads(raw_questions)
+        except Exception:
+            popup_questions = []
+
     return {
-        # Identity
         "business_name": key_data.get("business_name"),
         "assistant_name": assistant_name,
         "assistant_version": key_data.get("assistant_version", "professional"),
@@ -280,17 +286,15 @@ async def get_embed_config(key_data=Depends(verify_api_key)):
         "rive_url": avatar.get("url") if avatar else None,
         "voice_name": avatar.get("voice") if avatar else None,
         "welcome_message": key_data.get("welcome_message") or f"Hi, I'm {assistant_name}. How can I help you today?",
-
-        # Widget styling
-        "outer_color": key_data.get("outer_color", "#FFFFFF"),
-        "message_color": key_data.get("message_color", "#000000"),
-        "user_message_color": key_data.get("user_message_color", "#000000"),
-        "font_color": key_data.get("font_color", "#5C4E4E"),
+        "outer_color": key_data.get("outer_color", "#F5E6D3"),
+        "message_color": key_data.get("message_color", "#E8D5C4"),
+        "user_message_color": key_data.get("user_message_color", "#6B4F3A"),
+        "font_color": key_data.get("font_color", "#3D2B1F"),
         "icon_size": key_data.get("icon_size", "medium"),
         "font": key_data.get("font", "system-ui"),
         "font_size": key_data.get("font_size", "medium"),
+        "popup_questions": popup_questions,
     }
-
 
 @router.post("/chat")
 async def embed_chat(
