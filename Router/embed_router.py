@@ -598,3 +598,17 @@ async def get_availability(
         return {"availability": json.loads(raw)}
     except Exception:
         return {"availability": None}
+    
+@router.get("/get_calendar_integrations")
+async def get_calendar_integrations(user=Depends(verify_token)):
+    """Returns the business credits balance for the logged-in developer."""
+    user_id = user["uid"]
+    integrated = rag.getCalendarEnabled(user_id)
+    return {"calendar_integrations": integrated}
+
+@router.post("/set_calendar_integrations")
+async def set_calendar_integrations(user=Depends(verify_token)):
+    """Returns the business credits balance for the logged-in developer."""
+    user_id = user["uid"]
+    integrated = rag.setCalendarEnabled(user_id)
+    return {"business_credits": integrated}

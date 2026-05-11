@@ -1222,6 +1222,34 @@ class VectorRAGService:
             self.conn.rollback()
             raise
 
+    def getCalendarEnabled(self, key: str) -> bool:
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "SELECT calendar_enabled FROM api_keys WHERE key = %s",
+                    (key,)
+                )
+                row = cur.fetchone()
+                if not row:
+                    return False
+                return bool(row[0])
+        except Exception:
+            return False
+
+    def setCalendarEnabled(self, key: str, value: bool):
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE api_keys SET calendar_enabled = %s, updated_at = NOW() WHERE key = %s",
+                    (value, key)
+                )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
     """
     Bubbleworks is a self-service laundromat located in Caroline Springs, Victoria, Australia, operating at https://www.bubbleworks.com.au.
     It is situated inside the Westsprings Shopping Centre at Shop A12, 1042 Western Highway, Caroline Springs VIC 3023.

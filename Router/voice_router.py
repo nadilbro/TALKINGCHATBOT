@@ -1378,12 +1378,13 @@ async def embed_chat_ws(ws: WebSocket):
             system_prompt += _build_knowledge_graph_prompt(api_key)
 
             # Availability
-            system_prompt += _build_availability_prompt(api_key)
-
-            # Calendar integrations (on behalf of business owner)
-            system_prompt += _build_integration_prompt(owner_user_id)
-            default_integration = rag.getDefaultIntegration(owner_user_id)
-
+            if rag.getCalendarEnabled(api_key) == True:
+                system_prompt += _build_availability_prompt(api_key)
+                # Calendar integrations (on behalf of business owner)
+                system_prompt += _build_integration_prompt(owner_user_id)
+                default_integration = rag.getDefaultIntegration(owner_user_id)
+            else: 
+                system_prompt += "\n\nBUSINESS HAS NO CALENDAR INTEGRATIONS"
             # Web search
             system_prompt += _build_websearch_prompt()
 
