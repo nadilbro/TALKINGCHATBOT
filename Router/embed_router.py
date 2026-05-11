@@ -599,16 +599,23 @@ async def get_availability(
     except Exception:
         return {"availability": None}
     
-@router.get("/get_calendar_integrations")
-async def get_calendar_integrations(user=Depends(verify_token)):
-    """Returns the business credits balance for the logged-in developer."""
+@router.get("/keys/{key}/calendar-enabled")
+async def get_calendar_enabled(key: str, user=Depends(verify_token)):
     user_id = user["uid"]
-    integrated = rag.getCalendarEnabled(user_id)
-    return {"calendar_integrations": integrated}
+    key_data = rag.getApiKey(key)
+    if not key_data or key_data.get("owner_user_id") != user_id:
+        raise HTTPException(status_code=404, detail="API key not found")
+    return {"calendar_enabled": key_data.get("calendar_enabled", True)}
 
-@router.post("/set_calendar_integrations")
-async def set_calendar_integrations(user=Depends(verify_token)):
-    """Returns the business credits balance for the logged-in developer."""
+
+class SetCalendarEnabledRequest(BaseModel):
+    enabled: bool
+
+@router.patch("/keys/{key}/calendar-enabled")
+async def set_calendar_enabled(key: str, req: SetCalendarEnabledRequest, user=Depends(verify_token)):
     user_id = user["uid"]
-    integrated = rag.setCalendarEnabled(user_id)
-    return {"business_credits": integrated}
+    key_data = rag.getApiKey(key)
+    if not key_data or key_data.get("owner_user_id") != user_id:
+        raise HTTPException(status_code=404, detail="API key not found")
+    rag.setCalendarEnabled(key=key, value=req.enabled)
+    return {"success": True}
