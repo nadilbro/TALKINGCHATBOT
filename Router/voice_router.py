@@ -737,11 +737,7 @@ async def chat_init(init_details: SessionInit, user=Depends(verify_token)):
         "chat_history": chat_history,
         "prompt": prompt,
     }
-# -----------------------------------------------------------------------
-# KNOWLEDGE GRAPH PROMPT BUILDER
-# -----------------------------------------------------------------------
 def _build_knowledge_graph_prompt(api_key: str) -> str:
-    """Converts the knowledge graph JSON into a structured prompt section."""
     try:
         key_data = rag.getApiKey(api_key)
         if not key_data:
@@ -753,10 +749,8 @@ def _build_knowledge_graph_prompt(api_key: str) -> str:
         nodes = graph.get("nodes", [])
         edges = graph.get("edges", [])
 
-        # Build lookup
         node_map = {n["id"]: n for n in nodes}
 
-        # Find connected Q->A pairs
         qa_pairs = []
         for edge in edges:
             source = node_map.get(edge.get("source"))
@@ -769,47 +763,59 @@ def _build_knowledge_graph_prompt(api_key: str) -> str:
                 if q and a:
                     qa_pairs.append((q, a))
 
-        # Context nodes (always active)
         context_nodes = [
             n.get("data", {}).get("text", "").strip()
-            for n in nodes if n.get("type") == "context"
+            for n in nodes if n.get("type") == "context" and n.get("data", {}).get("text", "").strip()
         ]
 
-        # Rule nodes
         rule_nodes = [
             n.get("data", {}).get("text", "").strip()
-            for n in nodes if n.get("type") == "rule"
+            for n in nodes if n.get("type") == "rule" and n.get("data", {}).get("text", "").strip()
         ]
 
-        sections = []
-
-        if qa_pairs:
-            qa_text = "\n\n".join([f"Q: {q}\nA: {a}" for q, a in qa_pairs])
-            sections.append(f"STRUCTURED Q&A:\n{qa_text}")
-
-        if context_nodes:
-            ctx_text = "\n".join([f"- {c}" for c in context_nodes if c])
-            sections.append(f"BACKGROUND CONTEXT:\n{ctx_text}")
-
-        if rule_nodes:
-            rule_text = "\n".join([f"- {r}" for r in rule_nodes if r])
-            sections.append(f"HARD RULES:\n{rule_text}")
-
-        if not sections:
+        if not qa_pairs and not context_nodes and not rule_nodes:
             return ""
 
-        return "\n\n" + "\n\n".join(sections)
+        lines = [
+            "\n\nSTRUCTURED KNOWLEDGE BASE",
+            "",
+            "The business owner has explicitly defined the following knowledge for you to use. This is authoritative — treat it as ground truth. When a user asks something that matches a question below, use the paired answer directly. Do not paraphrase beyond what is needed for natural speech.",
+        ]
+
+        if qa_pairs:
+            lines.append("")
+            lines.append("QUESTION AND ANSWER PAIRS:")
+            lines.append("When a user asks something similar to these questions, respond with the corresponding answer. You do not need an exact word-for-word match — use your judgement to match intent.")
+            lines.append("")
+            for q, a in qa_pairs:
+                lines.append(f"  Q: {q}")
+                lines.append(f"  A: {a}")
+                lines.append("")
+
+        if context_nodes:
+            lines.append("BACKGROUND CONTEXT:")
+            lines.append("This is always true about the business. Use it to inform your responses even when not directly asked.")
+            lines.append("")
+            for c in context_nodes:
+                lines.append(f"  - {c}")
+            lines.append("")
+
+        if rule_nodes:
+            lines.append("HARD RULES:")
+            lines.append("These are non-negotiable instructions from the business owner. You must follow them at all times, no exceptions.")
+            lines.append("")
+            for r in rule_nodes:
+                lines.append(f"  - {r}")
+            lines.append("")
+
+        lines.append("If a user asks something not covered by the above, fall back to the document knowledge base. If it is not there either, say you do not have that information.")
+
+        return "\n".join(lines)
 
     except Exception as e:
         print(f"==> Knowledge graph prompt failed: {e}")
         return ""
-
-
-# -----------------------------------------------------------------------
-# AVAILABILITY PROMPT BUILDER
-# -----------------------------------------------------------------------
 def _build_availability_prompt(api_key: str) -> str:
-    """Converts the availability JSON into a readable prompt section."""
     try:
         key_data = rag.getApiKey(api_key)
         if not key_data:
@@ -826,8 +832,20 @@ def _build_availability_prompt(api_key: str) -> str:
 
         weekly = avail.get("weekly", {})
         overrides = avail.get("overrides", {})
+        hours = avail.get("hours", {})
 
-        lines = ["AVAILABILITY:"]
+        lines = [
+            "\n\nAVAILABILITY & BOOKING RULES",
+            "",
+            "You have access to the business's availability schedule. Use this to answer questions about when appointments can be booked, whether a specific time is available, and what days the business operates.",
+            "",
+            "When a user asks to book an appointment, check whether their requested time falls within an available slot before confirming. If they ask a general question like 'when are you free' or 'can I come in Tuesday', answer directly using the schedule below.",
+            "",
+            "If a date has an override entry, that overrides the weekly default for that specific date.",
+            "If a day shows no available slots, the business is closed or unavailable that day.",
+            "",
+            "WEEKLY SCHEDULE:",
+        ]
 
         for day_key, day_name in day_names.items():
             ranges = weekly.get(day_key, [])
@@ -835,24 +853,28 @@ def _build_availability_prompt(api_key: str) -> str:
                 slots = ", ".join([f"{r['start']} to {r['end']}" for r in ranges])
                 lines.append(f"  {day_name}: {slots}")
             else:
-                lines.append(f"  {day_name}: Closed")
+                lines.append(f"  {day_name}: Not available")
 
         if overrides:
-            lines.append("DATE OVERRIDES:")
+            lines.append("")
+            lines.append("DATE-SPECIFIC OVERRIDES (these take priority over the weekly schedule):")
             for date, override in overrides.items():
                 ranges = override.get("ranges", [])
+                replaces = override.get("replaces_weekly", True)
                 if ranges:
                     slots = ", ".join([f"{r['start']} to {r['end']}" for r in ranges])
                     lines.append(f"  {date}: {slots}")
                 else:
-                    lines.append(f"  {date}: Closed")
+                    lines.append(f"  {date}: Closed (no availability this day)")
 
-        return "\n" + "\n".join(lines)
+        lines.append("")
+        lines.append("When booking, always confirm the exact time with the user before appending a CALENDAR_WRITE tag. Never book outside of available hours.")
+
+        return "\n".join(lines)
 
     except Exception as e:
         print(f"==> Availability prompt failed: {e}")
         return ""
-
 @router.post("/chat_diagram_init")
 async def chat_diagram_init(init_details: DiagramInit, user=Depends(verify_token)):
     chatID = init_details.chat_id
