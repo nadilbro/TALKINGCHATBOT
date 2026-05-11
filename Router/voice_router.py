@@ -1201,8 +1201,18 @@ async def embed_chat_ws(ws: WebSocket):
         await ws.close(code=4001, reason="API key has no owner")
         return
 
+    # ----------------------------------------------------------
+    # CACHE STATIC FIELDS AT CONNECTION OPEN
+    # These never change mid-session so no need to re-fetch
+    # ----------------------------------------------------------
+    cached_model              = rag.get_model(owner_user_id) or "gemini"
+    cached_calendar_enabled   = initial_key_data.get("calendar_enabled", True)
+    cached_default_integration = rag.getDefaultIntegration(owner_user_id) if cached_calendar_enabled else None
+    cached_has_docs           = rag.hasDocuments(api_key)
+    cached_diagrams_enabled   = bool(initial_key_data.get("embed_diagrams", False))
+
     MIN_CREDITS_PER_TURN = 0.05
-    print(f"==> embed WS opened for api_key={api_key}, owner={owner_user_id}")
+    print(f"==> embed WS opened for api_key={api_key}, owner={owner_user_id}, model={cached_model}")
 
     try:
         while True:
@@ -1220,7 +1230,7 @@ async def embed_chat_ws(ws: WebSocket):
                 return
 
             # ----------------------------------------------------------
-            # RE-VALIDATE + SINGLE DB FETCH — reuse key_data everywhere
+            # RE-VALIDATE — single DB fetch, reuse everywhere below
             # ----------------------------------------------------------
             key_data = rag.getApiKey(api_key)
             if not key_data or not key_data.get("is_active"):
@@ -1258,15 +1268,12 @@ async def embed_chat_ws(ws: WebSocket):
                 pass
 
             # ----------------------------------------------------------
-            # EXTRACT CONFIG FROM key_data — no extra DB calls
+            # EXTRACT CONFIG — from key_data, no extra DB calls
             # ----------------------------------------------------------
             business_name        = key_data.get("business_name") or "this business"
             business_description = key_data.get("business_description") or ""
             assistant_name       = key_data.get("assistant_name") or "Assistant"
             version              = key_data.get("assistant_version", "professional")
-            calendar_enabled     = key_data.get("calendar_enabled", True)
-            diagrams_enabled     = bool(key_data.get("embed_diagrams", False))
-            model                = rag.get_model(owner_user_id) or "gemini"
 
             user_text  = _as_str(payload.get("message"))
             voice_id   = _as_str(payload.get("voice_name"))
@@ -1284,7 +1291,8 @@ async def embed_chat_ws(ws: WebSocket):
             diagram_input_tokens = diagram_output_tokens = 0
             second_pass_text = None
             web_match = None
-            default_integration = None
+            calendar_action = None
+            calendar_payload_data = None
 
             if not rag.hasEnoughCredits(owner_user_id):
                 await ws.send_json({"type": "error", "message": "No credits remaining.", "code": "NO_CREDITS"})
@@ -1320,33 +1328,33 @@ async def embed_chat_ws(ws: WebSocket):
                 voice_id = avatar.get("voice") or "UgBBYS2sOqTuMpoF3BR0"
 
             # ----------------------------------------------------------
-            # HISTORY — load BEFORE saving current message
+            # HISTORY — load before saving current message
             # ----------------------------------------------------------
             try:
                 history = rag.get_recent_messages(user_id=owner_user_id, chat_id=session_id, limit=10)
             except Exception:
                 history = []
 
-            # Save user message AFTER loading history so it doesnt appear in context yet
             try:
                 rag.add_message(chat_id=session_id, role="user", content=user_text)
             except Exception as e:
                 print(f"==> Failed to save user message: {e}")
 
             # ----------------------------------------------------------
-            # RAG LOOKUP — async so runs fast
+            # RAG LOOKUP — only if docs exist, saves embedding round trip
             # ----------------------------------------------------------
             rag_context = ""
-            try:
-                embedding = await rag.embedText(user_text)
-                chunks = rag.searchDocumentChunks(api_key=api_key, embedding=embedding, limit=5)
-                if chunks and chunks[0].get("similarity", 0) >= 0.2:
-                    rag_context = "\n".join(f"- {c['content']}" for c in chunks)
-            except Exception as e:
-                print(f"==> RAG failed: {e}")
+            if cached_has_docs:
+                try:
+                    embedding = await rag.embedText(user_text)
+                    chunks = rag.searchDocumentChunks(api_key=api_key, embedding=embedding, limit=5)
+                    if chunks and chunks[0].get("similarity", 0) >= 0.2:
+                        rag_context = "\n".join(f"- {c['content']}" for c in chunks)
+                except Exception as e:
+                    print(f"==> RAG failed: {e}")
 
             # ----------------------------------------------------------
-            # BUILD SYSTEM PROMPT — pass key_data to avoid re-fetching
+            # BUILD SYSTEM PROMPT
             # ----------------------------------------------------------
             tone_map = {
                 "professional": "Be polite, professional, and clear. Sound like a well-trained support agent.",
@@ -1376,13 +1384,12 @@ async def embed_chat_ws(ws: WebSocket):
                 f"{kb_section}"
             )
 
-            # Knowledge graph — pass key_data directly, no extra DB call
+            # Knowledge graph — pass key_data directly
             system_prompt += _build_knowledge_graph_prompt(key_data)
 
-            # Calendar and availability
-            if calendar_enabled:
+            # Calendar and availability — use cached values
+            if cached_calendar_enabled:
                 system_prompt += _build_availability_prompt(key_data)
-                default_integration = rag.getDefaultIntegration(owner_user_id)
                 system_prompt += _build_integration_prompt(owner_user_id)
             else:
                 system_prompt += "\n\nCALENDAR: This business has not enabled calendar integrations. Do not offer booking or calendar actions."
@@ -1391,7 +1398,7 @@ async def embed_chat_ws(ws: WebSocket):
             system_prompt += _build_websearch_prompt()
 
             # Visual aids
-            if diagrams_enabled:
+            if cached_diagrams_enabled:
                 system_prompt += (
                     "\n\nVISUAL AIDS: You can generate visual aids. End your response with one of these tags:\n"
                     "[NONE] - no visual needed\n"
@@ -1441,11 +1448,11 @@ async def embed_chat_ws(ws: WebSocket):
                 raw_text = "".join(full_text_parts).strip()
                 print(f"==> embed FULL RAW: {repr(raw_text)}", flush=True)
 
-                calendar_action, calendar_payload = _detect_calendar_action(raw_text)
+                calendar_action, calendar_payload_data = _detect_calendar_action(raw_text)
                 web_match = _detect_web_search(raw_text)
 
                 _, routing_decision = _extract_routing_tag(raw_text)
-                if not diagrams_enabled:
+                if not cached_diagrams_enabled:
                     routing_decision = "NONE"
 
                 bot_text = _clean_bot_text(raw_text)
@@ -1481,7 +1488,7 @@ async def embed_chat_ws(ws: WebSocket):
             visual_aid = None
             visual_task = None
 
-            if diagrams_enabled and routing_decision in ("DIAGRAM", "CODE", "MATH", "HTML"):
+            if cached_diagrams_enabled and routing_decision in ("DIAGRAM", "CODE", "MATH", "HTML"):
                 async def _gen_embed_visual():
                     va, d_in, d_out = await _generate_visual(api_key, user_text, history_lines, "", [])
                     return va, d_in, d_out
@@ -1511,7 +1518,7 @@ async def embed_chat_ws(ws: WebSocket):
                 except Exception as e:
                     print(f"==> embed visual task error: {e}", flush=True)
 
-            if diagrams_enabled:
+            if cached_diagrams_enabled:
                 await _send_and_save_visual(ws, visual_aid, routing_decision, session_id)
             else:
                 try:
@@ -1522,11 +1529,11 @@ async def embed_chat_ws(ws: WebSocket):
             # ----------------------------------------------------------
             # CALENDAR ACTION
             # ----------------------------------------------------------
-            if calendar_enabled and calendar_action and calendar_payload:
+            if cached_calendar_enabled and calendar_action and calendar_payload_data:
                 second_pass_text = await _execute_calendar_action(
                     ws=ws, user_id=owner_user_id,
-                    calendar_action=calendar_action, calendar_payload=calendar_payload,
-                    default_integration=default_integration, user_text=user_text,
+                    calendar_action=calendar_action, calendar_payload=calendar_payload_data,
+                    default_integration=cached_default_integration, user_text=user_text,
                     system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
                 )
 
@@ -1573,7 +1580,7 @@ async def embed_chat_ws(ws: WebSocket):
                     webSearch=bool(web_match),
                     voice_on=bool(audio_on),
                     diagram_on=bool(visual_aid),
-                    model=model,
+                    model=cached_model,
                 )
                 try:
                     rag.addApiKeyCost(api_key, cost_aud)
