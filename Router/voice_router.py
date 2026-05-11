@@ -1220,7 +1220,7 @@ async def embed_chat_ws(ws: WebSocket):
                 return
 
             # ----------------------------------------------------------
-            # RE-VALIDATE API KEY
+            # RE-VALIDATE + SINGLE DB FETCH — reuse key_data everywhere
             # ----------------------------------------------------------
             key_data = rag.getApiKey(api_key)
             if not key_data or not key_data.get("is_active"):
@@ -1250,8 +1250,7 @@ async def embed_chat_ws(ws: WebSocket):
 
             try:
                 daily_cost = rag.getApiKeyDailyCost(api_key)
-                daily_cap = key_data.get("daily_cost_cap", 10.00)
-                if daily_cost >= daily_cap:
+                if daily_cost >= key_data.get("daily_cost_cap", 10.00):
                     await ws.send_json({"type": "error", "message": "Daily usage cap reached.", "code": "DAILY_CAP"})
                     await ws.send_json({"type": "done"})
                     continue
@@ -1259,21 +1258,22 @@ async def embed_chat_ws(ws: WebSocket):
                 pass
 
             # ----------------------------------------------------------
-            # EXTRACT CONFIG
+            # EXTRACT CONFIG FROM key_data — no extra DB calls
             # ----------------------------------------------------------
             business_name        = key_data.get("business_name") or "this business"
             business_description = key_data.get("business_description") or ""
             assistant_name       = key_data.get("assistant_name") or "Assistant"
             version              = key_data.get("assistant_version", "professional")
+            calendar_enabled     = key_data.get("calendar_enabled", True)
+            diagrams_enabled     = bool(key_data.get("embed_diagrams", False))
             model                = rag.get_model(owner_user_id) or "gemini"
-            diagrams_enabled     = rag.getEmbedDiagrams(owner_user_id)
 
             user_text  = _as_str(payload.get("message"))
             voice_id   = _as_str(payload.get("voice_name"))
             audio_on   = bool(payload.get("voice_on", True))
             raw_audio  = payload.get("audio_bytes")
             session_id = _as_str(payload.get("session_id")) or f"embed_{api_key}_{uuid.uuid4().hex[:12]}"
-            calendar_enabled = key_data.get("calendar_enabled", True)
+
             rag.get_or_create_embed_session(session_id, api_key, owner_user_id)
 
             if raw_audio and "," in raw_audio:
@@ -1284,6 +1284,7 @@ async def embed_chat_ws(ws: WebSocket):
             diagram_input_tokens = diagram_output_tokens = 0
             second_pass_text = None
             web_match = None
+            default_integration = None
 
             if not rag.hasEnoughCredits(owner_user_id):
                 await ws.send_json({"type": "error", "message": "No credits remaining.", "code": "NO_CREDITS"})
@@ -1319,20 +1320,21 @@ async def embed_chat_ws(ws: WebSocket):
                 voice_id = avatar.get("voice") or "UgBBYS2sOqTuMpoF3BR0"
 
             # ----------------------------------------------------------
-            # HISTORY
+            # HISTORY — load BEFORE saving current message
             # ----------------------------------------------------------
             try:
                 history = rag.get_recent_messages(user_id=owner_user_id, chat_id=session_id, limit=10)
             except Exception:
                 history = []
 
+            # Save user message AFTER loading history so it doesnt appear in context yet
             try:
                 rag.add_message(chat_id=session_id, role="user", content=user_text)
             except Exception as e:
                 print(f"==> Failed to save user message: {e}")
 
             # ----------------------------------------------------------
-            # RAG LOOKUP
+            # RAG LOOKUP — async so runs fast
             # ----------------------------------------------------------
             rag_context = ""
             try:
@@ -1344,7 +1346,7 @@ async def embed_chat_ws(ws: WebSocket):
                 print(f"==> RAG failed: {e}")
 
             # ----------------------------------------------------------
-            # BUILD SYSTEM PROMPT
+            # BUILD SYSTEM PROMPT — pass key_data to avoid re-fetching
             # ----------------------------------------------------------
             tone_map = {
                 "professional": "Be polite, professional, and clear. Sound like a well-trained support agent.",
@@ -1374,17 +1376,17 @@ async def embed_chat_ws(ws: WebSocket):
                 f"{kb_section}"
             )
 
-            # Knowledge graph structured data
-            system_prompt += _build_knowledge_graph_prompt(api_key)
+            # Knowledge graph — pass key_data directly, no extra DB call
+            system_prompt += _build_knowledge_graph_prompt(key_data)
 
-            # Availability
+            # Calendar and availability
             if calendar_enabled:
-                system_prompt += _build_availability_prompt(api_key)
-                # Calendar integrations (on behalf of business owner)
-                system_prompt += _build_integration_prompt(owner_user_id)
+                system_prompt += _build_availability_prompt(key_data)
                 default_integration = rag.getDefaultIntegration(owner_user_id)
-            else: 
-                system_prompt += "\n\nBUSINESS HAS NO CALENDAR INTEGRATIONS"
+                system_prompt += _build_integration_prompt(owner_user_id)
+            else:
+                system_prompt += "\n\nCALENDAR: This business has not enabled calendar integrations. Do not offer booking or calendar actions."
+
             # Web search
             system_prompt += _build_websearch_prompt()
 
@@ -1520,7 +1522,7 @@ async def embed_chat_ws(ws: WebSocket):
             # ----------------------------------------------------------
             # CALENDAR ACTION
             # ----------------------------------------------------------
-            if calendar_action and calendar_payload:
+            if calendar_enabled and calendar_action and calendar_payload:
                 second_pass_text = await _execute_calendar_action(
                     ws=ws, user_id=owner_user_id,
                     calendar_action=calendar_action, calendar_payload=calendar_payload,
