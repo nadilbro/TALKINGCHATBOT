@@ -2,6 +2,7 @@ import os
 import uuid
 import hashlib
 import secrets
+import json
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi import Security
@@ -494,3 +495,106 @@ async def get_scrape_status(
         "scraped_documents": len(website_docs),
         "last_scrape_at": key_data.get("last_scrape_at"),
     }
+
+# ---------------------------------------------------------------------------
+# Knowledge Studio
+# ---------------------------------------------------------------------------
+
+class KnowledgeGraphRequest(BaseModel):
+    knowledge_graph: str  # JSON string of the full graph
+
+@router.post("/keys/{key}/knowledge-graph")
+async def save_knowledge_graph(
+    key: str,
+    req: KnowledgeGraphRequest,
+    user=Depends(verify_token),
+):
+    """Saves the knowledge studio graph for an API key."""
+    user_id = user["uid"]
+    key_data = rag.getApiKey(key)
+    if not key_data or key_data.get("owner_user_id") != user_id:
+        raise HTTPException(status_code=404, detail="API key not found")
+    
+    try:
+        # Validate it's valid JSON before saving
+        json.loads(req.knowledge_graph)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON in knowledge_graph")
+    
+    rag.saveKnowledgeGraph(key=key, knowledge_graph=req.knowledge_graph)
+    return {"success": True}
+
+
+@router.get("/keys/{key}/knowledge-graph")
+async def get_knowledge_graph(
+    key: str,
+    user=Depends(verify_token),
+):
+    """Gets the knowledge studio graph for an API key."""
+    user_id = user["uid"]
+    key_data = rag.getApiKey(key)
+    if not key_data or key_data.get("owner_user_id") != user_id:
+        raise HTTPException(status_code=404, detail="API key not found")
+    
+    raw = key_data.get("knowledge_graph")
+    if not raw:
+        return {"knowledge_graph": None}
+    
+    try:
+        return {"knowledge_graph": json.loads(raw)}
+    except Exception:
+        return {"knowledge_graph": None}
+
+
+# ---------------------------------------------------------------------------
+# Availability
+# ---------------------------------------------------------------------------
+
+class AvailabilityRequest(BaseModel):
+    api_key: str
+    hours: dict  # {"start": "08:00", "end": "18:00"}
+    granularity_minutes: int = 15
+    weekly: dict  # {"mon": [{"start": "09:00", "end": "12:00"}], ...}
+    overrides: dict = {}  # {"2026-05-12": {"ranges": [...], "replaces_weekly": true}}
+
+@router.post("/availability")
+async def save_availability(
+    req: AvailabilityRequest,
+    user=Depends(verify_token),
+):
+    """Saves availability schedule for an API key."""
+    user_id = user["uid"]
+    key_data = rag.getApiKey(req.api_key)
+    if not key_data or key_data.get("owner_user_id") != user_id:
+        raise HTTPException(status_code=404, detail="API key not found")
+    
+    availability_json = json.dumps({
+        "hours": req.hours,
+        "granularity_minutes": req.granularity_minutes,
+        "weekly": req.weekly,
+        "overrides": req.overrides,
+    })
+    
+    rag.saveAvailability(key=req.api_key, availability=availability_json)
+    return {"success": True}
+
+
+@router.get("/keys/{key}/availability")
+async def get_availability(
+    key: str,
+    user=Depends(verify_token),
+):
+    """Gets availability schedule for an API key."""
+    user_id = user["uid"]
+    key_data = rag.getApiKey(key)
+    if not key_data or key_data.get("owner_user_id") != user_id:
+        raise HTTPException(status_code=404, detail="API key not found")
+    
+    raw = key_data.get("availability")
+    if not raw:
+        return {"availability": None}
+    
+    try:
+        return {"availability": json.loads(raw)}
+    except Exception:
+        return {"availability": None}

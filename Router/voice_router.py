@@ -737,7 +737,121 @@ async def chat_init(init_details: SessionInit, user=Depends(verify_token)):
         "chat_history": chat_history,
         "prompt": prompt,
     }
+# -----------------------------------------------------------------------
+# KNOWLEDGE GRAPH PROMPT BUILDER
+# -----------------------------------------------------------------------
+def _build_knowledge_graph_prompt(api_key: str) -> str:
+    """Converts the knowledge graph JSON into a structured prompt section."""
+    try:
+        key_data = rag.getApiKey(api_key)
+        if not key_data:
+            return ""
+        raw = key_data.get("knowledge_graph")
+        if not raw:
+            return ""
+        graph = json.loads(raw)
+        nodes = graph.get("nodes", [])
+        edges = graph.get("edges", [])
 
+        # Build lookup
+        node_map = {n["id"]: n for n in nodes}
+
+        # Find connected Q->A pairs
+        qa_pairs = []
+        for edge in edges:
+            source = node_map.get(edge.get("source"))
+            target = node_map.get(edge.get("target"))
+            if not source or not target:
+                continue
+            if source.get("type") == "question" and target.get("type") == "answer":
+                q = source.get("data", {}).get("title", "").strip()
+                a = target.get("data", {}).get("text", "").strip()
+                if q and a:
+                    qa_pairs.append((q, a))
+
+        # Context nodes (always active)
+        context_nodes = [
+            n.get("data", {}).get("text", "").strip()
+            for n in nodes if n.get("type") == "context"
+        ]
+
+        # Rule nodes
+        rule_nodes = [
+            n.get("data", {}).get("text", "").strip()
+            for n in nodes if n.get("type") == "rule"
+        ]
+
+        sections = []
+
+        if qa_pairs:
+            qa_text = "\n\n".join([f"Q: {q}\nA: {a}" for q, a in qa_pairs])
+            sections.append(f"STRUCTURED Q&A:\n{qa_text}")
+
+        if context_nodes:
+            ctx_text = "\n".join([f"- {c}" for c in context_nodes if c])
+            sections.append(f"BACKGROUND CONTEXT:\n{ctx_text}")
+
+        if rule_nodes:
+            rule_text = "\n".join([f"- {r}" for r in rule_nodes if r])
+            sections.append(f"HARD RULES:\n{rule_text}")
+
+        if not sections:
+            return ""
+
+        return "\n\n" + "\n\n".join(sections)
+
+    except Exception as e:
+        print(f"==> Knowledge graph prompt failed: {e}")
+        return ""
+
+
+# -----------------------------------------------------------------------
+# AVAILABILITY PROMPT BUILDER
+# -----------------------------------------------------------------------
+def _build_availability_prompt(api_key: str) -> str:
+    """Converts the availability JSON into a readable prompt section."""
+    try:
+        key_data = rag.getApiKey(api_key)
+        if not key_data:
+            return ""
+        raw = key_data.get("availability")
+        if not raw:
+            return ""
+        avail = json.loads(raw)
+
+        day_names = {
+            "mon": "Monday", "tue": "Tuesday", "wed": "Wednesday",
+            "thu": "Thursday", "fri": "Friday", "sat": "Saturday", "sun": "Sunday"
+        }
+
+        weekly = avail.get("weekly", {})
+        overrides = avail.get("overrides", {})
+
+        lines = ["AVAILABILITY:"]
+
+        for day_key, day_name in day_names.items():
+            ranges = weekly.get(day_key, [])
+            if ranges:
+                slots = ", ".join([f"{r['start']} to {r['end']}" for r in ranges])
+                lines.append(f"  {day_name}: {slots}")
+            else:
+                lines.append(f"  {day_name}: Closed")
+
+        if overrides:
+            lines.append("DATE OVERRIDES:")
+            for date, override in overrides.items():
+                ranges = override.get("ranges", [])
+                if ranges:
+                    slots = ", ".join([f"{r['start']} to {r['end']}" for r in ranges])
+                    lines.append(f"  {date}: {slots}")
+                else:
+                    lines.append(f"  {date}: Closed")
+
+        return "\n" + "\n".join(lines)
+
+    except Exception as e:
+        print(f"==> Availability prompt failed: {e}")
+        return ""
 
 @router.post("/chat_diagram_init")
 async def chat_diagram_init(init_details: DiagramInit, user=Depends(verify_token)):
@@ -1083,12 +1197,18 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.close()
                 return
 
+            # ----------------------------------------------------------
+            # RE-VALIDATE API KEY
+            # ----------------------------------------------------------
             key_data = rag.getApiKey(api_key)
             if not key_data or not key_data.get("is_active"):
                 await ws.send_json({"type": "error", "message": "API key deactivated", "code": "INVALID_KEY"})
                 await ws.close()
                 return
 
+            # ----------------------------------------------------------
+            # LIMITS
+            # ----------------------------------------------------------
             if key_data.get("conversations_used", 0) >= key_data.get("monthly_limit", 500):
                 await ws.send_json({"type": "error", "message": "Monthly conversation limit reached", "code": "LIMIT_REACHED"})
                 await ws.send_json({"type": "done"})
@@ -1116,6 +1236,9 @@ async def embed_chat_ws(ws: WebSocket):
             except Exception:
                 pass
 
+            # ----------------------------------------------------------
+            # EXTRACT CONFIG
+            # ----------------------------------------------------------
             business_name        = key_data.get("business_name") or "this business"
             business_description = key_data.get("business_description") or ""
             assistant_name       = key_data.get("assistant_name") or "Assistant"
@@ -1137,12 +1260,17 @@ async def embed_chat_ws(ws: WebSocket):
 
             embed_input_tokens = embed_output_tokens = 0
             diagram_input_tokens = diagram_output_tokens = 0
+            second_pass_text = None
+            web_match = None
 
             if not rag.hasEnoughCredits(owner_user_id):
                 await ws.send_json({"type": "error", "message": "No credits remaining.", "code": "NO_CREDITS"})
                 await ws.send_json({"type": "done"})
                 continue
 
+            # ----------------------------------------------------------
+            # STT
+            # ----------------------------------------------------------
             if audio_bytes:
                 try:
                     user_text = get_stt().get_transcript(audio_bytes)
@@ -1161,10 +1289,16 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "done"})
                 continue
 
+            # ----------------------------------------------------------
+            # VOICE ID FALLBACK
+            # ----------------------------------------------------------
             if not voice_id:
                 avatar = rag.getAvatarByName(key_data.get("avatar_name") or "Mia Sterling") or {}
                 voice_id = avatar.get("voice") or "UgBBYS2sOqTuMpoF3BR0"
 
+            # ----------------------------------------------------------
+            # HISTORY
+            # ----------------------------------------------------------
             try:
                 history = rag.get_recent_messages(user_id=owner_user_id, chat_id=session_id, limit=10)
             except Exception:
@@ -1175,22 +1309,28 @@ async def embed_chat_ws(ws: WebSocket):
             except Exception as e:
                 print(f"==> Failed to save user message: {e}")
 
+            # ----------------------------------------------------------
+            # RAG LOOKUP
+            # ----------------------------------------------------------
             rag_context = ""
             try:
                 embedding = await rag.embedText(user_text)
                 chunks = rag.searchDocumentChunks(api_key=api_key, embedding=embedding, limit=5)
-                if chunks and chunks[0].get("similarity", 0) >= 0.3:
+                if chunks and chunks[0].get("similarity", 0) >= 0.2:
                     rag_context = "\n".join(f"- {c['content']}" for c in chunks)
             except Exception as e:
                 print(f"==> RAG failed: {e}")
 
+            # ----------------------------------------------------------
+            # BUILD SYSTEM PROMPT
+            # ----------------------------------------------------------
             tone_map = {
                 "professional": "Be polite, professional, and clear. Sound like a well-trained support agent.",
                 "friendly": "Be warm, casual, and approachable. Sound like a helpful friend who works at the company.",
                 "concise": "Be extremely brief. One to two sentences max. No filler. Just the answer.",
             }
             tone = tone_map.get(version, tone_map["professional"])
-            kb_section = rag_context if rag_context else "No information has been loaded yet."
+            kb_section = rag_context if rag_context else "No specific documents loaded."
 
             system_prompt = (
                 f"You are {assistant_name}, a support assistant for {business_name}. "
@@ -1212,10 +1352,20 @@ async def embed_chat_ws(ws: WebSocket):
                 f"{kb_section}"
             )
 
+            # Knowledge graph structured data
+            system_prompt += _build_knowledge_graph_prompt(api_key)
+
+            # Availability
+            system_prompt += _build_availability_prompt(api_key)
+
+            # Calendar integrations (on behalf of business owner)
             system_prompt += _build_integration_prompt(owner_user_id)
             default_integration = rag.getDefaultIntegration(owner_user_id)
+
+            # Web search
             system_prompt += _build_websearch_prompt()
 
+            # Visual aids
             if diagrams_enabled:
                 system_prompt += (
                     "\n\nVISUAL AIDS: You can generate visual aids. End your response with one of these tags:\n"
@@ -1233,12 +1383,18 @@ async def embed_chat_ws(ws: WebSocket):
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             system_prompt += f"\n\nToday's date is {today} (UTC). The user is in Melbourne, Australia (AEST, UTC+10). When booking calendar events, use Melbourne local time."
 
+            # ----------------------------------------------------------
+            # USER PROMPT WITH HISTORY
+            # ----------------------------------------------------------
             history_lines = _build_history_lines(history[-6:])
             if history_lines:
                 user_prompt = "Conversation history:\n" + "\n".join(history_lines) + f"\n\nLatest user message:\n{user_text}"
             else:
                 user_prompt = user_text
 
+            # ----------------------------------------------------------
+            # GENERATE RESPONSE
+            # ----------------------------------------------------------
             tts_queue = tts_task = tts_done_event = None
 
             try:
@@ -1270,6 +1426,11 @@ async def embed_chat_ws(ws: WebSocket):
                 bot_text = _clean_bot_text(raw_text)
                 bot_text = fix_markdown_formatting(bot_text)
 
+                if calendar_action:
+                    await ws.send_json({"type": "calendar_action"})
+                if web_match:
+                    await ws.send_json({"type": "web_search_pending"})
+
                 await ws.send_json({"type": "text_done", "text": bot_text})
                 print(f"==> embed stream done at {time.time() - t0:.2f}s", flush=True)
 
@@ -1289,6 +1450,9 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "done"})
                 continue
 
+            # ----------------------------------------------------------
+            # VISUAL AID
+            # ----------------------------------------------------------
             visual_aid = None
             visual_task = None
 
@@ -1299,6 +1463,9 @@ async def embed_chat_ws(ws: WebSocket):
                 visual_task = asyncio.create_task(_gen_embed_visual())
                 await ws.send_json({"type": "visual_aid_pending"})
 
+            # ----------------------------------------------------------
+            # WAIT FOR TTS
+            # ----------------------------------------------------------
             if tts_task:
                 try:
                     await asyncio.wait_for(tts_task, timeout=30)
@@ -1308,6 +1475,9 @@ async def embed_chat_ws(ws: WebSocket):
                 except Exception as e:
                     print(f"==> embed TTS error: {e}", flush=True)
 
+            # ----------------------------------------------------------
+            # WAIT FOR VISUAL + SEND
+            # ----------------------------------------------------------
             if visual_task:
                 try:
                     visual_aid, d_in, d_out = await visual_task
@@ -1324,27 +1494,46 @@ async def embed_chat_ws(ws: WebSocket):
                 except Exception:
                     pass
 
+            # ----------------------------------------------------------
+            # CALENDAR ACTION
+            # ----------------------------------------------------------
             if calendar_action and calendar_payload:
-                await _execute_calendar_action(
+                second_pass_text = await _execute_calendar_action(
                     ws=ws, user_id=owner_user_id,
                     calendar_action=calendar_action, calendar_payload=calendar_payload,
                     default_integration=default_integration, user_text=user_text,
                     system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
                 )
 
+            # ----------------------------------------------------------
+            # WEB SEARCH
+            # ----------------------------------------------------------
             if web_match:
-                await _stream_second_pass(
+                second_pass_text = await _stream_second_pass(
                     ws=ws, user_id=owner_user_id, user_text=user_text,
                     context_text=get_web_search().web_search(web_match.group(1), 3),
                     system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
                 )
 
+            # ----------------------------------------------------------
+            # SAVE TO DB
+            # ----------------------------------------------------------
             try:
                 rag.add_message(chat_id=session_id, role="assistant", content=bot_text)
                 rag.update_last_message(chat_id=session_id, last_message=bot_text)
             except Exception as e:
                 print(f"==> Failed to save assistant message: {e}")
 
+            if second_pass_text:
+                try:
+                    rag.add_message(chat_id=session_id, role="assistant", content=second_pass_text)
+                    rag.update_last_message(chat_id=session_id, last_message=second_pass_text)
+                except Exception:
+                    pass
+
+            # ----------------------------------------------------------
+            # BILLING
+            # ----------------------------------------------------------
             try:
                 rag.incrementConversationCount(api_key)
             except Exception as e:
@@ -1356,7 +1545,7 @@ async def embed_chat_ws(ws: WebSocket):
                     output_tokens=embed_output_tokens + diagram_output_tokens,
                     outputText=bot_text,
                     SST_Length_seconds=len(audio_bytes) / 32000 if audio_bytes else 0,
-                    webSearch=False,
+                    webSearch=bool(web_match),
                     voice_on=bool(audio_on),
                     diagram_on=bool(visual_aid),
                     model=model,

@@ -1196,7 +1196,31 @@ class VectorRAGService:
             cur.execute("SELECT business_integration FROM accounts WHERE user_id = %s", (user_id,))
             row = cur.fetchone()
             return row["default_integration"] if row else None
-        
+    def saveKnowledgeGraph(self, key: str, knowledge_graph: str):
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE api_keys SET knowledge_graph = %s, updated_at = NOW() WHERE key = %s",
+                    (knowledge_graph, key)
+                )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+
+    def saveAvailability(self, key: str, availability: str):
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE api_keys SET availability = %s, updated_at = NOW() WHERE key = %s",
+                    (availability, key)
+                )
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
 
     """
     Bubbleworks is a self-service laundromat located in Caroline Springs, Victoria, Australia, operating at https://www.bubbleworks.com.au.
