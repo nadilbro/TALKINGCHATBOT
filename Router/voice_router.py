@@ -737,9 +737,8 @@ async def chat_init(init_details: SessionInit, user=Depends(verify_token)):
         "chat_history": chat_history,
         "prompt": prompt,
     }
-def _build_knowledge_graph_prompt(api_key: str) -> str:
+def _build_knowledge_graph_prompt(key_data: dict) -> str:
     try:
-        key_data = rag.getApiKey(api_key)
         if not key_data:
             return ""
         raw = key_data.get("knowledge_graph")
@@ -815,9 +814,8 @@ def _build_knowledge_graph_prompt(api_key: str) -> str:
     except Exception as e:
         print(f"==> Knowledge graph prompt failed: {e}")
         return ""
-def _build_availability_prompt(api_key: str) -> str:
+def _build_availability_prompt(key_data: dict) -> str:
     try:
-        key_data = rag.getApiKey(api_key)
         if not key_data:
             return ""
         raw = key_data.get("availability")

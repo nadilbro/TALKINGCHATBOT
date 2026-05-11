@@ -1251,7 +1251,17 @@ class VectorRAGService:
         except Exception:
             self.conn.rollback()
             raise
-
+    def hasDocuments(self, api_key: str) -> bool:
+        self._get_conn()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "SELECT EXISTS(SELECT 1 FROM document_chunks WHERE api_key = %s LIMIT 1)",
+                    (api_key,)
+                )
+                return bool(cur.fetchone()[0])
+        except Exception:
+            return False
     """
     Bubbleworks is a self-service laundromat located in Caroline Springs, Victoria, Australia, operating at https://www.bubbleworks.com.au.
     It is situated inside the Westsprings Shopping Centre at Shop A12, 1042 Western Highway, Caroline Springs VIC 3023.
