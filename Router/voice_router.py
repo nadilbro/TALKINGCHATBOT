@@ -1273,7 +1273,7 @@ async def embed_chat_ws(ws: WebSocket):
             audio_on   = bool(payload.get("voice_on", True))
             raw_audio  = payload.get("audio_bytes")
             session_id = _as_str(payload.get("session_id")) or f"embed_{api_key}_{uuid.uuid4().hex[:12]}"
-
+            calendar_enabled = key_data.get("calendar_enabled", True)
             rag.get_or_create_embed_session(session_id, api_key, owner_user_id)
 
             if raw_audio and "," in raw_audio:
@@ -1378,7 +1378,7 @@ async def embed_chat_ws(ws: WebSocket):
             system_prompt += _build_knowledge_graph_prompt(api_key)
 
             # Availability
-            if rag.getCalendarEnabled(api_key) == True:
+            if calendar_enabled:
                 system_prompt += _build_availability_prompt(api_key)
                 # Calendar integrations (on behalf of business owner)
                 system_prompt += _build_integration_prompt(owner_user_id)
