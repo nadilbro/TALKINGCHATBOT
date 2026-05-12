@@ -25,6 +25,15 @@ import asyncio
 
 
 _local_embedder = None
+
+
+def _get_embedder():
+    global _local_embedder
+    if _local_embedder is None:
+        print("==> Loading embedding model...", flush=True)
+        _local_embedder = SentenceTransformer('all-MiniLM-L6-v2')
+        print("==> Embedding model ready", flush=True)
+    return _local_embedder
 print("✅ RAG.py loaded: re imported OK")
 
 
@@ -705,13 +714,7 @@ class VectorRAGService:
     # -----------------------------------------------------------------------
     # EMBEDDING
     # -----------------------------------------------------------------------
-    def _get_embedder():
-        global _local_embedder
-        if _local_embedder is None:
-            print("==> Loading embedding model...", flush=True)
-            _local_embedder = SentenceTransformer('all-mpnet-base-v2')
-            print("==> Embedding model ready", flush=True)
-        return _local_embedder
+
 
     async def embedText(self, text: str) -> list[float]:
         loop = asyncio.get_event_loop()
