@@ -24,7 +24,7 @@ from sentence_transformers import SentenceTransformer
 import asyncio
 
 
-_local_embedder = SentenceTransformer('all-mpnet-base-v2')
+_local_embedder = None
 print("✅ RAG.py loaded: re imported OK")
 
 
@@ -705,12 +705,17 @@ class VectorRAGService:
     # -----------------------------------------------------------------------
     # EMBEDDING
     # -----------------------------------------------------------------------
+    def _get_embedder():
+        global _local_embedder
+        if _local_embedder is None:
+            print("==> Loading embedding model...", flush=True)
+            _local_embedder = SentenceTransformer('all-mpnet-base-v2')
+            print("==> Embedding model ready", flush=True)
+        return _local_embedder
 
     async def embedText(self, text: str) -> list[float]:
-        """Generates an embedding vector using local sentence-transformers. Fast, no API call."""
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, lambda: _local_embedder.encode(text, convert_to_numpy=True).tolist())
-
+        return await loop.run_in_executor(None, lambda: _get_embedder().encode(text, convert_to_numpy=True).tolist())
     def storeDocumentChunk(
         self,
         doc_id: str,
