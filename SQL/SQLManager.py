@@ -20,7 +20,11 @@ from openai import AsyncOpenAI
 from fastapi.concurrency import run_in_threadpool
 import re
 import uuid
+from sentence_transformers import SentenceTransformer
+import asyncio
 
+
+_local_embedder = SentenceTransformer('all-mpnet-base-v2')
 print("✅ RAG.py loaded: re imported OK")
 
 
@@ -702,17 +706,18 @@ class VectorRAGService:
     # EMBEDDING
     # -----------------------------------------------------------------------
 
-    async def embedText(self, text: str) -> list[float]:
-        """Generates an embedding vector using OpenAI text-embedding-3-small."""
-        response = await self.oai.embeddings.create(
-            model="text-embedding-3-small",
-            input=text,
-        )
-        return response.data[0].embedding
+    def _get_local_embedder() -> SentenceTransformer:
+        global _local_embedder
+        if _local_embedder is None:
+            print("==> Loading local embedding model...", flush=True)
+            _local_embedder = SentenceTransformer('all-MiniLM-L6-v2')
+            print("==> Local embedding model loaded", flush=True)
+        return _local_embedder
 
-    # -----------------------------------------------------------------------
-    # DOCUMENT STORAGE
-    # -----------------------------------------------------------------------
+    async def embedText(self, text: str) -> list[float]:
+        """Generates an embedding vector using local sentence-transformers. Fast, no API call."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: _get_local_embedder().encode(text, convert_to_numpy=True).tolist())
 
     def storeDocumentChunk(
         self,
@@ -731,15 +736,11 @@ class VectorRAGService:
                         doc_id, api_key, chunk_index, content, embedding, filename
                     )
                     VALUES (%s, %s, %s, %s, %s::vector, %s)
-                """, (doc_id, api_key, chunk_index, content, embedding, filename))
+                """, (doc_id, api_key, chunk_index, content, str(embedding), filename))
             self.conn.commit()
         except Exception:
             self.conn.rollback()
             raise
-
-    # -----------------------------------------------------------------------
-    # RAG RETRIEVAL
-    # -----------------------------------------------------------------------
 
     async def processEmbedQuestion(
         self,
@@ -762,20 +763,20 @@ class VectorRAGService:
             with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute("""
                     SELECT content,
-                           filename,
-                           chunk_index,
-                           1 - (embedding <=> (%s)::vector) AS similarity
+                        filename,
+                        chunk_index,
+                        1 - (embedding <=> (%s)::vector) AS similarity
                     FROM document_chunks
                     WHERE api_key = %s
                     ORDER BY embedding <=> (%s)::vector
                     LIMIT %s;
-                """, (embedding, api_key, embedding, num_results))
+                """, (str(embedding), api_key, str(embedding), num_results))
                 rows = cur.fetchall()
             t_sql = time.perf_counter() - t1
             return rows, t_sql
 
         rows, t_sql = await run_in_threadpool(_db_search)
-        print(f"==> RAG embed: {t_embed:.3f}s  sql: {t_sql:.3f}s  results: {len(rows)}")
+        print(f"==> RAG local: {t_embed:.3f}s  sql: {t_sql:.3f}s  results: {len(rows)}")
 
         if not rows:
             return "(No relevant context found in knowledge base.)", 0.0
