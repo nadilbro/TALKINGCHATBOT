@@ -1180,6 +1180,7 @@ async def audio_chat_ws(ws: WebSocket):
 
 @router.websocket("/embed_chat_ws")
 async def embed_chat_ws(ws: WebSocket):
+    t0 = time.time()
     print("HIT embed_chat_ws")
     t0 = time.time()
     await ws.accept()
@@ -1188,6 +1189,9 @@ async def embed_chat_ws(ws: WebSocket):
     if not api_key:
         await ws.close(code=4001, reason="Missing api_key")
         return
+
+    # after key validation
+
 
     initial_key_data = rag.getApiKey(api_key)
     if not initial_key_data or not initial_key_data.get("is_active"):
@@ -1198,7 +1202,7 @@ async def embed_chat_ws(ws: WebSocket):
     if not owner_user_id:
         await ws.close(code=4001, reason="API key has no owner")
         return
-
+    print(f"==> [TIMING] key validated: {time.time()-t0:.2f}s", flush=True)
     # ----------------------------------------------------------
     # CACHE STATIC FIELDS AT CONNECTION OPEN
     # These never change mid-session so no need to re-fetch
@@ -1235,7 +1239,7 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "error", "message": "API key deactivated", "code": "INVALID_KEY"})
                 await ws.close()
                 return
-
+            
             # ----------------------------------------------------------
             # LIMITS
             # ----------------------------------------------------------
@@ -1337,7 +1341,7 @@ async def embed_chat_ws(ws: WebSocket):
                 rag.add_message(chat_id=session_id, role="user", content=user_text)
             except Exception as e:
                 print(f"==> Failed to save user message: {e}")
-
+            print(f"==> [TIMING] history/voice_id/Callback/STT/Extracting/Config done: {time.time()-t0:.2f}s", flush=True)
             # ----------------------------------------------------------
             # RAG LOOKUP — only if docs exist, saves embedding round trip
             # ----------------------------------------------------------
@@ -1350,7 +1354,7 @@ async def embed_chat_ws(ws: WebSocket):
                         rag_context = "\n".join(f"- {c['content']}" for c in chunks)
                 except Exception as e:
                     print(f"==> RAG failed: {e}")
-
+            print(f"==> [TIMING] RAG done: {time.time()-t0:.2f}s", flush=True)
             # ----------------------------------------------------------
             # BUILD SYSTEM PROMPT
             # ----------------------------------------------------------
@@ -1432,8 +1436,8 @@ async def embed_chat_ws(ws: WebSocket):
                     tts_queue = asyncio.Queue()
                     tts_done_event = asyncio.Event()
                     tts_task = asyncio.create_task(_tts_pipeline(ws, tts_queue, voice_id, tts_done_event))
-
-                print(f"==> embed stream starting at {time.time() - t0:.2f}s", flush=True)
+                
+                print(f"==> [TIMING] first AI token: {time.time()-t0:.2f}s", flush=True)
 
                 full_text_parts, sentences_for_tts, embed_input_tokens, embed_output_tokens = await _stream_ai_response(
                     ws, api_key, system_prompt, user_prompt,
@@ -1479,7 +1483,7 @@ async def embed_chat_ws(ws: WebSocket):
                     tts_task.cancel()
                 await ws.send_json({"type": "done"})
                 continue
-
+            print(f"==> [TIMING] AI done: {time.time()-t0:.2f}s", flush=True)
             # ----------------------------------------------------------
             # VISUAL AID
             # ----------------------------------------------------------
@@ -1504,7 +1508,7 @@ async def embed_chat_ws(ws: WebSocket):
                     print("==> embed TTS timed out")
                 except Exception as e:
                     print(f"==> embed TTS error: {e}", flush=True)
-
+            print(f"==> [TIMING] TTS done: {time.time()-t0:.2f}s", flush=True)
             # ----------------------------------------------------------
             # WAIT FOR VISUAL + SEND
             # ----------------------------------------------------------
