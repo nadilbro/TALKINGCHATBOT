@@ -706,18 +706,10 @@ class VectorRAGService:
     # EMBEDDING
     # -----------------------------------------------------------------------
 
-    def _get_local_embedder() -> SentenceTransformer:
-        global _local_embedder
-        if _local_embedder is None:
-            print("==> Loading local embedding model...", flush=True)
-            _local_embedder = SentenceTransformer('all-MiniLM-L6-v2')
-            print("==> Local embedding model loaded", flush=True)
-        return _local_embedder
-
     async def embedText(self, text: str) -> list[float]:
         """Generates an embedding vector using local sentence-transformers. Fast, no API call."""
         loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, lambda: _get_local_embedder().encode(text, convert_to_numpy=True).tolist())
+        return await loop.run_in_executor(None, lambda: _local_embedder.encode(text, convert_to_numpy=True).tolist())
 
     def storeDocumentChunk(
         self,
