@@ -42,8 +42,10 @@ class AIProvider:
     async def _tenant_chat_provider_name(self, site_id: str) -> str:
         """Chat response model — honors pro mode for higher quality answers."""
         model = self.rag.get_model(site_id) 
+        print(f"==> AI stream model: {model}", flush=True)
         if model == 'gemini':
             pro_bool = self.rag.get_pro_usage(site_id)
+            print(f"==> Pro_mode: {pro_bool}", flush=True)
             if pro_bool:
                 return "gemini_pro"
             return "gemini_flash"
