@@ -1235,10 +1235,9 @@ async def embed_chat_ws(ws: WebSocket):
             # ----------------------------------------------------------
             # RE-VALIDATE — single DB fetch, reuse everywhere below
             # ----------------------------------------------------------
-            key_data, current_credits, daily_cost = await asyncio.gather(
+            key_data, current_credits = await asyncio.gather(
                 run_in_threadpool(rag.getApiKey, api_key),
-                run_in_threadpool(rag.getBusinessCredits, owner_user_id),
-                run_in_threadpool(rag.getApiKeyDailyCost, api_key),
+                run_in_threadpool(rag.getBusinessCredits, owner_user_id), #run_in_threadpool(rag.getApiKeyDailyCost, api_key),
             )
             if not key_data or not key_data.get("is_active"):
                 await ws.send_json({"type": "error", "message": "API key deactivated", "code": "INVALID_KEY"})
@@ -1264,13 +1263,13 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "done"})
                 continue
 
-            try:
-                if daily_cost >= key_data.get("daily_cost_cap", 10.00):
-                    await ws.send_json({"type": "error", "message": "Daily usage cap reached.", "code": "DAILY_CAP"})
-                    await ws.send_json({"type": "done"})
-                    continue
-            except Exception:
-                pass
+            # try:
+            #     if daily_cost >= key_data.get("daily_cost_cap", 10.00):
+            #         await ws.send_json({"type": "error", "message": "Daily usage cap reached.", "code": "DAILY_CAP"})
+            #         await ws.send_json({"type": "done"})
+            #         continue
+            # except Exception:
+            #     pass
 
             # ----------------------------------------------------------
             # EXTRACT CONFIG — from key_data, no extra DB calls
