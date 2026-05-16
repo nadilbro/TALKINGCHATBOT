@@ -7,7 +7,8 @@ import base64
 import time
 import uuid
 import json
-
+import asyncio
+from fastapi.concurrency import run_in_threadpool
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from Providers.firebase_auth import verify_token, verify_ws_token
 from Providers.ai_provider import AIProvider
@@ -1234,7 +1235,11 @@ async def embed_chat_ws(ws: WebSocket):
             # ----------------------------------------------------------
             # RE-VALIDATE — single DB fetch, reuse everywhere below
             # ----------------------------------------------------------
-            key_data = rag.getApiKey(api_key)
+            key_data, current_credits, daily_cost = await asyncio.gather(
+                run_in_threadpool(rag.getApiKey, api_key),
+                run_in_threadpool(rag.getBusinessCredits, owner_user_id),
+                run_in_threadpool(rag.getApiKeyDailyCost, api_key),
+            )
             if not key_data or not key_data.get("is_active"):
                 await ws.send_json({"type": "error", "message": "API key deactivated", "code": "INVALID_KEY"})
                 await ws.close()
@@ -1249,7 +1254,6 @@ async def embed_chat_ws(ws: WebSocket):
                 continue
 
             try:
-                current_credits = rag.getBusinessCredits(owner_user_id)
                 if current_credits < MIN_CREDITS_PER_TURN:
                     await ws.send_json({"type": "error", "message": "This business has run out of credits.", "code": "NO_CREDITS"})
                     await ws.send_json({"type": "done"})
@@ -1261,7 +1265,6 @@ async def embed_chat_ws(ws: WebSocket):
                 continue
 
             try:
-                daily_cost = rag.getApiKeyDailyCost(api_key)
                 if daily_cost >= key_data.get("daily_cost_cap", 10.00):
                     await ws.send_json({"type": "error", "message": "Daily usage cap reached.", "code": "DAILY_CAP"})
                     await ws.send_json({"type": "done"})
@@ -1283,7 +1286,7 @@ async def embed_chat_ws(ws: WebSocket):
             raw_audio  = payload.get("audio_bytes")
             session_id = _as_str(payload.get("session_id")) or f"embed_{api_key}_{uuid.uuid4().hex[:12]}"
 
-            rag.get_or_create_embed_session(session_id, api_key, owner_user_id)
+            asyncio.create_task(run_in_threadpool(rag.get_or_create_embed_session, session_id, api_key, owner_user_id))
 
             if raw_audio and "," in raw_audio:
                 raw_audio = raw_audio.split(",", 1)[1]
@@ -1333,14 +1336,14 @@ async def embed_chat_ws(ws: WebSocket):
             # HISTORY — load before saving current message
             # ----------------------------------------------------------
             try:
-                history = rag.get_recent_messages(user_id=owner_user_id, chat_id=session_id, limit=10)
-            except Exception:
-                history = []
-
-            try:
-                rag.add_message(chat_id=session_id, role="user", content=user_text)
+                history, _ = await asyncio.gather(
+                    run_in_threadpool(rag.get_recent_messages, owner_user_id, session_id, 10),
+                    run_in_threadpool(rag.add_message, session_id, "user", user_text),
+                )
             except Exception as e:
                 print(f"==> Failed to save user message: {e}")
+                history = []
+                
             print(f"==> [TIMING] history/voice_id/Callback/STT/Extracting/Config done: {time.time()-t0:.2f}s", flush=True)
             # ----------------------------------------------------------
             # RAG LOOKUP — only if docs exist, saves embedding round trip
@@ -1446,7 +1449,7 @@ async def embed_chat_ws(ws: WebSocket):
 
                 if tts_done_event:
                     tts_done_event.set()
-
+            
                 raw_text = "".join(full_text_parts).strip()
                 print(f"==> embed FULL RAW: {repr(raw_text)}", flush=True)
 
