@@ -1352,10 +1352,15 @@ async def embed_chat_ws(ws: WebSocket):
                 try:
                     embedding = await rag.embedText(user_text)
                     chunks = rag.searchDocumentChunks(api_key=api_key, embedding=embedding, limit=5)
+                    print(f"==> RAG chunks found: {len(chunks)}", flush=True)
+                    for c in chunks:
+                        print(f"==>   similarity={c.get('similarity', 0):.3f} | {c.get('content', '')[:80]}", flush=True)
                     if chunks and chunks[0].get("similarity", 0) >= 0.2:
                         rag_context = "\n".join(f"- {c['content']}" for c in chunks)
                 except Exception as e:
                     print(f"==> RAG failed: {e}")
+            else:
+                print(f"==> RAG skipped — cached_has_docs=False", flush=True)
             print(f"==> [TIMING] RAG done: {time.time()-t0:.2f}s", flush=True)
             # ----------------------------------------------------------
             # BUILD SYSTEM PROMPT
