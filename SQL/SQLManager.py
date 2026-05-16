@@ -965,7 +965,7 @@ class VectorRAGService:
         with self.conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("SELECT pro_use FROM accounts WHERE user_id = %s", (user_id,))
             row = cur.fetchone()
-            return bool(row["pro_use"]) if row else True
+            return bool(row["pro_use"]) if row else False
         
     def deleteScrapedDocuments(self, api_key: str) -> int:
         """
