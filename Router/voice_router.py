@@ -51,7 +51,7 @@ ACTION_TAG_PATTERN = re.compile(
 )
 
 ROUTING_TAG_PATTERN = re.compile(
-    r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH|HTML)\]?\s*$',
+    r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH|HTML|LINK)\]?\s*$',
     re.IGNORECASE
 )
 
@@ -142,7 +142,7 @@ def html_to_plain_text(html_text: str) -> str:
 
 
 def _extract_routing_tag(text: str) -> tuple:
-    match = re.search(r'\[(NONE|INLINE|DIAGRAM|CODE|MATH|HTML)\]\s*$', text, re.IGNORECASE)
+    match = re.search(r'\[(NONE|INLINE|DIAGRAM|CODE|MATH|HTML|LINK)\]\s*$', text, re.IGNORECASE)
     if match:
         tag = match.group(1).upper()
         cleaned = text[:match.start()].rstrip()
@@ -150,12 +150,14 @@ def _extract_routing_tag(text: str) -> tuple:
     lines = text.strip().rsplit('\n', 1)
     if len(lines) == 2:
         last_line = lines[1].strip().upper()
-        if last_line in ('NONE', 'INLINE', 'DIAGRAM', 'CODE', 'MATH', 'HTML',
-                         '[NONE]', '[INLINE]', '[DIAGRAM]', '[CODE]', '[MATH]', '[HTML]'):
+        if last_line in ('NONE', 'INLINE', 'DIAGRAM', 'CODE', 'MATH', 'HTML', 'LINK',
+                         '[NONE]', '[INLINE]', '[DIAGRAM]', '[CODE]', '[MATH]', '[HTML]', '[LINK]'):
             tag = last_line.strip('[]')
             return lines[0].rstrip(), tag
     return text, "NONE"
 
+def _detect_link(raw_text: str):
+    return re.search(r'\[LINK\]\s*(\{[^}]*\})', raw_text)
 
 def _detect_calendar_action(raw_text: str) -> tuple:
     cal_match = re.search(
@@ -1183,16 +1185,12 @@ async def audio_chat_ws(ws: WebSocket):
 async def embed_chat_ws(ws: WebSocket):
     t0 = time.time()
     print("HIT embed_chat_ws")
-    t0 = time.time()
     await ws.accept()
 
     api_key = ws.query_params.get("api_key")
     if not api_key:
         await ws.close(code=4001, reason="Missing api_key")
         return
-
-    # after key validation
-
 
     initial_key_data = rag.getApiKey(api_key)
     if not initial_key_data or not initial_key_data.get("is_active"):
@@ -1203,17 +1201,31 @@ async def embed_chat_ws(ws: WebSocket):
     if not owner_user_id:
         await ws.close(code=4001, reason="API key has no owner")
         return
+
     print(f"==> [TIMING] key validated: {time.time()-t0:.2f}s", flush=True)
+
     # ----------------------------------------------------------
     # CACHE STATIC FIELDS AT CONNECTION OPEN
-    # These never change mid-session so no need to re-fetch
     # ----------------------------------------------------------
-    cached_model              = rag.get_model(owner_user_id) or "gemini"
-    cached_calendar_enabled   = initial_key_data.get("calendar_enabled", True)
-    cached_default_integration = rag.getDefaultIntegration(owner_user_id) if cached_calendar_enabled else None
-    cached_has_docs           = rag.hasDocuments(api_key)
-    cached_diagrams_enabled   = bool(initial_key_data.get("embed_diagrams", False))
+    cached_calendar_enabled = initial_key_data.get("calendar_enabled", True)
+    cached_diagrams_enabled = bool(initial_key_data.get("embed_diagrams", False))
+    cached_links_enabled    = bool(initial_key_data.get("link_enabled", False))
 
+    if cached_calendar_enabled:
+        cached_model, cached_default_integration, cached_has_docs = await asyncio.gather(
+            run_in_threadpool(rag.get_model, owner_user_id),
+            run_in_threadpool(rag.getDefaultIntegration, owner_user_id),
+            run_in_threadpool(rag.hasDocuments, api_key),
+        )
+    else:
+        cached_model, cached_has_docs = await asyncio.gather(
+            run_in_threadpool(rag.get_model, owner_user_id),
+            run_in_threadpool(rag.hasDocuments, api_key),
+        )
+        cached_default_integration = None
+
+    cached_model = cached_model or "gemini"
+    
     MIN_CREDITS_PER_TURN = 0.05
     print(f"==> embed WS opened for api_key={api_key}, owner={owner_user_id}, model={cached_model}")
 
@@ -1233,17 +1245,18 @@ async def embed_chat_ws(ws: WebSocket):
                 return
 
             # ----------------------------------------------------------
-            # RE-VALIDATE — single DB fetch, reuse everywhere below
+            # RE-VALIDATE + CREDITS — parallel DB fetch
             # ----------------------------------------------------------
             key_data, current_credits = await asyncio.gather(
                 run_in_threadpool(rag.getApiKey, api_key),
-                run_in_threadpool(rag.getBusinessCredits, owner_user_id), #run_in_threadpool(rag.getApiKeyDailyCost, api_key),
+                run_in_threadpool(rag.getBusinessCredits, owner_user_id),
             )
+
             if not key_data or not key_data.get("is_active"):
                 await ws.send_json({"type": "error", "message": "API key deactivated", "code": "INVALID_KEY"})
                 await ws.close()
                 return
-            
+
             # ----------------------------------------------------------
             # LIMITS
             # ----------------------------------------------------------
@@ -1252,40 +1265,27 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "done"})
                 continue
 
-            try:
-                if current_credits < MIN_CREDITS_PER_TURN:
-                    await ws.send_json({"type": "error", "message": "This business has run out of credits.", "code": "NO_CREDITS"})
-                    await ws.send_json({"type": "done"})
-                    continue
-            except Exception as e:
-                print(f"==> Credit check failed: {e}")
-                await ws.send_json({"type": "error", "message": "Temporary billing error.", "code": "BILLING_ERROR"})
+            if current_credits < MIN_CREDITS_PER_TURN:
+                await ws.send_json({"type": "error", "message": "This business has run out of credits.", "code": "NO_CREDITS"})
                 await ws.send_json({"type": "done"})
                 continue
 
-            # try:
-            #     if daily_cost >= key_data.get("daily_cost_cap", 10.00):
-            #         await ws.send_json({"type": "error", "message": "Daily usage cap reached.", "code": "DAILY_CAP"})
-            #         await ws.send_json({"type": "done"})
-            #         continue
-            # except Exception:
-            #     pass
-
             # ----------------------------------------------------------
-            # EXTRACT CONFIG — from key_data, no extra DB calls
+            # EXTRACT CONFIG
             # ----------------------------------------------------------
             business_name        = key_data.get("business_name") or "this business"
             business_description = key_data.get("business_description") or ""
             assistant_name       = key_data.get("assistant_name") or "Assistant"
             version              = key_data.get("assistant_version", "professional")
-
             user_text  = _as_str(payload.get("message"))
             voice_id   = _as_str(payload.get("voice_name"))
             audio_on   = bool(payload.get("voice_on", True))
             raw_audio  = payload.get("audio_bytes")
             session_id = _as_str(payload.get("session_id")) or f"embed_{api_key}_{uuid.uuid4().hex[:12]}"
 
-            asyncio.create_task(run_in_threadpool(rag.get_or_create_embed_session, session_id, api_key, owner_user_id))
+            asyncio.create_task(run_in_threadpool(
+                rag.get_or_create_embed_session, session_id, api_key, owner_user_id
+            ))
 
             if raw_audio and "," in raw_audio:
                 raw_audio = raw_audio.split(",", 1)[1]
@@ -1297,6 +1297,7 @@ async def embed_chat_ws(ws: WebSocket):
             web_match = None
             calendar_action = None
             calendar_payload_data = None
+            link_match = None
 
             if not rag.hasEnoughCredits(owner_user_id):
                 await ws.send_json({"type": "error", "message": "No credits remaining.", "code": "NO_CREDITS"})
@@ -1332,7 +1333,7 @@ async def embed_chat_ws(ws: WebSocket):
                 voice_id = avatar.get("voice") or "UgBBYS2sOqTuMpoF3BR0"
 
             # ----------------------------------------------------------
-            # HISTORY — load before saving current message
+            # HISTORY — load and save in parallel
             # ----------------------------------------------------------
             try:
                 history, _ = await asyncio.gather(
@@ -1340,53 +1341,56 @@ async def embed_chat_ws(ws: WebSocket):
                     run_in_threadpool(rag.add_message, session_id, "user", user_text),
                 )
             except Exception as e:
-                print(f"==> Failed to save user message: {e}")
+                print(f"==> History/save failed: {e}")
                 history = []
-                
-            print(f"==> [TIMING] history/voice_id/Callback/STT/Extracting/Config done: {time.time()-t0:.2f}s", flush=True)
+
+            print(f"==> [TIMING] pre-RAG done: {time.time()-t0:.2f}s", flush=True)
+
             # ----------------------------------------------------------
-            # RAG LOOKUP — only if docs exist, saves embedding round trip
+            # RAG LOOKUP
             # ----------------------------------------------------------
             rag_context = ""
             if cached_has_docs:
                 try:
                     embedding = await rag.embedText(user_text)
                     chunks = rag.searchDocumentChunks(api_key=api_key, embedding=embedding, limit=5)
-                    print(f"==> RAG chunks found: {len(chunks)}", flush=True)
+                    print(f"==> RAG chunks: {len(chunks)}", flush=True)
                     for c in chunks:
-                        print(f"==>   similarity={c.get('similarity', 0):.3f} | {c.get('content', '')[:80]}", flush=True)
+                        print(f"==>   sim={c.get('similarity',0):.3f} | {c.get('content','')[:80]}", flush=True)
                     if chunks and chunks[0].get("similarity", 0) >= 0.2:
                         rag_context = "\n".join(f"- {c['content']}" for c in chunks)
                 except Exception as e:
                     print(f"==> RAG failed: {e}")
             else:
-                print(f"==> RAG skipped — cached_has_docs=False", flush=True)
+                print(f"==> RAG skipped — no docs", flush=True)
+
             print(f"==> [TIMING] RAG done: {time.time()-t0:.2f}s", flush=True)
+
             # ----------------------------------------------------------
             # BUILD SYSTEM PROMPT
             # ----------------------------------------------------------
             tone_map = {
-                "professional": "Be polite, professional, and clear. Sound like a well-trained support agent.",
-                "friendly": "Be warm, casual, and approachable. Sound like a helpful friend who works at the company.",
-                "concise": "Be extremely brief. One to two sentences max. No filler. Just the answer.",
+                "professional": "You are polite, professional, and clear. Sound like a well-trained support agent.",
+                "friendly": "You are warm, casual, and approachable. Sound like a helpful friend who works at the business. Use informal language, contractions, and a light conversational tone.",
+                "concise": "You are extremely brief. One to two sentences max. No filler. Just the answer.",
             }
             tone = tone_map.get(version, tone_map["professional"])
             kb_section = rag_context if rag_context else "No specific documents loaded."
 
             system_prompt = (
-                f"You are {assistant_name}, a friendly and helpful support assistant for {business_name}. "
+                f"You are {assistant_name}, a support assistant for {business_name}. "
                 f"{business_description}\n\n"
 
                 "YOUR PERSONALITY\n\n"
-                "You are warm, conversational, and genuinely helpful. You sound like a real person who works at the business, "
-                "not a corporate chatbot. Use casual but professional language. Use contractions. Be concise but friendly.\n\n"
+                f"{tone} You sound like a real person who works at the business, not a corporate chatbot. "
+                "Use contractions. Be concise but friendly.\n\n"
 
                 "WHAT YOU CAN HELP WITH\n\n"
                 f"1. Answer questions about {business_name} using the knowledge base below. This is your primary source of truth.\n\n"
-                f"2. For general factual questions that are not business-specific (like basic laundry tips, fabric care, "
-                f"general advice), you may use your general knowledge to help — but never invent facts about {business_name} itself.\n\n"
+                "2. For general factual questions that are not business-specific, you may use your general knowledge to help — "
+                f"but never invent facts about {business_name} itself.\n\n"
                 f"3. If someone asks about the business and the answer is not in your knowledge base, be honest and suggest "
-                f"they call or visit. Never make up business-specific details like hours, prices, policies, or contact info.\n\n"
+                f"they contact the business directly. Never make up business-specific details like hours, prices, policies, or contact info.\n\n"
 
                 "CONVERSATION RULES\n\n"
                 "4. Keep responses under 80 words. This is spoken aloud, not read on screen. Short sentences work best.\n\n"
@@ -1395,8 +1399,8 @@ async def embed_chat_ws(ws: WebSocket):
                 "If someone asks what they asked before, recap it briefly.\n\n"
                 "7. Never say 'based on my training', 'as an AI', or 'I believe'. Just answer naturally.\n\n"
                 f"8. If someone asks who you are, say: I'm {assistant_name}, here to help with {business_name}.\n\n"
-                "9. Never make up phone numbers, addresses, opening hours, staff names, or prices unless they are in the knowledge base.\n\n"
-                "10. If someone asks something completely off-topic (not related to laundry, the business, or general helpful advice), "
+                "9. Never make up phone numbers, addresses, hours, staff names, or prices unless they are in the knowledge base.\n\n"
+                "10. If someone asks something completely off-topic and unrelated to the business or general helpful advice, "
                 "politely redirect them.\n\n"
 
                 f"KNOWLEDGE BASE — {business_name.upper()}\n"
@@ -1404,20 +1408,16 @@ async def embed_chat_ws(ws: WebSocket):
                 f"{kb_section}"
             )
 
-            # Knowledge graph — pass key_data directly
             system_prompt += _build_knowledge_graph_prompt(key_data)
 
-            # Calendar and availability — use cached values
             if cached_calendar_enabled:
                 system_prompt += _build_availability_prompt(key_data)
                 system_prompt += _build_integration_prompt(owner_user_id)
             else:
                 system_prompt += "\n\nCALENDAR: This business has not enabled calendar integrations. Do not offer booking or calendar actions."
 
-            # Web search
             system_prompt += _build_websearch_prompt()
 
-            # Visual aids
             if cached_diagrams_enabled:
                 system_prompt += (
                     "\n\nVISUAL AIDS: You can generate visual aids. End your response with one of these tags:\n"
@@ -1427,6 +1427,15 @@ async def embed_chat_ws(ws: WebSocket):
                     "[MATH] - equation or formula\n"
                     "[HTML] - interactive visual\n"
                     "Only use a visual tag if it genuinely helps. Default to [NONE]."
+                )
+
+            if cached_links_enabled:
+                system_prompt += (
+                    "\n\nLINK SHARING: You can share a relevant link with the user when it would genuinely help. "
+                    "For example if they ask about booking, directions, a product page, or anything the business has a URL for. "
+                    "If you have a relevant link from the knowledge base, end your response with:\n"
+                    "[LINK]{\"url\": \"<full url>\", \"label\": \"<short label like Book Now or Get Directions>\"}\n"
+                    "Only include a link if it is directly relevant. Never make up URLs."
                 )
 
             if audio_on:
@@ -1445,7 +1454,7 @@ async def embed_chat_ws(ws: WebSocket):
                 user_prompt = user_text
 
             # ----------------------------------------------------------
-            # GENERATE RESPONSE
+            # GENERATE RESPONSE — owner_user_id not api_key
             # ----------------------------------------------------------
             tts_queue = tts_task = tts_done_event = None
 
@@ -1453,38 +1462,58 @@ async def embed_chat_ws(ws: WebSocket):
                 if audio_on:
                     tts_queue = asyncio.Queue()
                     tts_done_event = asyncio.Event()
-                    tts_task = asyncio.create_task(_tts_pipeline(ws, tts_queue, voice_id, tts_done_event))
-                
-                print(f"==> [TIMING] first AI token: {time.time()-t0:.2f}s", flush=True)
+                    tts_task = asyncio.create_task(
+                        _tts_pipeline(ws, tts_queue, voice_id, tts_done_event)
+                    )
+
+                print(f"==> [TIMING] AI start: {time.time()-t0:.2f}s", flush=True)
 
                 full_text_parts, sentences_for_tts, embed_input_tokens, embed_output_tokens = await _stream_ai_response(
-                    ws, api_key, system_prompt, user_prompt,
+                    ws, owner_user_id, system_prompt, user_prompt,
                     [], audio_on, voice_id, tts_queue, False
                 )
 
                 if tts_done_event:
                     tts_done_event.set()
-            
+
                 raw_text = "".join(full_text_parts).strip()
                 print(f"==> embed FULL RAW: {repr(raw_text)}", flush=True)
 
                 calendar_action, calendar_payload_data = _detect_calendar_action(raw_text)
                 web_match = _detect_web_search(raw_text)
+                link_match = _detect_link(raw_text) if cached_links_enabled else None
 
                 _, routing_decision = _extract_routing_tag(raw_text)
                 if not cached_diagrams_enabled:
                     routing_decision = "NONE"
 
                 bot_text = _clean_bot_text(raw_text)
+
+                # Strip LINK tag from spoken text
+                if link_match:
+                    bot_text = re.sub(r'\[LINK\]\s*\{[^}]*\}', '', bot_text).strip()
+
                 bot_text = fix_markdown_formatting(bot_text)
 
                 if calendar_action:
                     await ws.send_json({"type": "calendar_action"})
                 if web_match:
                     await ws.send_json({"type": "web_search_pending"})
+                if link_match:
+                    try:
+                        link_json = re.search(r'\{.*?\}', link_match.group(0), re.DOTALL)
+                        if link_json:
+                            link_data = json.loads(link_json.group(0))
+                            await ws.send_json({
+                                "type": "link",
+                                "url": link_data.get("url", ""),
+                                "label": link_data.get("label", "Open Link"),
+                            })
+                    except Exception as e:
+                        print(f"==> Link send failed: {e}")
 
                 await ws.send_json({"type": "text_done", "text": bot_text})
-                print(f"==> embed stream done at {time.time() - t0:.2f}s", flush=True)
+                print(f"==> [TIMING] AI done: {time.time()-t0:.2f}s", flush=True)
 
                 if not sentences_for_tts:
                     await ws.send_json({"type": "error", "message": "No response generated"})
@@ -1501,16 +1530,18 @@ async def embed_chat_ws(ws: WebSocket):
                     tts_task.cancel()
                 await ws.send_json({"type": "done"})
                 continue
-            print(f"==> [TIMING] AI done: {time.time()-t0:.2f}s", flush=True)
+
             # ----------------------------------------------------------
-            # VISUAL AID
+            # VISUAL AID — fires concurrently while TTS plays
             # ----------------------------------------------------------
             visual_aid = None
             visual_task = None
 
             if cached_diagrams_enabled and routing_decision in ("DIAGRAM", "CODE", "MATH", "HTML"):
                 async def _gen_embed_visual():
-                    va, d_in, d_out = await _generate_visual(api_key, user_text, history_lines, "", [])
+                    va, d_in, d_out = await _generate_visual(
+                        owner_user_id, user_text, history_lines, "", []
+                    )
                     return va, d_in, d_out
                 visual_task = asyncio.create_task(_gen_embed_visual())
                 await ws.send_json({"type": "visual_aid_pending"})
@@ -1526,7 +1557,9 @@ async def embed_chat_ws(ws: WebSocket):
                     print("==> embed TTS timed out")
                 except Exception as e:
                     print(f"==> embed TTS error: {e}", flush=True)
+
             print(f"==> [TIMING] TTS done: {time.time()-t0:.2f}s", flush=True)
+
             # ----------------------------------------------------------
             # WAIT FOR VISUAL + SEND
             # ----------------------------------------------------------
