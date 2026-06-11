@@ -2,17 +2,23 @@ import os
 import base64
 import re
 import asyncio
+from functools import lru_cache
 from typing import List, Dict, Any, Tuple, Optional
 
 import httpx
 
 # ---------------------------------------------------------------------------
-# CMU pronouncing dictionary (loaded once at module level)
+# CMU pronouncing dictionary — lazy download pattern avoids nltk's downloader
+# index check on every cold boot (noticeable on Render).
 # ---------------------------------------------------------------------------
 import nltk
-from nltk.corpus import cmudict
-nltk.download("cmudict", quiet=True)
-_CMU = cmudict.dict()
+try:
+    from nltk.corpus import cmudict
+    _CMU = cmudict.dict()
+except LookupError:
+    nltk.download("cmudict", quiet=True)
+    from nltk.corpus import cmudict
+    _CMU = cmudict.dict()
 
 
 # ---------------------------------------------------------------------------
@@ -31,40 +37,45 @@ ARPABET_TO_VISEME = {
     "W":  7,  "Y":  6,  "Z":  15, "ZH": 16,
 }
 
-# ---------------------------------------------------------------------------
-# Relative duration weights per phoneme. Used to allocate each phoneme a
-# proportional slice of the word's characters (and therefore of the word's
-# real audio time). Stops are short, vowels are long, diphthongs longest.
-# Values are relative, not milliseconds — only ratios matter.
-# ---------------------------------------------------------------------------
+# Relative duration weights per phoneme (ratios only; stops short, vowels long)
 PHONEME_WEIGHTS = {
-    # stops — brief, percussive
     "B": 0.50, "P": 0.50, "D": 0.50, "T": 0.45, "G": 0.50, "K": 0.50,
-    # affricates
     "CH": 0.70, "JH": 0.70,
-    # fricatives
     "F": 0.70, "V": 0.70, "S": 0.80, "Z": 0.80,
     "SH": 0.80, "ZH": 0.80, "TH": 0.70, "DH": 0.60, "HH": 0.50,
-    # nasals
     "M": 0.70, "N": 0.65, "NG": 0.70,
-    # liquids / glides
     "L": 0.70, "R": 0.70, "W": 0.70, "Y": 0.60,
-    # monophthong vowels
     "AA": 1.20, "AE": 1.10, "AH": 0.90, "AO": 1.20, "EH": 1.00,
     "ER": 1.10, "IH": 0.90, "IY": 1.10, "UH": 0.90, "UW": 1.10,
-    # diphthongs — two shapes, longest sounds in English
     "AY": 1.60, "AW": 1.60, "EY": 1.40, "OW": 1.40, "OY": 1.60,
 }
 _DEFAULT_WEIGHT = 0.8
-
-# CMU stress digit → duration multiplier. Stressed vowels are audibly longer.
 STRESS_MULT = {"0": 0.85, "1": 1.25, "2": 1.05}
 
 # ---------------------------------------------------------------------------
-# Diphthong splitting. A diphthong is two mouth shapes, not one — "eye" is an
-# open "ah" gliding into a narrow "ee". Emitting a single static viseme for
-# the whole sound is why long vowels look frozen. When enabled, each diphthong
-# emits its START shape at phoneme onset and its END shape partway through.
+# Precomputed phoneme table: every "BASE" / "BASE0/1/2" string CMU can emit →
+# (base, viseme_id, stress_adjusted_weight). Replaces per-phoneme regex +
+# dict-chain lookups in the hot loop with a single dict hit.
+# ---------------------------------------------------------------------------
+_PHONEME_TABLE: Dict[str, Tuple[str, int, float]] = {}
+for _base, _w in PHONEME_WEIGHTS.items():
+    _vis = ARPABET_TO_VISEME.get(_base, 0)
+    _PHONEME_TABLE[_base] = (_base, _vis, _w)
+    for _s, _m in STRESS_MULT.items():
+        _PHONEME_TABLE[_base + _s] = (_base, _vis, _w * _m)
+
+
+def _phoneme_info(p: str) -> Tuple[str, int, float]:
+    """(base, viseme_id, weight) for any ARPAbet token, stress-adjusted."""
+    hit = _PHONEME_TABLE.get(p)
+    if hit:
+        return hit
+    base = p.rstrip("0123456789")
+    return (base, ARPABET_TO_VISEME.get(base, 0), _DEFAULT_WEIGHT)
+
+
+# ---------------------------------------------------------------------------
+# Diphthong splitting: emit start shape at onset, end shape partway through.
 #   value = (start_viseme, end_viseme, fraction_through_phoneme_for_end_shape)
 # ---------------------------------------------------------------------------
 SPLIT_DIPHTHONGS = True
@@ -77,8 +88,7 @@ DIPHTHONG_SPLIT = {
 }
 
 # ---------------------------------------------------------------------------
-# Custom pronunciations for words CMU doesn't know — brand names, product
-# names, local terms. ARPAbet with stress digits. Extend freely.
+# Custom pronunciations (brand names etc). ARPAbet with stress digits.
 # ---------------------------------------------------------------------------
 CUSTOM_PRONUNCIATIONS: Dict[str, List[str]] = {
     "kannai":      ["K", "AE1", "N", "AY1"],
@@ -87,10 +97,65 @@ CUSTOM_PRONUNCIATIONS: Dict[str, List[str]] = {
 }
 
 # ---------------------------------------------------------------------------
-# Letter-level fallback for words not in CMU and not in the custom dict
-# (names, slang, codes). Maps each letter to a plausible viseme and uses the
-# letter's own ElevenLabs timestamp — so unknown words still get real mouth
-# motion instead of one frozen neutral shape.
+# Letter NAME phonemes — how TTS pronounces spelled-out letters ("pm" →
+# "pee em"). Used for short vowel-less alpha runs CMU doesn't know (pm, tv,
+# faq, lcd) so acronyms get the mouth shapes that are actually spoken.
+# ---------------------------------------------------------------------------
+LETTER_NAME_PHONEMES: Dict[str, List[str]] = {
+    "a": ["EY1"], "b": ["B", "IY1"], "c": ["S", "IY1"], "d": ["D", "IY1"],
+    "e": ["IY1"], "f": ["EH1", "F"], "g": ["JH", "IY1"], "h": ["EY1", "CH"],
+    "i": ["AY1"], "j": ["JH", "EY1"], "k": ["K", "EY1"], "l": ["EH1", "L"],
+    "m": ["EH1", "M"], "n": ["EH1", "N"], "o": ["OW1"], "p": ["P", "IY1"],
+    "q": ["K", "Y", "UW1"], "r": ["AA1", "R"], "s": ["EH1", "S"],
+    "t": ["T", "IY1"], "u": ["Y", "UW1"], "v": ["V", "IY1"],
+    "w": ["D", "AH1", "B", "AH0", "L", "Y", "UW0"], "x": ["EH1", "K", "S"],
+    "y": ["W", "AY1"], "z": ["Z", "IY1"],
+}
+
+# ---------------------------------------------------------------------------
+# Number → spoken-word phonemes. TTS says "6am" as "six ay em" and "$15" as
+# "fifteen dollars" — animating digits as frozen shapes looks dead. We expand
+# digit runs to number words (all present in CMU) and phonemize those.
+# ---------------------------------------------------------------------------
+_ONES = ["zero", "one", "two", "three", "four", "five", "six", "seven",
+         "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
+         "fifteen", "sixteen", "seventeen", "eighteen", "nineteen"]
+_TENS = ["", "", "twenty", "thirty", "forty", "fifty", "sixty", "seventy",
+         "eighty", "ninety"]
+
+
+def _number_to_words(digits: str) -> List[str]:
+    """'15' → ['fifteen']; '600' → ['six','hundred']; long runs → per digit."""
+    if len(digits) > 6:
+        return [_ONES[int(d)] for d in digits]
+    n = int(digits)
+    if n == 0:
+        return ["zero"]
+
+    def under_1000(x: int) -> List[str]:
+        out: List[str] = []
+        if x >= 100:
+            out += [_ONES[x // 100], "hundred"]
+            x %= 100
+        if x >= 20:
+            out.append(_TENS[x // 10])
+            x %= 10
+            if x:
+                out.append(_ONES[x])
+        elif x > 0:
+            out.append(_ONES[x])
+        return out
+
+    words: List[str] = []
+    if n >= 1000:
+        words += under_1000(n // 1000) + ["thousand"]
+        n %= 1000
+    words += under_1000(n)
+    return words
+
+
+# ---------------------------------------------------------------------------
+# Letter-level viseme fallback for tokens nothing else can phonemize.
 # ---------------------------------------------------------------------------
 LETTER_TO_VISEME = {
     "a": 1, "e": 4, "i": 6, "o": 8, "u": 7,
@@ -102,7 +167,6 @@ LETTER_TO_VISEME = {
     "t": 19, "d": 19, "n": 19,
     "k": 20, "g": 20,
     "h": 12, "j": 16, "y": 6,
-    # digits — neutral talking shape; better than nothing for "2pm" etc.
     "0": 4, "1": 4, "2": 4, "3": 4, "4": 4,
     "5": 4, "6": 4, "7": 4, "8": 4, "9": 4,
 }
@@ -110,19 +174,68 @@ LETTER_TO_VISEME = {
 # ---------------------------------------------------------------------------
 # Stream shaping
 # ---------------------------------------------------------------------------
-# If the silent gap between two words exceeds this, insert a rest (viseme 0)
-# so the mouth closes during commas/pauses instead of holding the last shape.
-PAUSE_GAP_MS = 140
+PAUSE_GAP_MS = 140            # gap above this → insert rest (mouth closes)
+_MIN_VISEME_GAP_MS = 25       # events closer than this are invisible
+_PRIORITY_VISEMES = {21, 18, 19}        # closures win timing collisions
+_VISEME_KEEP_REPEAT = {21, 19, 18, 17, 15}  # re-fire when repeated ("did")
 
-# Events closer together than this are visually indistinguishable.
-_MIN_VISEME_GAP_MS = 25
+_VOWELS = frozenset("aeiou")
+_RUN_RE = re.compile(r"[a-z']+|[0-9]+")
+_WHITESPACE = frozenset((" ", "\n", "\t", "\r"))
 
-# In a timing collision, these shapes win (a missed lip closure is the single
-# most visible lipsync error; a missed neutral vowel is invisible).
-_PRIORITY_VISEMES = {21, 18, 19}
 
-# Closures/percussives re-fire when repeated ("did" needs its second D).
-_VISEME_KEEP_REPEAT = {21, 19, 18, 17, 15}
+def _is_spoken_char(ch: str) -> bool:
+    return ch.isalnum() or ch == "'" or ch == "\u2019"
+
+
+# ---------------------------------------------------------------------------
+# Token phonemization — cached. The same words ("the", "a", "is") repeat
+# constantly; caching skips ALL per-token work on repeats.
+# Returns (bases, viseme_ids, weights) tuples, or None → letter fallback.
+# ---------------------------------------------------------------------------
+@lru_cache(maxsize=8192)
+def _token_phoneme_data(token: str) -> Optional[Tuple[Tuple[str, ...], Tuple[int, ...], Tuple[float, ...]]]:
+    phonemes: List[str] = []
+
+    # Whole-token custom/CMU first (handles apostrophe words like "don't")
+    whole = CUSTOM_PRONUNCIATIONS.get(token) or (_CMU.get(token) or [None])[0]
+    if whole:
+        phonemes = list(whole)
+    else:
+        # Segment into alpha / digit runs ("2pm" → "2","pm"; "self-service"
+        # → "self","service" since hyphen separates runs).
+        runs = _RUN_RE.findall(token)
+        if not runs:
+            return None
+        for run in runs:
+            if run[0].isdigit():
+                for word in _number_to_words(run):
+                    entry = _CMU.get(word)
+                    if entry:
+                        phonemes.extend(entry[0])
+                continue
+            part = CUSTOM_PRONUNCIATIONS.get(run) or (_CMU.get(run) or [None])[0]
+            if part:
+                phonemes.extend(part)
+            elif len(run) <= 2 or (len(run) <= 4 and not (_VOWELS & set(run))):
+                # Short vowel-less run → spoken as spelled letters (pm, tv, lcd)
+                for ch in run:
+                    phonemes.extend(LETTER_NAME_PHONEMES.get(ch, []))
+            else:
+                return None  # unresolvable run → whole token to letter fallback
+
+    if not phonemes:
+        return None
+
+    bases: List[str] = []
+    visemes: List[int] = []
+    weights: List[float] = []
+    for p in phonemes:
+        base, vis, w = _phoneme_info(p)
+        bases.append(base)
+        visemes.append(vis)
+        weights.append(w)
+    return tuple(bases), tuple(visemes), tuple(weights)
 
 
 class VoiceChatSystem:
@@ -130,9 +243,12 @@ class VoiceChatSystem:
         self.api_key = (os.getenv("ELEVENLABS_API_KEY") or "").strip()
         if not self.api_key:
             raise RuntimeError("Missing ELEVENLABS_API_KEY env var")
-        # Shared client: connection pooling across sentences removes a TLS
-        # handshake (~100-200ms) from every synthesis call after the first.
-        self._client = httpx.AsyncClient(timeout=30.0)
+        # Shared client + pool: removes a TLS handshake (~100-200ms) from
+        # every synthesis call after the first. connect=5s fails fast.
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(30.0, connect=5.0),
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+        )
 
     async def aclose(self):
         await self._client.aclose()
@@ -205,31 +321,40 @@ class VoiceChatSystem:
     ) -> List[Dict[str, Any]]:
         """
         Per word:
-          1. Locate its character window in the ElevenLabs alignment.
-          2. Phonemize (custom dict → CMU → letter-heuristic fallback).
-          3. Allocate each phoneme a slice of the word's characters,
-             PROPORTIONAL to its duration weight (stress-adjusted) — so a
-             stressed vowel claims more real audio time than a T.
-          4. Emit each viseme at the actual timestamp of its first character.
-          5. Split diphthongs into start→end shape pairs.
-        Plus: rest insertion during inter-word pauses, trailing rest at audio
-        end, and priority-aware smoothing.
+          1. Locate its character window; TRIM unpronounced punctuation off
+             both ends so the timing window covers only spoken characters
+             (the comma in "hello," carries the pause time — including it
+             stretched the last phoneme into the silence and hid the gap
+             from the pause detector).
+          2. Phonemize (custom → CMU → hyphen/number/acronym segmentation →
+             letter fallback), cached per token.
+          3. Allocate each phoneme a duration-weighted, stress-adjusted slice
+             of the word's spoken characters; timestamp via fractional
+             interpolation inside the real per-character timing.
+          4. Split diphthongs into start→end shape pairs.
+        Plus rest insertion during pauses, trailing rest, priority smoothing.
         """
         if not characters or not start_times or not end_times:
             return []
 
+        n_times = len(start_times)
         word_windows = self._get_word_windows(characters)
         visemes: List[Dict[str, Any]] = []
         prev_word_end_s: Optional[float] = None
 
-        for word, char_offset, char_end_idx in word_windows:
-            clean = re.sub(r"[^a-z0-9']", "", word.lower())
-            if not clean:
-                continue
+        for _word, char_offset, char_end_idx in word_windows:
+            # ── Trim window to spoken chars only ──────────────────────
+            ws, we = char_offset, min(char_end_idx, n_times)
+            while ws < we and not _is_spoken_char(characters[ws]):
+                ws += 1
+            while we > ws and not _is_spoken_char(characters[we - 1]):
+                we -= 1
+            if ws >= we:
+                continue  # pure punctuation token ("—", "...")
 
-            last_char = min(char_end_idx - 1, len(end_times) - 1)
-            word_start_s = start_times[char_offset]
-            word_end_s = end_times[last_char]
+            token = "".join(characters[ws:we]).lower().replace("\u2019", "'")
+            word_start_s = start_times[ws]
+            word_end_s = end_times[we - 1]
 
             # ── Rest during pauses ────────────────────────────────────
             if (
@@ -242,66 +367,53 @@ class VoiceChatSystem:
                 })
             prev_word_end_s = word_end_s
 
-            phonemes = self._word_to_phonemes(clean)
-
-            # ── Fallback: letter-heuristic with real char timing ──────
-            if not phonemes:
-                visemes.extend(
-                    self._letter_fallback(word, char_offset, char_end_idx, start_times)
-                )
+            data = _token_phoneme_data(token)
+            if data is None:
+                visemes.extend(self._letter_fallback(token, ws, start_times))
                 continue
 
             visemes.extend(
-                self._phonemes_to_visemes(
-                    phonemes, char_offset, char_end_idx, start_times, end_times
-                )
+                self._phonemes_to_visemes(data, ws, we, start_times, end_times)
             )
 
         # Return to rest at audio end
         visemes.append({"t_ms": int(end_times[-1] * 1000), "viseme_id": 0})
 
-        return self._smooth_visemes(visemes)
+        smoothed = self._smooth_visemes(visemes)
+
+        # The min-gap filter can drop the terminal rest if the last shape
+        # landed within 25ms of audio end — but the mouth MUST return to
+        # rest after speech, so guarantee it.
+        if smoothed and smoothed[-1]["viseme_id"] != 0:
+            smoothed.append({"t_ms": int(end_times[-1] * 1000), "viseme_id": 0})
+        return smoothed
 
     # ----------------------------------------------------------------------
     def _phonemes_to_visemes(
         self,
-        phonemes: List[str],          # WITH stress digits, e.g. ["HH", "AH0", "L", "OW1"]
+        data: Tuple[Tuple[str, ...], Tuple[int, ...], Tuple[float, ...]],
         char_offset: int,
         char_end_idx: int,
         start_times: List[float],
         end_times: List[float],
     ) -> List[Dict[str, Any]]:
+        bases, viseme_ids, weights = data
         n_chars = char_end_idx - char_offset
         if n_chars <= 0:
             return []
-
-        # Stress-adjusted duration weight per phoneme
-        bases: List[str] = []
-        weights: List[float] = []
-        for p in phonemes:
-            base = re.sub(r"\d", "", p)
-            stress = p[-1] if p and p[-1].isdigit() else None
-            w = PHONEME_WEIGHTS.get(base, _DEFAULT_WEIGHT)
-            if stress is not None:
-                w *= STRESS_MULT.get(stress, 1.0)
-            bases.append(base)
-            weights.append(w)
 
         total_w = sum(weights) or 1.0
         out: List[Dict[str, Any]] = []
         cum = 0.0
 
-        for base, w in zip(bases, weights):
+        for base, vis, w in zip(bases, viseme_ids, weights):
             frac_start = cum / total_w
             cum += w
             frac_end = cum / total_w
 
-            # Fractional interpolation WITHIN characters (not snapping to char
-            # starts). Snapping makes consecutive phonemes in short words land
-            # on the same char index → same timestamp → collision-dropped
-            # vowels ("my", "kannai"). Interpolating keeps every phoneme at a
-            # unique, monotonically increasing time while still using the real
-            # per-character timing ElevenLabs measured.
+            # Fractional interpolation WITHIN characters — keeps every
+            # phoneme at a unique, monotonically increasing time even in
+            # short words, while still using real per-character timing.
             t_start = self._char_frac_time(
                 frac_start * n_chars, char_offset, n_chars, start_times, end_times
             )
@@ -317,16 +429,13 @@ class VoiceChatSystem:
                 t_mid = t_start + frac * (t_end - t_start)
                 out.append({"t_ms": int(t_mid * 1000), "viseme_id": v_b})
             else:
-                out.append({
-                    "t_ms": int(t_start * 1000),
-                    "viseme_id": ARPABET_TO_VISEME.get(base, 0),
-                })
+                out.append({"t_ms": int(t_start * 1000), "viseme_id": vis})
 
         return out
 
     # ----------------------------------------------------------------------
+    @staticmethod
     def _char_frac_time(
-        self,
         f: float,
         char_offset: int,
         n_chars: int,
@@ -342,25 +451,25 @@ class VoiceChatSystem:
         i = int(f)
         frac = f - i
         gidx = min(char_offset + i, len(start_times) - 1)
-        span = max(end_times[gidx] - start_times[gidx], 0.0)
+        span = end_times[gidx] - start_times[gidx]
+        if span < 0.0:
+            span = 0.0
         return start_times[gidx] + frac * span
 
     # ----------------------------------------------------------------------
     def _letter_fallback(
         self,
-        word: str,
+        token: str,
         char_offset: int,
-        char_end_idx: int,
         start_times: List[float],
     ) -> List[Dict[str, Any]]:
         """
-        Unknown word (name, brand, code): approximate mouth motion from its
-        letters, each anchored to that letter's OWN timestamp. Far better
-        than freezing one neutral shape across the whole word.
+        Last resort for tokens nothing could phonemize: approximate mouth
+        motion from letters, each anchored to that letter's OWN timestamp.
         """
         out: List[Dict[str, Any]] = []
         last_idx = len(start_times) - 1
-        for i, ch in enumerate(word.lower()):
+        for i, ch in enumerate(token):
             vid = LETTER_TO_VISEME.get(ch)
             if vid is None:
                 continue
@@ -375,10 +484,9 @@ class VoiceChatSystem:
     def _smooth_visemes(self, visemes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         1. Sort (defensive).
-        2. Collision handling (< _MIN_VISEME_GAP_MS apart): high-priority
-           shapes (lip closures, F/V tuck, stops) REPLACE the colliding
-           previous event instead of being dropped — a missed M closure is
-           the most visible lipsync error there is.
+        2. Collision handling (< _MIN_VISEME_GAP_MS apart): closures/stops
+           REPLACE the colliding previous shape instead of being dropped —
+           a missed M closure is the most visible lipsync error there is.
         3. Smart dedup: identical consecutive IDs collapse unless the shape
            is a closure/percussive that needs to re-fire ("did", "mama").
         """
@@ -401,7 +509,6 @@ class VoiceChatSystem:
                     v["viseme_id"] in _PRIORITY_VISEMES
                     and prev["viseme_id"] not in _PRIORITY_VISEMES
                 ):
-                    # Keep the earlier slot but show the more critical shape
                     prev["viseme_id"] = v["viseme_id"]
                 continue
 
@@ -415,34 +522,24 @@ class VoiceChatSystem:
         return smoothed
 
     # ----------------------------------------------------------------------
-    def _get_word_windows(self, characters: List[str]) -> List[Tuple[str, int, int]]:
+    @staticmethod
+    def _get_word_windows(characters: List[str]) -> List[Tuple[str, int, int]]:
         """(word, global_char_start_index, global_char_end_index_exclusive)"""
         words: List[Tuple[str, int, int]] = []
-        current = ""
+        current: List[str] = []
         start_idx: Optional[int] = None
 
         for i, ch in enumerate(characters):
-            if ch in (" ", "\n", "\t"):
+            if ch in _WHITESPACE:
                 if current and start_idx is not None:
-                    words.append((current, start_idx, i))
-                current = ""
+                    words.append(("".join(current), start_idx, i))
+                current = []
                 start_idx = None
             else:
                 if start_idx is None:
                     start_idx = i
-                current += ch
+                current.append(ch)
 
         if current and start_idx is not None:
-            words.append((current, start_idx, len(characters)))
+            words.append(("".join(current), start_idx, len(characters)))
         return words
-
-    # ----------------------------------------------------------------------
-    def _word_to_phonemes(self, word: str) -> List[str]:
-        """Custom dict → CMU. Returns phonemes WITH stress digits, [] if unknown."""
-        custom = CUSTOM_PRONUNCIATIONS.get(word)
-        if custom:
-            return list(custom)
-        entries = _CMU.get(word)
-        if not entries:
-            return []
-        return list(entries[0])
