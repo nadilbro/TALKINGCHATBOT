@@ -1,9 +1,13 @@
 import base64
 from typing import AsyncIterator, Optional, List
+
+from fastapi.concurrency import run_in_threadpool
+
 from Providers.open_ai import OpenAIProvider
 from Providers.gemeni import GeminiProvider
 from SQL.SQLManager import VectorRAGService
 from Providers.anthropic import AnthropicProvider
+
 
 class AIProvider:
     def __init__(self, rag: VectorRAGService):
@@ -39,32 +43,35 @@ class AIProvider:
             ),
         }
 
+    # ----------------------------------------------------------------------
+    # Tenant routing
+    #
+    # DB lookups are threadpooled — they were previously blocking the event
+    # loop on every single chat turn. Fallbacks now point at real provider
+    # keys ('gemini' was not a key in self._providers → KeyError).
+    # ----------------------------------------------------------------------
     async def _tenant_chat_provider_name(self, site_id: str) -> str:
         """Chat response model — honors pro mode for higher quality answers."""
-        model = self.rag.get_model(site_id) 
+        model = await run_in_threadpool(self.rag.get_model, site_id)
         print(f"==> AI stream model: {model}", flush=True)
-        if model == 'gemini':
-            pro_bool = self.rag.get_pro_usage(site_id)
-            print(f"==> Pro_mode: {pro_bool}", flush=True)
-            if pro_bool:
-                return "gemini_pro"
-            return "gemini_flash"
-        elif model == 'anthropic':
+        if model == "anthropic":
             return "sonnet"
-        else:
-            return 'gemini'
-
+        if model == "gemini":
+            pro_bool = await run_in_threadpool(self.rag.get_pro_usage, site_id)
+            print(f"==> Pro_mode: {pro_bool}", flush=True)
+            return "gemini_pro" if pro_bool else "gemini_flash"
+        return "gemini_flash"
 
     async def _tenant_diagram_provider_name(self, site_id: str) -> str:
         """Diagram model — ALWAYS Flash, regardless of pro mode."""
-        model = self.rag.get_model(site_id) 
-        if model == 'gemini':
-            return "gemini_diagram"
-        elif model == 'anthropic':
+        model = await run_in_threadpool(self.rag.get_model, site_id)
+        if model == "anthropic":
             return "sonnet"
-        else:
-            return "gemini"
+        return "gemini_diagram"
 
+    # ----------------------------------------------------------------------
+    # Public API — unchanged signatures
+    # ----------------------------------------------------------------------
     async def stream(
         self,
         site_id: str,

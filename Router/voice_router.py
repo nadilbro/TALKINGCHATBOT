@@ -1,15 +1,17 @@
 import re
 import asyncio
-from html import unescape
 import traceback
-from typing import Any
 import base64
 import time
 import uuid
 import json
-import asyncio
+from html import unescape
+from typing import Any, Optional
+from datetime import datetime, timezone
+
 from fastapi.concurrency import run_in_threadpool
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
+
 from Providers.firebase_auth import verify_token, verify_ws_token
 from Providers.ai_provider import AIProvider
 from Providers.voice_chat import VoiceChatSystem
@@ -32,7 +34,6 @@ from Providers.Integrations.google_auth import (
     list_calendar_events as google_list_events,
     delete_calendar_event as google_delete_event,
 )
-from datetime import datetime, timezone
 
 router = APIRouter(prefix="/system", tags=["chat"])
 
@@ -41,20 +42,56 @@ ai = AIProvider(rag)
 account_manager = AccountManager(rag)
 fileE = FileExtractor(ai)
 
-MINUTES_PER_CREDIT = 7
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+MINUTES_PER_CREDIT = 7          # kept for external imports
+AUD_PER_CREDIT = 0.15           # main-app credit conversion
+# 16 kHz, 16-bit, mono PCM = 32 000 bytes/sec. Verify against the actual
+# recording format the frontend sends; previously 16000 in one endpoint and
+# 32000 in the other, which double-billed STT seconds on the main app.
+STT_BYTES_PER_SECOND = 32_000
+AUDIO_CHUNK_BYTES = 32_000      # ws binary frame size for outgoing audio
+TTS_TIMEOUT_S = 30
+MAX_FILES = 5
+MAX_TOTAL_UPLOAD_BYTES = 40 * 1024 * 1024
+MIN_CREDITS_PER_TURN = 0.05     # embed
+DEFAULT_VOICE_ID = "UgBBYS2sOqTuMpoF3BR0"
 
+# ---------------------------------------------------------------------------
+# Patterns (compiled once)
+# ---------------------------------------------------------------------------
 ACTION_TAG_PATTERN = re.compile(
     r'\[?(CALENDAR_WRITE|CALENDAR_READ|CALENDAR_DELETE|'
     r'GOOGLE_CALENDAR_WRITE|GOOGLE_CALENDAR_READ|GOOGLE_CALENDAR_DELETE|'
     r'WEB_SEARCH)\]?\s*\{[^}]*\}',
-    re.IGNORECASE
+    re.IGNORECASE,
 )
 
 ROUTING_TAG_PATTERN = re.compile(
     r'\[?(NONE|INLINE|DIAGRAM|CODE|MATH|HTML|LINK)\]?\s*$',
-    re.IGNORECASE
+    re.IGNORECASE,
 )
 
+ROUTING_TAG_END_RE = re.compile(
+    r'\[(NONE|INLINE|DIAGRAM|CODE|MATH|HTML|LINK)\]\s*$', re.IGNORECASE
+)
+
+CALENDAR_TAG_RE = re.compile(
+    r'\[(CALENDAR_WRITE|CALENDAR_READ|CALENDAR_DELETE|'
+    r'GOOGLE_CALENDAR_WRITE|GOOGLE_CALENDAR_READ|GOOGLE_CALENDAR_DELETE)\](\{[^}]*\})'
+)
+
+WEB_SEARCH_RE = re.compile(r'\[WEB_SEARCH\]\{"query":\s*"([^"]+)"\}')
+LINK_TAG_RE = re.compile(r'\[LINK\]\s*(\{[^}]*\})')
+SENTENCE_END_RE = re.compile(r'[.?!]\s')
+CODE_FENCE_RE = re.compile(r'```[a-z]*\n?.*?```', re.DOTALL)
+
+_ROUTING_TAG_WORDS = {'none', 'inline', 'diagram', 'code', 'math', 'html', 'link'}
+
+# ---------------------------------------------------------------------------
+# Lazy singletons
+# ---------------------------------------------------------------------------
 _tts = None
 _stt = None
 _tav = None
@@ -92,6 +129,9 @@ def get_summary_manager():
     return _summary_mgr
 
 
+# ---------------------------------------------------------------------------
+# Small utils
+# ---------------------------------------------------------------------------
 def _as_str(x: Any) -> str:
     return (str(x) if x is not None else "").strip()
 
@@ -141,68 +181,67 @@ def html_to_plain_text(html_text: str) -> str:
     return unescape(text).strip()
 
 
+# ---------------------------------------------------------------------------
+# Tag parsing
+# ---------------------------------------------------------------------------
 def _extract_routing_tag(text: str) -> tuple:
-    match = re.search(r'\[(NONE|INLINE|DIAGRAM|CODE|MATH|HTML|LINK)\]\s*$', text, re.IGNORECASE)
+    match = ROUTING_TAG_END_RE.search(text)
     if match:
         tag = match.group(1).upper()
-        cleaned = text[:match.start()].rstrip()
-        return cleaned, tag
+        return text[:match.start()].rstrip(), tag
     lines = text.strip().rsplit('\n', 1)
     if len(lines) == 2:
         last_line = lines[1].strip().upper()
-        if last_line in ('NONE', 'INLINE', 'DIAGRAM', 'CODE', 'MATH', 'HTML', 'LINK',
-                         '[NONE]', '[INLINE]', '[DIAGRAM]', '[CODE]', '[MATH]', '[HTML]', '[LINK]'):
-            tag = last_line.strip('[]')
-            return lines[0].rstrip(), tag
+        if last_line.strip('[]') in {w.upper() for w in _ROUTING_TAG_WORDS}:
+            return lines[0].rstrip(), last_line.strip('[]')
     return text, "NONE"
 
+
 def _detect_link(raw_text: str):
-    return re.search(r'\[LINK\]\s*(\{[^}]*\})', raw_text)
+    return LINK_TAG_RE.search(raw_text)
+
 
 def _detect_calendar_action(raw_text: str) -> tuple:
-    cal_match = re.search(
-        r'\[(CALENDAR_WRITE|CALENDAR_READ|CALENDAR_DELETE|'
-        r'GOOGLE_CALENDAR_WRITE|GOOGLE_CALENDAR_READ|GOOGLE_CALENDAR_DELETE)\](\{[^}]*\})',
-        raw_text
-    )
+    cal_match = CALENDAR_TAG_RE.search(raw_text)
     if not cal_match:
         return None, None
     action = cal_match.group(1)
     try:
-        payload = json.loads(cal_match.group(2))
-        return action, payload
+        return action, json.loads(cal_match.group(2))
     except Exception as e:
         print(f"==> Failed to parse calendar JSON: {e} | raw: {repr(cal_match.group(2))}")
         return None, None
 
 
 def _detect_web_search(raw_text: str):
-    return re.search(r'\[WEB_SEARCH\]\{"query":\s*"([^"]+)"\}', raw_text)
+    return WEB_SEARCH_RE.search(raw_text)
 
 
 def _clean_bot_text(raw_text: str) -> str:
     """Strips ALL action tags, routing tags, and artifacts before sending to frontend."""
     text = ACTION_TAG_PATTERN.sub('', raw_text)
     text, _ = _extract_routing_tag(text)
-    text = re.sub(r'```[a-z]*\n?.*?```', '', text, flags=re.DOTALL)
+    text = CODE_FENCE_RE.sub('', text)
     text = re.sub(r'\n\s*\n', '\n\n', text)
     return text.strip()
 
 
 def _tts_clean(sentence: str) -> str:
     """Cleans a sentence before sending to ElevenLabs. Strips all tags."""
-    ROUTING_TAGS = {'none', 'inline', 'diagram', 'code', 'math', 'html'}
     cleaned = strip_markdown(sentence)
     cleaned = ACTION_TAG_PATTERN.sub('', cleaned)
     cleaned = ROUTING_TAG_PATTERN.sub('', cleaned)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     if not cleaned or len(cleaned) < 3:
         return ''
-    if cleaned.lower() in ROUTING_TAGS:
+    if cleaned.lower() in _ROUTING_TAG_WORDS:   # now includes 'link'
         return ''
     return cleaned
 
 
+# ---------------------------------------------------------------------------
+# TTS pipeline
+# ---------------------------------------------------------------------------
 async def _tts_pipeline(ws, sentences_queue: asyncio.Queue, voice_id: str, done_event: asyncio.Event):
     tts_instance = get_tts()
     cumulative_offset_ms = 0
@@ -224,17 +263,15 @@ async def _tts_pipeline(ws, sentences_queue: asyncio.Queue, voice_id: str, done_
             if not cleaned:
                 continue
 
-            result = await tts_instance.synthesize_sentence(cleaned, voice_id)
-            if isinstance(result, Exception):
-                print(f"==> TTS sentence failed: {result}", flush=True)
-                continue
-
-            audio_bytes_chunk, visemes, duration = result
+            audio_bytes_chunk, visemes, duration = await tts_instance.synthesize_sentence(
+                cleaned, voice_id
+            )
             if not audio_bytes_chunk:
                 continue
 
             chunk_visemes = [
-                {"t_ms": v["t_ms"] + cumulative_offset_ms, "viseme_id": v["viseme_id"]}
+                {"t_ms": _as_int(v.get("t_ms"), 0) + cumulative_offset_ms,
+                 "viseme_id": _as_int(v.get("viseme_id"), 0)}
                 for v in visemes
             ]
 
@@ -244,25 +281,14 @@ async def _tts_pipeline(ws, sentences_queue: asyncio.Queue, voice_id: str, done_
                     "format": "mp3",
                     "sample_rate_hz": 44100,
                     "channels": 1,
-                    "visemes": [
-                        {"t_ms": _as_int(v.get("t_ms"), 0), "viseme_id": _as_int(v.get("viseme_id"), 0)}
-                        for v in chunk_visemes
-                    ],
+                    "visemes": chunk_visemes,
                 })
                 first_chunk = False
-            else:
-                if chunk_visemes:
-                    await ws.send_json({
-                        "type": "viseme_update",
-                        "visemes": [
-                            {"t_ms": _as_int(v.get("t_ms"), 0), "viseme_id": _as_int(v.get("viseme_id"), 0)}
-                            for v in chunk_visemes
-                        ],
-                    })
+            elif chunk_visemes:
+                await ws.send_json({"type": "viseme_update", "visemes": chunk_visemes})
 
-            CHUNK = 32_000
-            for i in range(0, len(audio_bytes_chunk), CHUNK):
-                await ws.send_bytes(audio_bytes_chunk[i:i + CHUNK])
+            for i in range(0, len(audio_bytes_chunk), AUDIO_CHUNK_BYTES):
+                await ws.send_bytes(audio_bytes_chunk[i:i + AUDIO_CHUNK_BYTES])
 
             cumulative_offset_ms += int(duration * 1000)
 
@@ -277,8 +303,50 @@ async def _tts_pipeline(ws, sentences_queue: asyncio.Queue, voice_id: str, done_
             pass
 
 
+def _start_tts(ws, voice_id: str, audio_on: bool):
+    """Returns (queue, task, done_event) — all None when audio is off."""
+    if not audio_on:
+        return None, None, None
+    tts_queue = asyncio.Queue()
+    done_event = asyncio.Event()
+    task = asyncio.create_task(_tts_pipeline(ws, tts_queue, voice_id, done_event))
+    return tts_queue, task, done_event
+
+
+async def _await_tts(tts_task, label: str = ""):
+    if not tts_task:
+        return
+    try:
+        await asyncio.wait_for(tts_task, timeout=TTS_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        tts_task.cancel()
+        print(f"==> TTS timed out {label}")
+    except Exception as e:
+        print(f"==> TTS error {label}: {e}", flush=True)
+
+
+# ---------------------------------------------------------------------------
+# STT
+# ---------------------------------------------------------------------------
+async def _transcribe(ws, audio_bytes: bytes) -> Optional[str]:
+    """Threadpooled STT (Deepgram client is blocking). None on failure."""
+    try:
+        text = await run_in_threadpool(get_stt().get_transcript, audio_bytes)
+    except Exception as e:
+        traceback.print_exc()
+        await ws.send_json({"type": "error", "message": f"Transcription failed: {e}"})
+        return None
+    if not text:
+        await ws.send_json({"type": "error", "message": "Could not understand audio. Try again."})
+        return None
+    await ws.send_json({"type": "transcript", "text": text})
+    return text
+
+
+# ---------------------------------------------------------------------------
+# Files
+# ---------------------------------------------------------------------------
 async def _process_files(ws, files_payload: list, user_id: str) -> tuple:
-    MAX_TOTAL_UPLOAD_BYTES = 40 * 1024 * 1024
     file_context = ""
     image_attachments = []
     file_text_parts = []
@@ -293,7 +361,7 @@ async def _process_files(ws, files_payload: list, user_id: str) -> tuple:
             raw_file = raw_file.split(",", 1)[1]
         try:
             file_bytes_decoded = base64.b64decode(raw_file)
-        except Exception as e:
+        except Exception:
             await ws.send_json({"type": "error", "message": f"Could not decode {file_name}."})
             continue
 
@@ -309,7 +377,8 @@ async def _process_files(ws, files_payload: list, user_id: str) -> tuple:
         try:
             ext = file_name.lower().split(".")[-1]
             if ext in ("png", "jpg", "jpeg", "webp"):
-                mime_map = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg", "webp": "image/webp"}
+                mime_map = {"png": "image/png", "jpg": "image/jpeg",
+                            "jpeg": "image/jpeg", "webp": "image/webp"}
                 image_attachments.append({"mime_type": mime_map[ext], "data": file_bytes_decoded})
                 file_text_parts.append(f"[Image {idx + 1}: {file_name}]")
             else:
@@ -348,7 +417,11 @@ def _build_history_lines(recent_history: list, max_chars: int = 30000) -> list:
     return history_lines
 
 
-async def _generate_visual(user_id: str, user_text: str, history_lines: list, file_context: str, image_attachments: list) -> tuple:
+# ---------------------------------------------------------------------------
+# Visual aids
+# ---------------------------------------------------------------------------
+async def _generate_visual(user_id: str, user_text: str, history_lines: list,
+                           file_context: str, image_attachments: list) -> tuple:
     try:
         raw, d_in, d_out = await ai.get_diagram(
             site_id=user_id,
@@ -404,27 +477,26 @@ async def _send_and_save_visual(ws, visual_aid, routing_decision: str, chat_id: 
             pass
         return
 
-    if visual_aid["type"] == "diagram":
+    vtype = visual_aid.get("type")
+    if vtype == "diagram":
         await ws.send_json({"type": "diagram", "svg": visual_aid["svg"]})
-    elif visual_aid["type"] == "code":
+    elif vtype == "code":
         await ws.send_json({"type": "code", "language": visual_aid["language"], "code": visual_aid["code"]})
-    elif visual_aid["type"] == "math":
+    elif vtype == "math":
         await ws.send_json({"type": "math", "content": visual_aid["content"]})
-    elif visual_aid["type"] == "html":
+    elif vtype == "html":
         await ws.send_json({"type": "html", "content": visual_aid["content"]})
 
-    if visual_aid.get("type") not in (None, "inline"):
+    if vtype not in (None, "inline"):
         try:
             content_to_save = (
                 visual_aid.get("svg")
                 or visual_aid.get("code")
                 or visual_aid.get("content", "")
-                or visual_aid.get("math")
-                or visual_aid.get("html")
             )
             rag.save_visual(
                 session_id=chat_id,
-                visual_type=visual_aid["type"],
+                visual_type=vtype,
                 content=content_to_save,
                 language=visual_aid.get("language"),
             )
@@ -432,6 +504,20 @@ async def _send_and_save_visual(ws, visual_aid, routing_decision: str, chat_id: 
             print(f"==> Failed to save visual: {e}")
 
 
+async def _resolve_visual(visual_task) -> tuple:
+    """Await an in-flight visual task → (visual_aid, d_in, d_out)."""
+    if not visual_task:
+        return None, 0, 0
+    try:
+        return await visual_task
+    except Exception as e:
+        print(f"==> Visual task error: {e}", flush=True)
+        return None, 0, 0
+
+
+# ---------------------------------------------------------------------------
+# Prompt builders
+# ---------------------------------------------------------------------------
 def _build_integration_prompt(user_id: str) -> str:
     integrators = rag.checkIntegrations(user_id)
     if not integrators:
@@ -496,250 +582,6 @@ def _build_websearch_prompt() -> str:
     )
 
 
-async def _execute_calendar_action(
-    ws, user_id: str, calendar_action: str, calendar_payload: dict,
-    default_integration: str, user_text: str, system_prompt: str,
-    voice_id: str, audio_on: bool
-):
-    is_google = (
-        calendar_action in ("GOOGLE_CALENDAR_WRITE", "GOOGLE_CALENDAR_READ", "GOOGLE_CALENDAR_DELETE")
-        or default_integration == "google"
-    )
-
-    if is_google:
-        access_token = await google_get_token(user_id, rag)
-        provider_name = "Google"
-    else:
-        access_token = await ms_get_token(user_id, rag)
-        provider_name = "Microsoft"
-
-    if not access_token:
-        await ws.send_json({"type": "error", "message": f"{provider_name} not connected or token expired."})
-        return
-
-    try:
-        if calendar_action in ("CALENDAR_WRITE", "GOOGLE_CALENDAR_WRITE"):
-            if is_google:
-                result = await google_create_event(
-                    access_token=access_token,
-                    subject=calendar_payload["subject"],
-                    start=datetime.fromisoformat(calendar_payload["start"].replace("Z", "+00:00")),
-                    end=datetime.fromisoformat(calendar_payload["end"].replace("Z", "+00:00")),
-                    body=calendar_payload.get("body", ""),
-                    attendee_emails=calendar_payload.get("attendees", []),
-                )
-            else:
-                result = await ms_create_event(
-                    access_token=access_token,
-                    subject=calendar_payload["subject"],
-                    start=datetime.fromisoformat(calendar_payload["start"].replace("Z", "+00:00")),
-                    end=datetime.fromisoformat(calendar_payload["end"].replace("Z", "+00:00")),
-                    body=calendar_payload.get("body", ""),
-                    attendee_emails=calendar_payload.get("attendees", []),
-                )
-            await _stream_second_pass(
-                ws=ws, user_id=user_id, user_text=user_text,
-                context_text=f"Event '{calendar_payload['subject']}' was successfully created.",
-                system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
-            )
-            print(f"==> {provider_name} calendar event created: {result.get('id')}")
-            await ws.send_json({"type": "calendar_done", "message": "Event booked!", "event": result})
-
-        elif calendar_action in ("CALENDAR_READ", "GOOGLE_CALENDAR_READ"):
-            if is_google:
-                events = await google_list_events(access_token=access_token, days_ahead=calendar_payload.get("days_ahead", 7))
-            else:
-                events = await ms_list_events(access_token=access_token, days_ahead=calendar_payload.get("days_ahead", 7))
-
-            events_text = "\n".join([
-                f"- {e.get('subject', 'Untitled')}: {e.get('start', {}).get('dateTime', '')} to {e.get('end', {}).get('dateTime', '')}"
-                for e in events
-            ]) if events else "No upcoming events found."
-
-            print(f"==> {provider_name} calendar events fetched: {len(events)} events")
-            await _stream_second_pass(
-                ws=ws, user_id=user_id, user_text=user_text,
-                context_text=events_text,
-                system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
-            )
-
-        elif calendar_action in ("CALENDAR_DELETE", "GOOGLE_CALENDAR_DELETE"):
-            event_id = calendar_payload.get("event_id")
-            if not event_id:
-                await ws.send_json({"type": "error", "message": "No event ID provided to delete."})
-                return
-            if is_google:
-                await google_delete_event(access_token=access_token, event_id=event_id)
-            else:
-                await ms_delete_event(access_token=access_token, event_id=event_id)
-            await ws.send_json({"type": "calendar_done", "message": "Event deleted!"})
-
-    except Exception as e:
-        print(f"==> Calendar action failed: {e}")
-        await ws.send_json({"type": "error", "message": f"Calendar action failed: {e}"})
-
-
-async def _stream_second_pass(
-    ws, user_id: str, user_text: str, context_text: str,
-    system_prompt: str, voice_id: str, audio_on: bool,
-    context_label: str = "data"
-) -> str | None:
-    followup_system = (
-        f"{system_prompt}\n\n"
-        "You have just retrieved relevant data. Answer the user's question naturally and conversationally. "
-        "Keep it brief, spoken aloud, under 80 words. No markdown, no tags."
-    )
-    followup_user = (
-        f"The user asked: \"{user_text}\"\n\n"
-        f"Here is the retrieved data:\n{context_text}\n\n"
-        "Answer their question naturally based on this."
-    )
-
-    tts_queue = None
-    tts_task = None
-    tts_done_event = None
-
-    try:
-        if audio_on:
-            tts_queue = asyncio.Queue()
-            tts_done_event = asyncio.Event()
-            tts_task = asyncio.create_task(_tts_pipeline(ws, tts_queue, voice_id, tts_done_event))
-
-        full_text_parts, _, _, _ = await _stream_ai_response(
-            ws, user_id, followup_system, followup_user,
-            [], audio_on, voice_id, tts_queue, False
-        )
-
-        if tts_done_event:
-            tts_done_event.set()
-
-        raw_text = "".join(full_text_parts)
-        bot_text = _clean_bot_text(raw_text)
-        bot_text = fix_markdown_formatting(bot_text)
-
-        await ws.send_json({"type": "text_done", "text": bot_text})
-
-        if tts_task:
-            try:
-                await asyncio.wait_for(tts_task, timeout=30)
-            except asyncio.TimeoutError:
-                tts_task.cancel()
-            except Exception as e:
-                print(f"==> Second pass TTS error: {e}")
-
-        return bot_text
-
-    except Exception as e:
-        print(f"==> Second pass failed: {e}")
-        traceback.print_exc()
-        if tts_task:
-            tts_task.cancel()
-        return None
-
-async def _update_summary(smgr, chat_id: str, history: list, user_text: str, bot_text: str):
-    try:
-        char_count = 0
-        cutoff = len(history)
-        for j in range(len(history) - 1, -1, -1):
-            char_count += len(history[j].get("content", ""))
-            if char_count > 800_000:
-                cutoff = j + 1
-                break
-        trimmed = history[cutoff:]
-        recent = trimmed.copy()
-        recent.append({"role": "user", "content": user_text})
-        recent.append({"role": "assistant", "content": bot_text})
-        await smgr.on_new_message(chat_id, recent[-6:])
-    except Exception as e:
-        print(f"Summary update error: {e}")
-
-
-async def _stream_ai_response(
-    ws, user_id: str, system_prompt: str, user_prompt: str,
-    image_attachments: list, audio_on: bool, voice_id: str,
-    tts_queue, routing_tag_found: bool
-) -> tuple:
-    full_text_parts = []
-    sentence_buffer = ""
-    sentences_for_tts = []
-    chat_input_tokens = 0
-    chat_output_tokens = 0
-
-    async for delta in ai.stream(
-        site_id=user_id,
-        system=system_prompt,
-        user=user_prompt,
-        images=image_attachments or None,
-    ):
-        if delta.startswith("__USAGE__"):
-            try:
-                parts = delta[len("__USAGE__"):].split(",")
-                chat_input_tokens += int(parts[0])
-                chat_output_tokens += int(parts[1])
-            except Exception:
-                pass
-            continue
-
-        full_text_parts.append(delta)
-        await ws.send_json({"type": "text_delta", "text": delta})
-
-        sentence_buffer += delta
-        while re.search(r'[.?!]\s', sentence_buffer):
-            match = re.search(r'[.?!]\s', sentence_buffer)
-            cut = match.end()
-            sentence = sentence_buffer[:cut].strip()
-            sentence_buffer = sentence_buffer[cut:]
-            if sentence and len(sentence) > 2:
-                sentences_for_tts.append(sentence)
-                if tts_queue and not routing_tag_found:
-                    cleaned = _tts_clean(sentence)
-                    if cleaned:
-                        await tts_queue.put(cleaned)
-
-    remaining = sentence_buffer.strip()
-    remaining_clean = ACTION_TAG_PATTERN.sub('', remaining)
-    remaining_clean = ROUTING_TAG_PATTERN.sub('', remaining_clean).strip()
-    if remaining_clean and len(remaining_clean) > 2:
-        sentences_for_tts.append(remaining)
-        if tts_queue:
-            cleaned = _tts_clean(remaining_clean)
-            if cleaned:
-                await tts_queue.put(cleaned)
-
-    return full_text_parts, sentences_for_tts, chat_input_tokens, chat_output_tokens
-
-
-@router.post("/chat_init")
-async def chat_init(init_details: SessionInit, user=Depends(verify_token)):
-    userID = init_details.userID
-    chatID = init_details.chat_id
-
-    avatar_key = voice_name = welcome_message = rive_url = prompt = ""
-    raw_history = rag.get_history(userID, chatID)
-    result = rag.get_avatar(userID, chatID)
-    if result:
-        a_key, v_name, w_msg, r_url, r_prompt = result
-        avatar_key = a_key or ""
-        voice_name = v_name or ""
-        welcome_message = w_msg or ""
-        rive_url = r_url or ""
-        prompt = r_prompt or ""
-
-    chat_history = []
-    for m in raw_history:
-        role = (m.get("role") or "").lower()
-        content = (m.get("content") or "").strip()
-        if content:
-            chat_history.append({"role": role, "content": content})
-
-    return {
-        "avatar_key": avatar_key,
-        "voice_name": voice_name,
-        "welcome_message": welcome_message,
-        "rive_url": rive_url,
-        "chat_history": chat_history,
-        "prompt": prompt,
-    }
 def _build_knowledge_graph_prompt(key_data: dict) -> str:
     try:
         if not key_data:
@@ -769,7 +611,6 @@ def _build_knowledge_graph_prompt(key_data: dict) -> str:
             n.get("data", {}).get("text", "").strip()
             for n in nodes if n.get("type") == "context" and n.get("data", {}).get("text", "").strip()
         ]
-
         rule_nodes = [
             n.get("data", {}).get("text", "").strip()
             for n in nodes if n.get("type") == "rule" and n.get("data", {}).get("text", "").strip()
@@ -811,12 +652,13 @@ def _build_knowledge_graph_prompt(key_data: dict) -> str:
             lines.append("")
 
         lines.append("If a user asks something not covered by the above, fall back to the document knowledge base. If it is not there either, say you do not have that information.")
-
         return "\n".join(lines)
 
     except Exception as e:
         print(f"==> Knowledge graph prompt failed: {e}")
         return ""
+
+
 def _build_availability_prompt(key_data: dict) -> str:
     try:
         if not key_data:
@@ -833,7 +675,6 @@ def _build_availability_prompt(key_data: dict) -> str:
 
         weekly = avail.get("weekly", {})
         overrides = avail.get("overrides", {})
-        hours = avail.get("hours", {})
 
         lines = [
             "\n\nAVAILABILITY & BOOKING RULES",
@@ -861,7 +702,6 @@ def _build_availability_prompt(key_data: dict) -> str:
             lines.append("DATE-SPECIFIC OVERRIDES (these take priority over the weekly schedule):")
             for date, override in overrides.items():
                 ranges = override.get("ranges", [])
-                replaces = override.get("replaces_weekly", True)
                 if ranges:
                     slots = ", ".join([f"{r['start']} to {r['end']}" for r in ranges])
                     lines.append(f"  {date}: {slots}")
@@ -870,12 +710,259 @@ def _build_availability_prompt(key_data: dict) -> str:
 
         lines.append("")
         lines.append("When booking, always confirm the exact time with the user before appending a CALENDAR_WRITE tag. Never book outside of available hours.")
-
         return "\n".join(lines)
 
     except Exception as e:
         print(f"==> Availability prompt failed: {e}")
         return ""
+
+
+# ---------------------------------------------------------------------------
+# AI streaming
+# ---------------------------------------------------------------------------
+async def _stream_ai_response(
+    ws, user_id: str, system_prompt: str, user_prompt: str,
+    image_attachments: list, tts_queue,
+) -> tuple:
+    """Stream model deltas → frontend text_delta + sentence-chunked TTS queue."""
+    full_text_parts = []
+    sentence_buffer = ""
+    sentences_for_tts = []
+    chat_input_tokens = 0
+    chat_output_tokens = 0
+
+    async for delta in ai.stream(
+        site_id=user_id,
+        system=system_prompt,
+        user=user_prompt,
+        images=image_attachments or None,
+    ):
+        if delta.startswith("__USAGE__"):
+            try:
+                parts = delta[len("__USAGE__"):].split(",")
+                chat_input_tokens += int(parts[0])
+                chat_output_tokens += int(parts[1])
+            except Exception:
+                pass
+            continue
+
+        full_text_parts.append(delta)
+        await ws.send_json({"type": "text_delta", "text": delta})
+
+        sentence_buffer += delta
+        while (m := SENTENCE_END_RE.search(sentence_buffer)):
+            cut = m.end()
+            sentence = sentence_buffer[:cut].strip()
+            sentence_buffer = sentence_buffer[cut:]
+            if sentence and len(sentence) > 2:
+                sentences_for_tts.append(sentence)
+                if tts_queue:
+                    cleaned = _tts_clean(sentence)
+                    if cleaned:
+                        await tts_queue.put(cleaned)
+
+    remaining = sentence_buffer.strip()
+    remaining_clean = ACTION_TAG_PATTERN.sub('', remaining)
+    remaining_clean = ROUTING_TAG_PATTERN.sub('', remaining_clean).strip()
+    if remaining_clean and len(remaining_clean) > 2:
+        sentences_for_tts.append(remaining)
+        if tts_queue:
+            cleaned = _tts_clean(remaining_clean)
+            if cleaned:
+                await tts_queue.put(cleaned)
+
+    return full_text_parts, sentences_for_tts, chat_input_tokens, chat_output_tokens
+
+
+async def _stream_second_pass(
+    ws, user_id: str, user_text: str, context_text: str,
+    system_prompt: str, voice_id: str, audio_on: bool,
+) -> Optional[str]:
+    """Second model pass after retrieving data (calendar / web). Returns bot text."""
+    followup_system = (
+        f"{system_prompt}\n\n"
+        "You have just retrieved relevant data. Answer the user's question naturally and conversationally. "
+        "Keep it brief, spoken aloud, under 80 words. No markdown, no tags."
+    )
+    followup_user = (
+        f"The user asked: \"{user_text}\"\n\n"
+        f"Here is the retrieved data:\n{context_text}\n\n"
+        "Answer their question naturally based on this."
+    )
+
+    tts_queue, tts_task, tts_done_event = _start_tts(ws, voice_id, audio_on)
+
+    try:
+        full_text_parts, _, _, _ = await _stream_ai_response(
+            ws, user_id, followup_system, followup_user, [], tts_queue
+        )
+
+        if tts_done_event:
+            tts_done_event.set()
+
+        raw_text = "".join(full_text_parts)
+        bot_text = fix_markdown_formatting(_clean_bot_text(raw_text))
+
+        await ws.send_json({"type": "text_done", "text": bot_text})
+        await _await_tts(tts_task, "(second pass)")
+        return bot_text
+
+    except Exception as e:
+        print(f"==> Second pass failed: {e}")
+        traceback.print_exc()
+        if tts_task:
+            tts_task.cancel()
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Calendar
+# ---------------------------------------------------------------------------
+async def _execute_calendar_action(
+    ws, user_id: str, calendar_action: str, calendar_payload: dict,
+    default_integration: str, user_text: str, system_prompt: str,
+    voice_id: str, audio_on: bool,
+) -> Optional[str]:
+    """Execute the parsed calendar action. Returns the second-pass bot text
+    (so the caller can persist it) or None."""
+    is_google = (
+        calendar_action in ("GOOGLE_CALENDAR_WRITE", "GOOGLE_CALENDAR_READ", "GOOGLE_CALENDAR_DELETE")
+        or default_integration == "google"
+    )
+
+    if is_google:
+        access_token = await google_get_token(user_id, rag)
+        provider_name = "Google"
+    else:
+        access_token = await ms_get_token(user_id, rag)
+        provider_name = "Microsoft"
+
+    if not access_token:
+        await ws.send_json({"type": "error", "message": f"{provider_name} not connected or token expired."})
+        return None
+
+    try:
+        if calendar_action in ("CALENDAR_WRITE", "GOOGLE_CALENDAR_WRITE"):
+            create_fn = google_create_event if is_google else ms_create_event
+            result = await create_fn(
+                access_token=access_token,
+                subject=calendar_payload["subject"],
+                start=datetime.fromisoformat(calendar_payload["start"].replace("Z", "+00:00")),
+                end=datetime.fromisoformat(calendar_payload["end"].replace("Z", "+00:00")),
+                body=calendar_payload.get("body", ""),
+                attendee_emails=calendar_payload.get("attendees", []),
+            )
+            second_text = await _stream_second_pass(
+                ws=ws, user_id=user_id, user_text=user_text,
+                context_text=f"Event '{calendar_payload['subject']}' was successfully created.",
+                system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
+            )
+            print(f"==> {provider_name} calendar event created: {result.get('id')}")
+            await ws.send_json({"type": "calendar_done", "message": "Event booked!", "event": result})
+            return second_text
+
+        elif calendar_action in ("CALENDAR_READ", "GOOGLE_CALENDAR_READ"):
+            list_fn = google_list_events if is_google else ms_list_events
+            events = await list_fn(access_token=access_token, days_ahead=calendar_payload.get("days_ahead", 7))
+            events_text = "\n".join([
+                f"- {e.get('subject', 'Untitled')}: {e.get('start', {}).get('dateTime', '')} to {e.get('end', {}).get('dateTime', '')}"
+                for e in events
+            ]) if events else "No upcoming events found."
+            print(f"==> {provider_name} calendar events fetched: {len(events)} events")
+            return await _stream_second_pass(
+                ws=ws, user_id=user_id, user_text=user_text,
+                context_text=events_text,
+                system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
+            )
+
+        elif calendar_action in ("CALENDAR_DELETE", "GOOGLE_CALENDAR_DELETE"):
+            event_id = calendar_payload.get("event_id")
+            if not event_id:
+                await ws.send_json({"type": "error", "message": "No event ID provided to delete."})
+                return None
+            delete_fn = google_delete_event if is_google else ms_delete_event
+            await delete_fn(access_token=access_token, event_id=event_id)
+            await ws.send_json({"type": "calendar_done", "message": "Event deleted!"})
+            return None
+
+    except Exception as e:
+        print(f"==> Calendar action failed: {e}")
+        await ws.send_json({"type": "error", "message": f"Calendar action failed: {e}"})
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Summary
+# ---------------------------------------------------------------------------
+async def _update_summary(smgr, chat_id: str, history: list, user_text: str, bot_text: str):
+    try:
+        char_count = 0
+        cutoff = len(history)
+        for j in range(len(history) - 1, -1, -1):
+            char_count += len(history[j].get("content", ""))
+            if char_count > 800_000:
+                cutoff = j + 1
+                break
+        recent = history[cutoff:].copy()
+        recent.append({"role": "user", "content": user_text})
+        recent.append({"role": "assistant", "content": bot_text})
+        await smgr.on_new_message(chat_id, recent[-6:])
+    except Exception as e:
+        print(f"Summary update error: {e}")
+
+
+def _save_turn(chat_id: str, bot_text: str, second_pass_text: Optional[str]):
+    """Persist first-pass and (if present) second-pass assistant messages."""
+    try:
+        rag.add_message(chat_id=chat_id, role="assistant", content=bot_text)
+        rag.update_last_message(chat_id=chat_id, last_message=bot_text)
+    except Exception as e:
+        print(f"==> Failed to save assistant message: {e}")
+
+    if second_pass_text:
+        try:
+            rag.add_message(chat_id=chat_id, role="assistant", content=second_pass_text)
+            rag.update_last_message(chat_id=chat_id, last_message=second_pass_text)
+        except Exception as e:
+            print(f"==> Failed to save second-pass message: {e}")
+
+
+# ---------------------------------------------------------------------------
+# REST endpoints
+# ---------------------------------------------------------------------------
+@router.post("/chat_init")
+async def chat_init(init_details: SessionInit, user=Depends(verify_token)):
+    userID = init_details.userID
+    chatID = init_details.chat_id
+
+    avatar_key = voice_name = welcome_message = rive_url = prompt = ""
+    raw_history = rag.get_history(userID, chatID)
+    result = rag.get_avatar(userID, chatID)
+    if result:
+        a_key, v_name, w_msg, r_url, r_prompt = result
+        avatar_key = a_key or ""
+        voice_name = v_name or ""
+        welcome_message = w_msg or ""
+        rive_url = r_url or ""
+        prompt = r_prompt or ""
+
+    chat_history = []
+    for m in raw_history:
+        role = (m.get("role") or "").lower()
+        content = (m.get("content") or "").strip()
+        if content:
+            chat_history.append({"role": role, "content": content})
+
+    return {
+        "avatar_key": avatar_key,
+        "voice_name": voice_name,
+        "welcome_message": welcome_message,
+        "rive_url": rive_url,
+        "chat_history": chat_history,
+        "prompt": prompt,
+    }
+
+
 @router.post("/chat_diagram_init")
 async def chat_diagram_init(init_details: DiagramInit, user=Depends(verify_token)):
     chatID = init_details.chat_id
@@ -891,6 +978,10 @@ async def chat_diagram_init(init_details: DiagramInit, user=Depends(verify_token
     ]
     return {"visuals": visuals}
 
+
+# ---------------------------------------------------------------------------
+# MAIN APP WebSocket
+# ---------------------------------------------------------------------------
 @router.websocket("/audio_chat_ws")
 async def audio_chat_ws(ws: WebSocket):
     print("HIT audio_chat_ws")
@@ -915,14 +1006,14 @@ async def audio_chat_ws(ws: WebSocket):
                 await ws.close()
                 return
 
-            user_id    = _as_str(payload.get("user_id") or payload.get("site_id"))
-            chat_id    = _as_str(payload.get("chat_id"))
-            user_text  = _as_str(payload.get("message"))
-            voice_id   = _as_str(payload.get("voice_name"))
-            prompt     = _as_str(payload.get("prompt"))
-            audio_on   = payload.get("voice_on", True)
-            pro_mode   = payload.get("pro_mode", False)
-            raw_audio  = payload.get("audio_bytes")
+            user_id   = _as_str(payload.get("user_id") or payload.get("site_id"))
+            chat_id   = _as_str(payload.get("chat_id"))
+            user_text = _as_str(payload.get("message"))
+            voice_id  = _as_str(payload.get("voice_name"))
+            prompt    = _as_str(payload.get("prompt"))
+            audio_on  = payload.get("voice_on", True)
+            pro_mode  = payload.get("pro_mode", False)
+            raw_audio = payload.get("audio_bytes")
 
             files_payload = payload.get("files") or []
             if not files_payload:
@@ -931,7 +1022,6 @@ async def audio_chat_ws(ws: WebSocket):
                 if legacy_raw and legacy_name:
                     files_payload = [{"file_bytes": legacy_raw, "file_name": legacy_name}]
 
-            MAX_FILES = 5
             if raw_audio and "," in raw_audio:
                 raw_audio = raw_audio.split(",", 1)[1]
             audio_bytes = base64.b64decode(raw_audio) if raw_audio else None
@@ -950,23 +1040,18 @@ async def audio_chat_ws(ws: WebSocket):
                 continue
 
             if audio_bytes:
-                try:
-                    user_text = get_stt().get_transcript(audio_bytes)
-                    if not user_text:
-                        await ws.send_json({"type": "error", "message": "Could not understand audio. Try again."})
-                        continue
-                    await ws.send_json({"type": "transcript", "text": user_text})
-                except Exception as e:
-                    traceback.print_exc()
-                    await ws.send_json({"type": "error", "message": f"Transcription failed: {e}"})
+                user_text = await _transcribe(ws, audio_bytes)
+                if not user_text:
+                    await ws.send_json({"type": "done"})
                     continue
 
-            if not user_id or not chat_id or (not user_text and not audio_bytes):
+            if not user_id or not chat_id or not user_text:
                 await ws.send_json({"type": "error", "message": "Missing user_id/chat_id/message"})
+                await ws.send_json({"type": "done"})
                 continue
 
             try:
-                rag.add_message(chat_id=chat_id, role="user", content=user_text)
+                await run_in_threadpool(rag.add_message, chat_id, "user", user_text)
             except Exception as e:
                 print(f"==> Failed to save user message: {e}")
 
@@ -978,12 +1063,13 @@ async def audio_chat_ws(ws: WebSocket):
                 except Exception:
                     pass
                 if not voice_id:
-                    voice_id = "UgBBYS2sOqTuMpoF3BR0"
+                    voice_id = DEFAULT_VOICE_ID
 
             try:
                 history = rag.get_recent_messages(user_id=user_id, chat_id=chat_id, limit=20)
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"Failed to load history: {str(e)}"})
+                await ws.send_json({"type": "done"})
                 continue
 
             file_context, image_attachments, upload_too_large = await _process_files(ws, files_payload, user_id)
@@ -991,11 +1077,12 @@ async def audio_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "done"})
                 continue
 
+            # ── system prompt ─────────────────────────────────────────
             smgr = get_summary_manager()
             summary_context = smgr.build_context(chat_id)
             system_prompt = f"{prompt}\n\n{summary_context}" if summary_context else prompt
 
-            recent_history = history[-100:] if len(history) < 100 else history
+            recent_history = history[-100:]
             history_lines = _build_history_lines(recent_history)
             conversation_history = "\n".join(history_lines)
 
@@ -1005,7 +1092,10 @@ async def audio_chat_ws(ws: WebSocket):
                 user_prompt = user_text
 
             if file_context:
-                system_prompt += f"\n\nThe user has attached {len(files_payload)} file(s). Here is the content:\n{file_context}\n\nUse this as context. Do not read it verbatim. Explain conversationally."
+                system_prompt += (
+                    f"\n\nThe user has attached {len(files_payload)} file(s). Here is the content:\n{file_context}"
+                    "\n\nUse this as context. Do not read it verbatim. Explain conversationally."
+                )
             else:
                 system_prompt += "\n\nNo files attached."
 
@@ -1021,17 +1111,12 @@ async def audio_chat_ws(ws: WebSocket):
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             system_prompt += f"\n\nToday's date is {today} (UTC). The user is in Melbourne, Australia (AEST, UTC+10). When booking calendar events, use Melbourne local time."
 
-            tts_queue = tts_task = tts_done_event = None
+            # ── first pass ────────────────────────────────────────────
+            tts_queue, tts_task, tts_done_event = _start_tts(ws, voice_id, audio_on)
 
             try:
-                if audio_on:
-                    tts_queue = asyncio.Queue()
-                    tts_done_event = asyncio.Event()
-                    tts_task = asyncio.create_task(_tts_pipeline(ws, tts_queue, voice_id, tts_done_event))
-
                 full_text_parts, sentences_for_tts, chat_input_tokens, chat_output_tokens = await _stream_ai_response(
-                    ws, user_id, system_prompt, user_prompt,
-                    image_attachments, audio_on, voice_id, tts_queue, False
+                    ws, user_id, system_prompt, user_prompt, image_attachments, tts_queue
                 )
 
                 if tts_done_event:
@@ -1065,51 +1150,25 @@ async def audio_chat_ws(ws: WebSocket):
 
             except Exception as e:
                 await ws.send_json({"type": "error", "message": f"AI failed: {str(e)}"})
+                await ws.send_json({"type": "done"})
                 if tts_task:
                     tts_task.cancel()
                 continue
 
-            # ----------------------------------------------------------
-            # VISUAL AID
-            # ----------------------------------------------------------
-            visual_aid = None
+            # ── visual aid (concurrent with TTS) ──────────────────────
             visual_task = None
-
             if routing_decision in ("DIAGRAM", "CODE", "MATH", "HTML"):
-                async def _gen_visual():
-                    va, d_in, d_out = await _generate_visual(user_id, user_text, history_lines, file_context, image_attachments)
-                    return va, d_in, d_out
-                visual_task = asyncio.create_task(_gen_visual())
+                visual_task = asyncio.create_task(
+                    _generate_visual(user_id, user_text, history_lines, file_context, image_attachments)
+                )
                 await ws.send_json({"type": "visual_aid_pending"})
 
-            # ----------------------------------------------------------
-            # WAIT FOR TTS
-            # ----------------------------------------------------------
-            if tts_task:
-                try:
-                    await asyncio.wait_for(tts_task, timeout=30)
-                except asyncio.TimeoutError:
-                    tts_task.cancel()
-                    print("==> TTS timed out")
-                except Exception as e:
-                    print(f"==> TTS error: {e}", flush=True)
+            await _await_tts(tts_task)
 
-            # ----------------------------------------------------------
-            # WAIT FOR VISUAL + SEND
-            # ----------------------------------------------------------
-            if visual_task:
-                try:
-                    visual_aid, d_in, d_out = await visual_task
-                    diagram_input_tokens = d_in
-                    diagram_output_tokens = d_out
-                except Exception as e:
-                    print(f"==> Visual task error: {e}", flush=True)
-
+            visual_aid, diagram_input_tokens, diagram_output_tokens = await _resolve_visual(visual_task)
             await _send_and_save_visual(ws, visual_aid, routing_decision, chat_id)
 
-            # ----------------------------------------------------------
-            # EXECUTE CALENDAR ACTION — capture second pass text
-            # ----------------------------------------------------------
+            # ── second pass (calendar / web) ──────────────────────────
             second_pass_text = None
 
             if calendar_action and calendar_payload:
@@ -1121,39 +1180,26 @@ async def audio_chat_ws(ws: WebSocket):
                 )
 
             if web_match:
+                search_results = await run_in_threadpool(
+                    get_web_search().web_search, web_match.group(1), 3
+                )
                 second_pass_text = await _stream_second_pass(
                     ws=ws, user_id=user_id, user_text=user_text,
-                    context_text=get_web_search().web_search(web_match.group(1), 3),
+                    context_text=search_results,
                     system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
                 )
 
-            # ----------------------------------------------------------
-            # SAVE TO DB — save first pass, then second pass if exists
-            # ----------------------------------------------------------
-            try:
-                rag.add_message(chat_id=chat_id, role="assistant", content=bot_text)
-                rag.update_last_message(chat_id=chat_id, last_message=bot_text)
-            except Exception:
-                pass
-
-            if second_pass_text:
-                try:
-                    rag.add_message(chat_id=chat_id, role="assistant", content=second_pass_text)
-                    rag.update_last_message(chat_id=chat_id, last_message=second_pass_text)
-                except Exception:
-                    pass
-
+            # ── persist + summary ─────────────────────────────────────
+            _save_turn(chat_id, bot_text, second_pass_text)
             await _update_summary(smgr, chat_id, history, user_text, second_pass_text or bot_text)
 
-            # ----------------------------------------------------------
-            # COST TRACKING
-            # ----------------------------------------------------------
+            # ── billing ───────────────────────────────────────────────
             try:
                 model = rag.get_model(user_id)
                 cost = account_manager.processUsedCost(
                     input_tokens=chat_input_tokens + diagram_input_tokens,
                     output_tokens=chat_output_tokens + diagram_output_tokens,
-                    SST_Length_seconds=len(audio_bytes) / 16000 if audio_bytes else 0,
+                    SST_Length_seconds=len(audio_bytes) / STT_BYTES_PER_SECOND if audio_bytes else 0,
                     webSearch=bool(web_match),
                     voice_on=bool(audio_on),
                     diagram_on=bool(visual_aid),
@@ -1161,7 +1207,7 @@ async def audio_chat_ws(ws: WebSocket):
                     image_count=len(image_attachments),
                     model=model,
                 )
-                credits_used = cost / 0.15
+                credits_used = cost / AUD_PER_CREDIT
                 remaining = rag.deductCredits(user_id, credits_used)
                 print(f"==> Cost: ${cost:.4f} | Credits: {credits_used:.4f} | Remaining: {remaining}")
             except Exception as e:
@@ -1181,6 +1227,10 @@ async def audio_chat_ws(ws: WebSocket):
         except Exception:
             pass
 
+
+# ---------------------------------------------------------------------------
+# EMBED WebSocket
+# ---------------------------------------------------------------------------
 @router.websocket("/embed_chat_ws")
 async def embed_chat_ws(ws: WebSocket):
     t0 = time.time()
@@ -1204,9 +1254,7 @@ async def embed_chat_ws(ws: WebSocket):
 
     print(f"==> [TIMING] key validated: {time.time()-t0:.2f}s", flush=True)
 
-    # ----------------------------------------------------------
-    # CACHE STATIC FIELDS AT CONNECTION OPEN
-    # ----------------------------------------------------------
+    # ── static config cached at connection open ───────────────────────
     cached_calendar_enabled = initial_key_data.get("calendar_enabled", True)
     cached_diagrams_enabled = bool(initial_key_data.get("embed_diagrams", False))
     cached_links_enabled    = bool(initial_key_data.get("link_enabled", False))
@@ -1225,8 +1273,6 @@ async def embed_chat_ws(ws: WebSocket):
         cached_default_integration = None
 
     cached_model = cached_model or "gemini"
-    
-    MIN_CREDITS_PER_TURN = 0.05
     print(f"==> embed WS opened for api_key={api_key}, owner={owner_user_id}, model={cached_model}")
 
     try:
@@ -1244,9 +1290,7 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.close()
                 return
 
-            # ----------------------------------------------------------
-            # RE-VALIDATE + CREDITS — parallel DB fetch
-            # ----------------------------------------------------------
+            # ── re-validate + credits (parallel) ──────────────────────
             key_data, current_credits = await asyncio.gather(
                 run_in_threadpool(rag.getApiKey, api_key),
                 run_in_threadpool(rag.getBusinessCredits, owner_user_id),
@@ -1257,9 +1301,6 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.close()
                 return
 
-            # ----------------------------------------------------------
-            # LIMITS
-            # ----------------------------------------------------------
             if key_data.get("conversations_used", 0) >= key_data.get("monthly_limit", 500):
                 await ws.send_json({"type": "error", "message": "Monthly conversation limit reached", "code": "LIMIT_REACHED"})
                 await ws.send_json({"type": "done"})
@@ -1270,9 +1311,7 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "done"})
                 continue
 
-            # ----------------------------------------------------------
-            # EXTRACT CONFIG
-            # ----------------------------------------------------------
+            # ── config + payload ──────────────────────────────────────
             business_name        = key_data.get("business_name") or "this business"
             business_description = key_data.get("business_description") or ""
             assistant_name       = key_data.get("assistant_name") or "Assistant"
@@ -1294,29 +1333,15 @@ async def embed_chat_ws(ws: WebSocket):
             embed_input_tokens = embed_output_tokens = 0
             diagram_input_tokens = diagram_output_tokens = 0
             second_pass_text = None
-            web_match = None
-            calendar_action = None
-            calendar_payload_data = None
-            link_match = None
 
             if not rag.hasEnoughCredits(owner_user_id):
                 await ws.send_json({"type": "error", "message": "No credits remaining.", "code": "NO_CREDITS"})
                 await ws.send_json({"type": "done"})
                 continue
 
-            # ----------------------------------------------------------
-            # STT
-            # ----------------------------------------------------------
             if audio_bytes:
-                try:
-                    user_text = get_stt().get_transcript(audio_bytes)
-                    if not user_text:
-                        await ws.send_json({"type": "error", "message": "Could not understand audio."})
-                        await ws.send_json({"type": "done"})
-                        continue
-                    await ws.send_json({"type": "transcript", "text": user_text})
-                except Exception as e:
-                    await ws.send_json({"type": "error", "message": f"Transcription failed: {e}"})
+                user_text = await _transcribe(ws, audio_bytes)
+                if not user_text:
                     await ws.send_json({"type": "done"})
                     continue
 
@@ -1325,16 +1350,11 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "done"})
                 continue
 
-            # ----------------------------------------------------------
-            # VOICE ID FALLBACK
-            # ----------------------------------------------------------
             if not voice_id:
                 avatar = rag.getAvatarByName(key_data.get("avatar_name") or "Mia Sterling") or {}
-                voice_id = avatar.get("voice") or "UgBBYS2sOqTuMpoF3BR0"
+                voice_id = avatar.get("voice") or DEFAULT_VOICE_ID
 
-            # ----------------------------------------------------------
-            # HISTORY — load and save in parallel
-            # ----------------------------------------------------------
+            # ── history (load + save user msg in parallel) ────────────
             try:
                 history, _ = await asyncio.gather(
                     run_in_threadpool(rag.get_recent_messages, owner_user_id, session_id, 10),
@@ -1346,9 +1366,7 @@ async def embed_chat_ws(ws: WebSocket):
 
             print(f"==> [TIMING] pre-RAG done: {time.time()-t0:.2f}s", flush=True)
 
-            # ----------------------------------------------------------
-            # RAG LOOKUP
-            # ----------------------------------------------------------
+            # ── RAG ───────────────────────────────────────────────────
             rag_context = ""
             if cached_has_docs:
                 try:
@@ -1362,13 +1380,11 @@ async def embed_chat_ws(ws: WebSocket):
                 except Exception as e:
                     print(f"==> RAG failed: {e}")
             else:
-                print(f"==> RAG skipped — no docs", flush=True)
+                print("==> RAG skipped — no docs", flush=True)
 
             print(f"==> [TIMING] RAG done: {time.time()-t0:.2f}s", flush=True)
 
-            # ----------------------------------------------------------
-            # BUILD SYSTEM PROMPT
-            # ----------------------------------------------------------
+            # ── system prompt ─────────────────────────────────────────
             tone_map = {
                 "professional": "You are polite, professional, and clear. Sound like a well-trained support agent.",
                 "friendly": "You are warm, casual, and approachable. Sound like a helpful friend who works at the business. Use informal language, contractions, and a light conversational tone.",
@@ -1444,33 +1460,21 @@ async def embed_chat_ws(ws: WebSocket):
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             system_prompt += f"\n\nToday's date is {today} (UTC). The user is in Melbourne, Australia (AEST, UTC+10). When booking calendar events, use Melbourne local time."
 
-            # ----------------------------------------------------------
-            # USER PROMPT WITH HISTORY
-            # ----------------------------------------------------------
+            # ── user prompt ───────────────────────────────────────────
             history_lines = _build_history_lines(history[-6:])
             if history_lines:
                 user_prompt = "Conversation history:\n" + "\n".join(history_lines) + f"\n\nLatest user message:\n{user_text}"
             else:
                 user_prompt = user_text
 
-            # ----------------------------------------------------------
-            # GENERATE RESPONSE — owner_user_id not api_key
-            # ----------------------------------------------------------
-            tts_queue = tts_task = tts_done_event = None
+            # ── first pass ────────────────────────────────────────────
+            tts_queue, tts_task, tts_done_event = _start_tts(ws, voice_id, audio_on)
 
             try:
-                if audio_on:
-                    tts_queue = asyncio.Queue()
-                    tts_done_event = asyncio.Event()
-                    tts_task = asyncio.create_task(
-                        _tts_pipeline(ws, tts_queue, voice_id, tts_done_event)
-                    )
-
                 print(f"==> [TIMING] AI start: {time.time()-t0:.2f}s", flush=True)
 
                 full_text_parts, sentences_for_tts, embed_input_tokens, embed_output_tokens = await _stream_ai_response(
-                    ws, owner_user_id, system_prompt, user_prompt,
-                    [], audio_on, voice_id, tts_queue, False
+                    ws, owner_user_id, system_prompt, user_prompt, [], tts_queue
                 )
 
                 if tts_done_event:
@@ -1488,11 +1492,8 @@ async def embed_chat_ws(ws: WebSocket):
                     routing_decision = "NONE"
 
                 bot_text = _clean_bot_text(raw_text)
-
-                # Strip LINK tag from spoken text
                 if link_match:
-                    bot_text = re.sub(r'\[LINK\]\s*\{[^}]*\}', '', bot_text).strip()
-
+                    bot_text = LINK_TAG_RE.sub('', bot_text).strip()
                 bot_text = fix_markdown_formatting(bot_text)
 
                 if calendar_action:
@@ -1501,14 +1502,12 @@ async def embed_chat_ws(ws: WebSocket):
                     await ws.send_json({"type": "web_search_pending"})
                 if link_match:
                     try:
-                        link_json = re.search(r'\{.*?\}', link_match.group(0), re.DOTALL)
-                        if link_json:
-                            link_data = json.loads(link_json.group(0))
-                            await ws.send_json({
-                                "type": "link",
-                                "url": link_data.get("url", ""),
-                                "label": link_data.get("label", "Open Link"),
-                            })
+                        link_data = json.loads(link_match.group(1))
+                        await ws.send_json({
+                            "type": "link",
+                            "url": link_data.get("url", ""),
+                            "label": link_data.get("label", "Open Link"),
+                        })
                     except Exception as e:
                         print(f"==> Link send failed: {e}")
 
@@ -1531,46 +1530,18 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "done"})
                 continue
 
-            # ----------------------------------------------------------
-            # VISUAL AID — fires concurrently while TTS plays
-            # ----------------------------------------------------------
-            visual_aid = None
+            # ── visual aid (concurrent with TTS) ──────────────────────
             visual_task = None
-
             if cached_diagrams_enabled and routing_decision in ("DIAGRAM", "CODE", "MATH", "HTML"):
-                async def _gen_embed_visual():
-                    va, d_in, d_out = await _generate_visual(
-                        owner_user_id, user_text, history_lines, "", []
-                    )
-                    return va, d_in, d_out
-                visual_task = asyncio.create_task(_gen_embed_visual())
+                visual_task = asyncio.create_task(
+                    _generate_visual(owner_user_id, user_text, history_lines, "", [])
+                )
                 await ws.send_json({"type": "visual_aid_pending"})
 
-            # ----------------------------------------------------------
-            # WAIT FOR TTS
-            # ----------------------------------------------------------
-            if tts_task:
-                try:
-                    await asyncio.wait_for(tts_task, timeout=30)
-                except asyncio.TimeoutError:
-                    tts_task.cancel()
-                    print("==> embed TTS timed out")
-                except Exception as e:
-                    print(f"==> embed TTS error: {e}", flush=True)
-
+            await _await_tts(tts_task, "(embed)")
             print(f"==> [TIMING] TTS done: {time.time()-t0:.2f}s", flush=True)
 
-            # ----------------------------------------------------------
-            # WAIT FOR VISUAL + SEND
-            # ----------------------------------------------------------
-            if visual_task:
-                try:
-                    visual_aid, d_in, d_out = await visual_task
-                    diagram_input_tokens = d_in
-                    diagram_output_tokens = d_out
-                except Exception as e:
-                    print(f"==> embed visual task error: {e}", flush=True)
-
+            visual_aid, diagram_input_tokens, diagram_output_tokens = await _resolve_visual(visual_task)
             if cached_diagrams_enabled:
                 await _send_and_save_visual(ws, visual_aid, routing_decision, session_id)
             else:
@@ -1579,9 +1550,7 @@ async def embed_chat_ws(ws: WebSocket):
                 except Exception:
                     pass
 
-            # ----------------------------------------------------------
-            # CALENDAR ACTION
-            # ----------------------------------------------------------
+            # ── second pass (calendar / web) ──────────────────────────
             if cached_calendar_enabled and calendar_action and calendar_payload_data:
                 second_pass_text = await _execute_calendar_action(
                     ws=ws, user_id=owner_user_id,
@@ -1590,35 +1559,20 @@ async def embed_chat_ws(ws: WebSocket):
                     system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
                 )
 
-            # ----------------------------------------------------------
-            # WEB SEARCH
-            # ----------------------------------------------------------
             if web_match:
+                search_results = await run_in_threadpool(
+                    get_web_search().web_search, web_match.group(1), 3
+                )
                 second_pass_text = await _stream_second_pass(
                     ws=ws, user_id=owner_user_id, user_text=user_text,
-                    context_text=get_web_search().web_search(web_match.group(1), 3),
+                    context_text=search_results,
                     system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
                 )
 
-            # ----------------------------------------------------------
-            # SAVE TO DB
-            # ----------------------------------------------------------
-            try:
-                rag.add_message(chat_id=session_id, role="assistant", content=bot_text)
-                rag.update_last_message(chat_id=session_id, last_message=bot_text)
-            except Exception as e:
-                print(f"==> Failed to save assistant message: {e}")
+            # ── persist ───────────────────────────────────────────────
+            _save_turn(session_id, bot_text, second_pass_text)
 
-            if second_pass_text:
-                try:
-                    rag.add_message(chat_id=session_id, role="assistant", content=second_pass_text)
-                    rag.update_last_message(chat_id=session_id, last_message=second_pass_text)
-                except Exception:
-                    pass
-
-            # ----------------------------------------------------------
-            # BILLING
-            # ----------------------------------------------------------
+            # ── billing ───────────────────────────────────────────────
             try:
                 rag.incrementConversationCount(api_key)
             except Exception as e:
@@ -1629,7 +1583,7 @@ async def embed_chat_ws(ws: WebSocket):
                     input_tokens=embed_input_tokens + diagram_input_tokens,
                     output_tokens=embed_output_tokens + diagram_output_tokens,
                     outputText=bot_text,
-                    SST_Length_seconds=len(audio_bytes) / 32000 if audio_bytes else 0,
+                    SST_Length_seconds=len(audio_bytes) / STT_BYTES_PER_SECOND if audio_bytes else 0,
                     webSearch=bool(web_match),
                     voice_on=bool(audio_on),
                     diagram_on=bool(visual_aid),
