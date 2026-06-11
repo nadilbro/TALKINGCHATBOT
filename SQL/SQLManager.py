@@ -889,4 +889,4 @@ class VectorRAGService:
             UPDATE api_keys
             SET total_cost = COALESCE(total_cost, 0) + %s, updated_at = NOW()
             WHERE key = %s
-        """, (cost, key))s
+        """, (cost, key))
