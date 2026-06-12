@@ -47,16 +47,20 @@ fileE = FileExtractor(ai)
 # ---------------------------------------------------------------------------
 MINUTES_PER_CREDIT = 7          # kept for external imports
 AUD_PER_CREDIT = 0.15           # main-app credit conversion
-# 16 kHz, 16-bit, mono PCM = 32 000 bytes/sec. Verify against the actual
-# recording format the frontend sends; previously 16000 in one endpoint and
-# 32000 in the other, which double-billed STT seconds on the main app.
-STT_BYTES_PER_SECOND = 32_000
+STT_BYTES_PER_SECOND = 32_000   # 16 kHz 16-bit mono PCM
 AUDIO_CHUNK_BYTES = 32_000      # ws binary frame size for outgoing audio
 TTS_TIMEOUT_S = 30
 MAX_FILES = 5
 MAX_TOTAL_UPLOAD_BYTES = 40 * 1024 * 1024
 MIN_CREDITS_PER_TURN = 0.05     # embed
 DEFAULT_VOICE_ID = "UgBBYS2sOqTuMpoF3BR0"
+
+# Time-to-first-audio: if the model's FIRST sentence runs long, flush its
+# first clause (at a comma) to TTS early so the avatar starts speaking
+# sooner. Only ever applies before the first TTS chunk of a turn.
+EARLY_FIRST_CLAUSE_FLUSH = True
+EARLY_FLUSH_MIN_CHARS = 90      # buffer length before considering a flush
+EARLY_FLUSH_MIN_CLAUSE = 40     # don't flush clauses shorter than this
 
 # ---------------------------------------------------------------------------
 # Patterns (compiled once)
@@ -141,6 +145,17 @@ def _as_int(x: Any, default: int = 0) -> int:
         return int(x)
     except Exception:
         return default
+
+
+async def _drain(task):
+    """Await a prefetch task on early-exit paths so threads finish cleanly."""
+    if task is None:
+        return None
+    try:
+        return await task
+    except Exception as e:
+        print(f"==> Prefetch drain error: {e}")
+        return None
 
 
 def strip_markdown(text: str) -> str:
@@ -234,7 +249,7 @@ def _tts_clean(sentence: str) -> str:
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     if not cleaned or len(cleaned) < 3:
         return ''
-    if cleaned.lower() in _ROUTING_TAG_WORDS:   # now includes 'link'
+    if cleaned.lower() in _ROUTING_TAG_WORDS:
         return ''
     return cleaned
 
@@ -341,6 +356,37 @@ async def _transcribe(ws, audio_bytes: bytes) -> Optional[str]:
         return None
     await ws.send_json({"type": "transcript", "text": text})
     return text
+
+
+# ---------------------------------------------------------------------------
+# Per-turn state prefetch — ONE threadpool hop for all sync DB reads,
+# started BEFORE STT so the round-trips overlap transcription (300-800ms)
+# instead of running serially after it.
+# ---------------------------------------------------------------------------
+def _prefetch_main_state(user_id: str, chat_id: str, need_avatar: bool, smgr) -> dict:
+    state = {
+        "has_credits": rag.hasEnoughCredits(user_id),
+        "history": rag.get_recent_messages(user_id=user_id, chat_id=chat_id, limit=20),
+        "summary": smgr.build_context(chat_id),
+        "integrator": rag.checkIntegrations(user_id),
+        "default_integration": rag.getDefaultIntegration(user_id),
+        "model": rag.get_model(user_id),
+        "avatar": None,
+    }
+    if need_avatar:
+        try:
+            state["avatar"] = rag.get_avatar(user_id, chat_id)
+        except Exception:
+            pass
+    return state
+
+
+def _prefetch_embed_turn(api_key: str, owner_user_id: str) -> dict:
+    return {
+        "key_data": rag.getApiKey(api_key),
+        "business_credits": rag.getBusinessCredits(owner_user_id),
+        "has_credits": rag.hasEnoughCredits(owner_user_id),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -494,11 +540,8 @@ async def _send_and_save_visual(ws, visual_aid, routing_decision: str, chat_id: 
                 or visual_aid.get("code")
                 or visual_aid.get("content", "")
             )
-            rag.save_visual(
-                session_id=chat_id,
-                visual_type=vtype,
-                content=content_to_save,
-                language=visual_aid.get("language"),
+            await run_in_threadpool(
+                rag.save_visual, chat_id, vtype, content_to_save, visual_aid.get("language")
             )
         except Exception as e:
             print(f"==> Failed to save visual: {e}")
@@ -518,13 +561,11 @@ async def _resolve_visual(visual_task) -> tuple:
 # ---------------------------------------------------------------------------
 # Prompt builders
 # ---------------------------------------------------------------------------
-def _build_integration_prompt(user_id: str) -> str:
-    integrators = rag.checkIntegrations(user_id)
-    if not integrators:
+def _build_integration_prompt(integrator, default_integration) -> str:
+    """Pure prompt builder — caller supplies prefetched DB state (no I/O here)."""
+    if not integrator:
         return "\n\nINTEGRATIONS RULE: User has not yet connected any services. You cannot perform calendar or external actions."
 
-    default_integration = rag.getDefaultIntegration(user_id)
-    print(f"==> DEFAULT INTEGRATION: {default_integration} for {user_id}")
     if default_integration == "microsoft":
         return (
             "\n\nINTEGRATIONS: The user has connected Microsoft Calendar. "
@@ -724,12 +765,20 @@ async def _stream_ai_response(
     ws, user_id: str, system_prompt: str, user_prompt: str,
     image_attachments: list, tts_queue,
 ) -> tuple:
-    """Stream model deltas → frontend text_delta + sentence-chunked TTS queue."""
+    """Stream model deltas → frontend text_delta + sentence-chunked TTS queue.
+
+    Time-to-first-audio optimisation: if the model's FIRST sentence is long,
+    flush its first clause (at a comma) to TTS early so the avatar starts
+    speaking while the rest of the sentence is still streaming. Applies only
+    before any TTS has been queued — later sentences flush normally, so
+    prosody is untouched for the bulk of the response.
+    """
     full_text_parts = []
     sentence_buffer = ""
     sentences_for_tts = []
     chat_input_tokens = 0
     chat_output_tokens = 0
+    tts_started = False
 
     async for delta in ai.stream(
         site_id=user_id,
@@ -760,6 +809,24 @@ async def _stream_ai_response(
                     cleaned = _tts_clean(sentence)
                     if cleaned:
                         await tts_queue.put(cleaned)
+                        tts_started = True
+
+        # Early first-clause flush (first audio sooner on long openers)
+        if (
+            EARLY_FIRST_CLAUSE_FLUSH
+            and tts_queue
+            and not tts_started
+            and len(sentence_buffer) >= EARLY_FLUSH_MIN_CHARS
+        ):
+            cut_at = sentence_buffer.rfind(", ")
+            if cut_at >= EARLY_FLUSH_MIN_CLAUSE:
+                clause = sentence_buffer[:cut_at + 1].strip()
+                sentence_buffer = sentence_buffer[cut_at + 2:]
+                sentences_for_tts.append(clause)
+                cleaned = _tts_clean(clause)
+                if cleaned:
+                    await tts_queue.put(cleaned)
+                    tts_started = True
 
     remaining = sentence_buffer.strip()
     remaining_clean = ACTION_TAG_PATTERN.sub('', remaining)
@@ -892,7 +959,7 @@ async def _execute_calendar_action(
 
 
 # ---------------------------------------------------------------------------
-# Summary
+# Summary / persistence
 # ---------------------------------------------------------------------------
 async def _update_summary(smgr, chat_id: str, history: list, user_text: str, bot_text: str):
     try:
@@ -925,6 +992,16 @@ def _save_turn(chat_id: str, bot_text: str, second_pass_text: Optional[str]):
             rag.update_last_message(chat_id=chat_id, last_message=second_pass_text)
         except Exception as e:
             print(f"==> Failed to save second-pass message: {e}")
+
+
+def _fire_and_forget(fn, *args):
+    """Run a sync DB write off-loop without blocking the turn."""
+    async def _run():
+        try:
+            await run_in_threadpool(fn, *args)
+        except Exception as e:
+            print(f"==> Background write failed ({getattr(fn, '__name__', fn)}): {e}")
+    asyncio.create_task(_run())
 
 
 # ---------------------------------------------------------------------------
@@ -1029,8 +1106,8 @@ async def audio_chat_ws(ws: WebSocket):
             chat_input_tokens = chat_output_tokens = 0
             diagram_input_tokens = diagram_output_tokens = 0
 
-            if not rag.hasEnoughCredits(user_id):
-                await ws.send_json({"type": "error", "message": "You have no credits remaining.", "code": "NO_CREDITS"})
+            if not user_id or not chat_id:
+                await ws.send_json({"type": "error", "message": "Missing user_id/chat_id/message"})
                 await ws.send_json({"type": "done"})
                 continue
 
@@ -1039,38 +1116,48 @@ async def audio_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "done"})
                 continue
 
+            # ── LATENCY: kick all per-turn DB reads in ONE threadpool hop
+            #    NOW, so they overlap STT (300-800ms) instead of running
+            #    serially after it. ──────────────────────────────────────
+            smgr = get_summary_manager()
+            prefetch = asyncio.create_task(run_in_threadpool(
+                _prefetch_main_state, user_id, chat_id, not voice_id, smgr
+            ))
+
             if audio_bytes:
                 user_text = await _transcribe(ws, audio_bytes)
                 if not user_text:
+                    await _drain(prefetch)
                     await ws.send_json({"type": "done"})
                     continue
 
-            if not user_id or not chat_id or not user_text:
+            if not user_text:
+                await _drain(prefetch)
                 await ws.send_json({"type": "error", "message": "Missing user_id/chat_id/message"})
                 await ws.send_json({"type": "done"})
                 continue
 
-            try:
-                await run_in_threadpool(rag.add_message, chat_id, "user", user_text)
-            except Exception as e:
-                print(f"==> Failed to save user message: {e}")
+            state = await _drain(prefetch) or {}
+
+            if not state.get("has_credits"):
+                await ws.send_json({"type": "error", "message": "You have no credits remaining.", "code": "NO_CREDITS"})
+                await ws.send_json({"type": "done"})
+                continue
+
+            # Save user message in the background — nothing downstream
+            # reads it back this turn (history was already fetched).
+            _fire_and_forget(rag.add_message, chat_id, "user", user_text)
 
             if not voice_id:
-                try:
-                    avatar_data = rag.get_avatar(user_id, chat_id)
-                    if avatar_data:
-                        voice_id = _as_str(avatar_data[1])
-                except Exception:
-                    pass
+                avatar_data = state.get("avatar")
+                if avatar_data:
+                    voice_id = _as_str(avatar_data[1])
                 if not voice_id:
                     voice_id = DEFAULT_VOICE_ID
 
-            try:
-                history = rag.get_recent_messages(user_id=user_id, chat_id=chat_id, limit=20)
-            except Exception as e:
-                await ws.send_json({"type": "error", "message": f"Failed to load history: {str(e)}"})
-                await ws.send_json({"type": "done"})
-                continue
+            history = state.get("history") or []
+            summary_context = state.get("summary")
+            default_integration = state.get("default_integration")
 
             file_context, image_attachments, upload_too_large = await _process_files(ws, files_payload, user_id)
             if upload_too_large:
@@ -1078,8 +1165,6 @@ async def audio_chat_ws(ws: WebSocket):
                 continue
 
             # ── system prompt ─────────────────────────────────────────
-            smgr = get_summary_manager()
-            summary_context = smgr.build_context(chat_id)
             system_prompt = f"{prompt}\n\n{summary_context}" if summary_context else prompt
 
             recent_history = history[-100:]
@@ -1104,15 +1189,15 @@ async def audio_chat_ws(ws: WebSocket):
             else:
                 system_prompt += "\n\nLENGTH RULE: Audio is off. You have room to be thorough. Use headers, lists, and examples freely."
 
-            system_prompt += _build_integration_prompt(user_id)
+            system_prompt += _build_integration_prompt(state.get("integrator"), default_integration)
             system_prompt += _build_websearch_prompt()
 
-            default_integration = rag.getDefaultIntegration(user_id)
             today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
             system_prompt += f"\n\nToday's date is {today} (UTC). The user is in Melbourne, Australia (AEST, UTC+10). When booking calendar events, use Melbourne local time."
 
             # ── first pass ────────────────────────────────────────────
             tts_queue, tts_task, tts_done_event = _start_tts(ws, voice_id, audio_on)
+            search_task = None
 
             try:
                 full_text_parts, sentences_for_tts, chat_input_tokens, chat_output_tokens = await _stream_ai_response(
@@ -1128,6 +1213,15 @@ async def audio_chat_ws(ws: WebSocket):
                 calendar_action, calendar_payload = _detect_calendar_action(raw_text)
                 web_match = _detect_web_search(raw_text)
 
+                # LATENCY: start the web search NOW — it runs while the
+                # avatar is still speaking the first-pass response, so the
+                # 1-2s Tavily round-trip is hidden behind TTS playback.
+                if web_match:
+                    search_task = asyncio.create_task(run_in_threadpool(
+                        get_web_search().web_search, web_match.group(1), 3
+                    ))
+                    await ws.send_json({"type": "web_search_pending"})
+
                 bot_text = _clean_bot_text(raw_text)
                 _, routing_decision = _extract_routing_tag(raw_text)
                 bot_text = fix_markdown_formatting(bot_text)
@@ -1136,8 +1230,6 @@ async def audio_chat_ws(ws: WebSocket):
 
                 if calendar_action:
                     await ws.send_json({"type": "calendar_action"})
-                if web_match:
-                    await ws.send_json({"type": "web_search_pending"})
 
                 await ws.send_json({"type": "text_done", "text": bot_text})
 
@@ -1146,6 +1238,7 @@ async def audio_chat_ws(ws: WebSocket):
                     await ws.send_json({"type": "done"})
                     if tts_task:
                         tts_task.cancel()
+                    await _drain(search_task)
                     continue
 
             except Exception as e:
@@ -1153,6 +1246,7 @@ async def audio_chat_ws(ws: WebSocket):
                 await ws.send_json({"type": "done"})
                 if tts_task:
                     tts_task.cancel()
+                await _drain(search_task)
                 continue
 
             # ── visual aid (concurrent with TTS) ──────────────────────
@@ -1179,23 +1273,20 @@ async def audio_chat_ws(ws: WebSocket):
                     system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
                 )
 
-            if web_match:
-                search_results = await run_in_threadpool(
-                    get_web_search().web_search, web_match.group(1), 3
-                )
+            if search_task:
+                search_results = await _drain(search_task)
                 second_pass_text = await _stream_second_pass(
                     ws=ws, user_id=user_id, user_text=user_text,
-                    context_text=search_results,
+                    context_text=search_results or "(search failed)",
                     system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
                 )
 
             # ── persist + summary ─────────────────────────────────────
-            _save_turn(chat_id, bot_text, second_pass_text)
+            await run_in_threadpool(_save_turn, chat_id, bot_text, second_pass_text)
             await _update_summary(smgr, chat_id, history, user_text, second_pass_text or bot_text)
 
             # ── billing ───────────────────────────────────────────────
             try:
-                model = rag.get_model(user_id)
                 cost = account_manager.processUsedCost(
                     input_tokens=chat_input_tokens + diagram_input_tokens,
                     output_tokens=chat_output_tokens + diagram_output_tokens,
@@ -1205,10 +1296,10 @@ async def audio_chat_ws(ws: WebSocket):
                     diagram_on=bool(visual_aid),
                     pro_mode=bool(pro_mode),
                     image_count=len(image_attachments),
-                    model=model,
+                    model=state.get("model") or "gemini",
                 )
                 credits_used = cost / AUD_PER_CREDIT
-                remaining = rag.deductCredits(user_id, credits_used)
+                remaining = await run_in_threadpool(rag.deductCredits, user_id, credits_used)
                 print(f"==> Cost: ${cost:.4f} | Credits: {credits_used:.4f} | Remaining: {remaining}")
             except Exception as e:
                 print(f"==> Cost tracking failed: {e}")
@@ -1242,7 +1333,7 @@ async def embed_chat_ws(ws: WebSocket):
         await ws.close(code=4001, reason="Missing api_key")
         return
 
-    initial_key_data = rag.getApiKey(api_key)
+    initial_key_data = await run_in_threadpool(rag.getApiKey, api_key)
     if not initial_key_data or not initial_key_data.get("is_active"):
         await ws.close(code=4001, reason="Invalid or inactive API key")
         return
@@ -1254,22 +1345,19 @@ async def embed_chat_ws(ws: WebSocket):
 
     print(f"==> [TIMING] key validated: {time.time()-t0:.2f}s", flush=True)
 
-    # ── static config cached at connection open ───────────────────────
+    # ── static config cached at connection open (incl. integrator state —
+    #    no longer re-fetched from DB on every single turn) ──────────────
     cached_calendar_enabled = initial_key_data.get("calendar_enabled", True)
     cached_diagrams_enabled = bool(initial_key_data.get("embed_diagrams", False))
     cached_links_enabled    = bool(initial_key_data.get("link_enabled", False))
 
-    if cached_calendar_enabled:
-        cached_model, cached_default_integration, cached_has_docs = await asyncio.gather(
-            run_in_threadpool(rag.get_model, owner_user_id),
-            run_in_threadpool(rag.getDefaultIntegration, owner_user_id),
-            run_in_threadpool(rag.hasDocuments, api_key),
-        )
-    else:
-        cached_model, cached_has_docs = await asyncio.gather(
-            run_in_threadpool(rag.get_model, owner_user_id),
-            run_in_threadpool(rag.hasDocuments, api_key),
-        )
+    cached_model, cached_default_integration, cached_has_docs, cached_integrator = await asyncio.gather(
+        run_in_threadpool(rag.get_model, owner_user_id),
+        run_in_threadpool(rag.getDefaultIntegration, owner_user_id),
+        run_in_threadpool(rag.hasDocuments, api_key),
+        run_in_threadpool(rag.checkIntegrations, owner_user_id),
+    )
+    if not cached_calendar_enabled:
         cached_default_integration = None
 
     cached_model = cached_model or "gemini"
@@ -1290,32 +1378,7 @@ async def embed_chat_ws(ws: WebSocket):
                 await ws.close()
                 return
 
-            # ── re-validate + credits (parallel) ──────────────────────
-            key_data, current_credits = await asyncio.gather(
-                run_in_threadpool(rag.getApiKey, api_key),
-                run_in_threadpool(rag.getBusinessCredits, owner_user_id),
-            )
-
-            if not key_data or not key_data.get("is_active"):
-                await ws.send_json({"type": "error", "message": "API key deactivated", "code": "INVALID_KEY"})
-                await ws.close()
-                return
-
-            if key_data.get("conversations_used", 0) >= key_data.get("monthly_limit", 500):
-                await ws.send_json({"type": "error", "message": "Monthly conversation limit reached", "code": "LIMIT_REACHED"})
-                await ws.send_json({"type": "done"})
-                continue
-
-            if current_credits < MIN_CREDITS_PER_TURN:
-                await ws.send_json({"type": "error", "message": "This business has run out of credits.", "code": "NO_CREDITS"})
-                await ws.send_json({"type": "done"})
-                continue
-
-            # ── config + payload ──────────────────────────────────────
-            business_name        = key_data.get("business_name") or "this business"
-            business_description = key_data.get("business_description") or ""
-            assistant_name       = key_data.get("assistant_name") or "Assistant"
-            version              = key_data.get("assistant_version", "professional")
+            # ── parse payload first so prefetch + STT can overlap ─────
             user_text  = _as_str(payload.get("message"))
             voice_id   = _as_str(payload.get("voice_name"))
             audio_on   = bool(payload.get("voice_on", True))
@@ -1333,25 +1396,61 @@ async def embed_chat_ws(ws: WebSocket):
             embed_input_tokens = embed_output_tokens = 0
             diagram_input_tokens = diagram_output_tokens = 0
             second_pass_text = None
+            search_task = None
 
-            if not rag.hasEnoughCredits(owner_user_id):
-                await ws.send_json({"type": "error", "message": "No credits remaining.", "code": "NO_CREDITS"})
-                await ws.send_json({"type": "done"})
-                continue
+            # ── LATENCY: re-validate + all credit checks in ONE threadpool
+            #    hop, overlapped with STT ─────────────────────────────────
+            prefetch = asyncio.create_task(run_in_threadpool(
+                _prefetch_embed_turn, api_key, owner_user_id
+            ))
 
             if audio_bytes:
                 user_text = await _transcribe(ws, audio_bytes)
                 if not user_text:
+                    await _drain(prefetch)
                     await ws.send_json({"type": "done"})
                     continue
 
             if not user_text:
+                await _drain(prefetch)
                 await ws.send_json({"type": "error", "message": "Missing message"})
                 await ws.send_json({"type": "done"})
                 continue
 
+            turn = await _drain(prefetch) or {}
+            key_data = turn.get("key_data")
+            current_credits = turn.get("business_credits", 0.0)
+
+            if not key_data or not key_data.get("is_active"):
+                await ws.send_json({"type": "error", "message": "API key deactivated", "code": "INVALID_KEY"})
+                await ws.close()
+                return
+
+            if key_data.get("conversations_used", 0) >= key_data.get("monthly_limit", 500):
+                await ws.send_json({"type": "error", "message": "Monthly conversation limit reached", "code": "LIMIT_REACHED"})
+                await ws.send_json({"type": "done"})
+                continue
+
+            if current_credits < MIN_CREDITS_PER_TURN:
+                await ws.send_json({"type": "error", "message": "This business has run out of credits.", "code": "NO_CREDITS"})
+                await ws.send_json({"type": "done"})
+                continue
+
+            if not turn.get("has_credits"):
+                await ws.send_json({"type": "error", "message": "No credits remaining.", "code": "NO_CREDITS"})
+                await ws.send_json({"type": "done"})
+                continue
+
+            # ── config ────────────────────────────────────────────────
+            business_name        = key_data.get("business_name") or "this business"
+            business_description = key_data.get("business_description") or ""
+            assistant_name       = key_data.get("assistant_name") or "Assistant"
+            version              = key_data.get("assistant_version", "professional")
+
             if not voice_id:
-                avatar = rag.getAvatarByName(key_data.get("avatar_name") or "Mia Sterling") or {}
+                avatar = await run_in_threadpool(
+                    rag.getAvatarByName, key_data.get("avatar_name") or "Mia Sterling"
+                ) or {}
                 voice_id = avatar.get("voice") or DEFAULT_VOICE_ID
 
             # ── history (load + save user msg in parallel) ────────────
@@ -1366,12 +1465,14 @@ async def embed_chat_ws(ws: WebSocket):
 
             print(f"==> [TIMING] pre-RAG done: {time.time()-t0:.2f}s", flush=True)
 
-            # ── RAG ───────────────────────────────────────────────────
+            # ── RAG (embed + vector search, both off-loop) ────────────
             rag_context = ""
             if cached_has_docs:
                 try:
                     embedding = await rag.embedText(user_text)
-                    chunks = rag.searchDocumentChunks(api_key=api_key, embedding=embedding, limit=5)
+                    chunks = await run_in_threadpool(
+                        rag.searchDocumentChunks, api_key, embedding, 5
+                    )
                     print(f"==> RAG chunks: {len(chunks)}", flush=True)
                     for c in chunks:
                         print(f"==>   sim={c.get('similarity',0):.3f} | {c.get('content','')[:80]}", flush=True)
@@ -1428,7 +1529,7 @@ async def embed_chat_ws(ws: WebSocket):
 
             if cached_calendar_enabled:
                 system_prompt += _build_availability_prompt(key_data)
-                system_prompt += _build_integration_prompt(owner_user_id)
+                system_prompt += _build_integration_prompt(cached_integrator, cached_default_integration)
             else:
                 system_prompt += "\n\nCALENDAR: This business has not enabled calendar integrations. Do not offer booking or calendar actions."
 
@@ -1487,6 +1588,13 @@ async def embed_chat_ws(ws: WebSocket):
                 web_match = _detect_web_search(raw_text)
                 link_match = _detect_link(raw_text) if cached_links_enabled else None
 
+                # LATENCY: start search while TTS is still speaking
+                if web_match:
+                    search_task = asyncio.create_task(run_in_threadpool(
+                        get_web_search().web_search, web_match.group(1), 3
+                    ))
+                    await ws.send_json({"type": "web_search_pending"})
+
                 _, routing_decision = _extract_routing_tag(raw_text)
                 if not cached_diagrams_enabled:
                     routing_decision = "NONE"
@@ -1498,8 +1606,6 @@ async def embed_chat_ws(ws: WebSocket):
 
                 if calendar_action:
                     await ws.send_json({"type": "calendar_action"})
-                if web_match:
-                    await ws.send_json({"type": "web_search_pending"})
                 if link_match:
                     try:
                         link_data = json.loads(link_match.group(1))
@@ -1519,6 +1625,7 @@ async def embed_chat_ws(ws: WebSocket):
                     await ws.send_json({"type": "done"})
                     if tts_task:
                         tts_task.cancel()
+                    await _drain(search_task)
                     continue
 
             except Exception as e:
@@ -1527,6 +1634,7 @@ async def embed_chat_ws(ws: WebSocket):
                 traceback.print_exc()
                 if tts_task:
                     tts_task.cancel()
+                await _drain(search_task)
                 await ws.send_json({"type": "done"})
                 continue
 
@@ -1559,24 +1667,19 @@ async def embed_chat_ws(ws: WebSocket):
                     system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
                 )
 
-            if web_match:
-                search_results = await run_in_threadpool(
-                    get_web_search().web_search, web_match.group(1), 3
-                )
+            if search_task:
+                search_results = await _drain(search_task)
                 second_pass_text = await _stream_second_pass(
                     ws=ws, user_id=owner_user_id, user_text=user_text,
-                    context_text=search_results,
+                    context_text=search_results or "(search failed)",
                     system_prompt=system_prompt, voice_id=voice_id, audio_on=audio_on,
                 )
 
-            # ── persist ───────────────────────────────────────────────
-            _save_turn(session_id, bot_text, second_pass_text)
+            # ── persist (off-loop) ────────────────────────────────────
+            await run_in_threadpool(_save_turn, session_id, bot_text, second_pass_text)
 
             # ── billing ───────────────────────────────────────────────
-            try:
-                rag.incrementConversationCount(api_key)
-            except Exception as e:
-                print(f"==> Failed to increment conversation count: {e}")
+            _fire_and_forget(rag.incrementConversationCount, api_key)
 
             try:
                 cost_aud = account_manager.processUsedCost(
@@ -1589,13 +1692,12 @@ async def embed_chat_ws(ws: WebSocket):
                     diagram_on=bool(visual_aid),
                     model=cached_model,
                 )
-                try:
-                    rag.addApiKeyCost(api_key, cost_aud)
-                except Exception as e:
-                    print(f"==> Failed to add api_key cost: {e}")
+                _fire_and_forget(rag.addApiKeyCost, api_key, cost_aud)
 
                 try:
-                    new_balance = rag.deductBusinessCredits(owner_user_id, cost_aud)
+                    new_balance = await run_in_threadpool(
+                        rag.deductBusinessCredits, owner_user_id, cost_aud
+                    )
                     print(f"==> Embed cost: ${cost_aud:.4f} | balance: ${new_balance:.4f}", flush=True)
                     if new_balance < 0.50:
                         await ws.send_json({"type": "credits_low", "balance": new_balance, "message": "Credits running low"})
